@@ -131,6 +131,13 @@ const supportedCores = getSupportedEJSCores(
 );
 window.EJS_core =
   supportedCores.find((core) => core === props.core) ?? supportedCores[0];
+const isDosBoxPure = ["dos", "dosbox_pure"].includes(window.EJS_core);
+// DOSBox Pure opens its C: differencing file during core startup. Restore the
+// RomM save bundle into /data/saves before that happens.
+window.EJS_externalFiles =
+  isDosBoxPure && props.save?.download_path
+    ? { "/data/saves/": props.save.download_path }
+    : {};
 window.EJS_controlScheme = getControlSchemeForPlatform(
   romRef.value.platform_slug,
 );
@@ -361,7 +368,7 @@ window.EJS_onSaveState = async function ({
 window.EJS_onGameStart = async () => {
   sessionStartTime.value = new Date();
   setTimeout(async () => {
-    if (props.save) await loadSave(props.save);
+    if (props.save && !isDosBoxPure) await loadSave(props.save);
     if (props.state) await loadState(props.state);
 
     window.EJS_emulator.settings = {

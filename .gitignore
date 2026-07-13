@@ -68,3 +68,10 @@ switch_product_ids.json
 
 # AI tools
 .claude
+
+# Custom DOSBox Pure deployment data and generated packages
+/deploy-data/
+/deploy/.env
+/custom-emulatorjs/firmware/*.zip
+/custom-emulatorjs/roms/*.zip
+/test-instance/

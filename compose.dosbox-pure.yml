@@ -1,0 +1,47 @@
+name: romm-dosbox-pure
+
+services:
+  database:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Run ./scripts/deploy-dosbox-pure.sh first}
+      MARIADB_DATABASE: romm
+      MARIADB_USER: romm
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Run ./scripts/deploy-dosbox-pure.sh first}
+    volumes:
+      - ${ROMM_DATA_DIR:-./deploy-data}/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 30s
+      start_interval: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  romm:
+    image: ${ROMM_IMAGE:-romm-custom-dosbox-pure:4.9.2}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.custom-dosbox-pure
+    restart: unless-stopped
+    environment:
+      DB_HOST: database
+      DB_NAME: romm
+      DB_USER: romm
+      DB_PASSWD: ${DB_PASSWORD:?Run ./scripts/deploy-dosbox-pure.sh first}
+      ROMM_AUTH_SECRET_KEY: ${ROMM_AUTH_SECRET_KEY:?Run ./scripts/deploy-dosbox-pure.sh first}
+      HASHEOUS_API_ENABLED: ${HASHEOUS_API_ENABLED:-true}
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - ${ROMM_DATA_DIR:-./deploy-data}/library:/romm/library
+      - ${ROMM_DATA_DIR:-./deploy-data}/assets:/romm/assets
+      - ${ROMM_DATA_DIR:-./deploy-data}/config:/romm/config
+      - ${ROMM_DATA_DIR:-./deploy-data}/resources:/romm/resources
+      - ${ROMM_DATA_DIR:-./deploy-data}/redis-data:/redis-data
+    ports:
+      - "${ROMM_PORT:-8080}:8080"
+    depends_on:
+      database:
+        condition: service_healthy
+        restart: true

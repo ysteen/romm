@@ -1,0 +1,8 @@
+emulatorjs:
+  disable_batch_bootup: true
+  settings:
+    dosbox_pure:
+      bios_file: win95-system.zip
+      dosbox_pure_bootos_ramdisk: diff
+      dosbox_pure_bootos_dfreespace: "1024"
+      save-save-interval: "5"

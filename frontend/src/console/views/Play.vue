@@ -416,6 +416,11 @@ async function boot() {
 
   const coreOptions = configStore.getEJSCoreOptions(core);
   window.EJS_core = core;
+  const isDosBoxPure = ["dos", "dosbox_pure"].includes(core);
+  window.EJS_externalFiles =
+    isDosBoxPure && selectedInitialSave?.download_path
+      ? { "/data/saves/": selectedInitialSave.download_path }
+      : {};
   window.EJS_controlScheme = getControlSchemeForPlatform(rom.platform_slug);
   window.EJS_threads = areThreadsRequiredForEJSCore(core);
   window.EJS_gameID = rom.id;
@@ -633,7 +638,7 @@ async function boot() {
       }
       const gameManager = window.EJS_emulator.gameManager;
       // Load SAVE (battery / SRAM) if provided
-      if (selectedInitialSave?.download_path) {
+      if (selectedInitialSave?.download_path && !isDosBoxPure) {
         try {
           const resp = await fetch(selectedInitialSave.download_path);
           if (!resp.ok) throw new Error("Failed to fetch save");

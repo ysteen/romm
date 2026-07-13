@@ -39,6 +39,12 @@ backend/tests/
 docker-compose.yml
 examples/
 
+# Runtime data and proprietary/generated game assets
+test-instance/
+deploy-data/
+custom-emulatorjs/firmware/
+custom-emulatorjs/roms/
+
 # Local tools / docs not required for runtime
 **/*.md
 CODE_OF_CONDUCT.md

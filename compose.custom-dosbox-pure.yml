@@ -1,0 +1,6 @@
+services:
+  romm:
+    image: romm-custom-dosbox-pure:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.custom-dosbox-pure
