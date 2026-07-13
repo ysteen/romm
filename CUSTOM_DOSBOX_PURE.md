@@ -11,7 +11,8 @@ game as a separate ROM.
 On a Linux server with Docker and the Compose plugin installed:
 
 ```bash
-git clone <your-repository-url> romm-dosbox-pure
+git clone -b custom/dosbox-pure-emulatorjs-4.3 \
+  https://github.com/ysteen/romm.git romm-dosbox-pure
 cd romm-dosbox-pure
 ./scripts/deploy-dosbox-pure.sh
 ```
