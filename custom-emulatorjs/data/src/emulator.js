@@ -1242,7 +1242,7 @@ class EmulatorJS {
             let state = "suspended";
             let popup;
             while (state === "suspended") {
-                if (!this.Module.AL) return;
+                if (!this.Module?.AL) return;
                 this.Module.AL.currentCtx.sources.forEach(ctx => {
                     state = ctx.gain.context.state;
                 });
@@ -2323,7 +2323,7 @@ class EmulatorJS {
 
             const skipLocalAudio = this.isNetplay && this.netplay && this.netplay.setVolume(volume);
 
-            if (!skipLocalAudio && this.Module.AL && this.Module.AL.currentCtx && this.Module.AL.currentCtx.sources) {
+            if (!skipLocalAudio && this.Module?.AL && this.Module.AL.currentCtx && this.Module.AL.currentCtx.sources) {
                 this.Module.AL.currentCtx.sources.forEach(e => {
                     e.gain.gain.value = volume;
                 })
@@ -6279,7 +6279,7 @@ class EmulatorJS {
         }
 
         let audioTrack = null;
-        if (this.Module.AL && this.Module.AL.currentCtx && this.Module.AL.currentCtx.audioCtx) {
+        if (this.Module?.AL && this.Module.AL.currentCtx && this.Module.AL.currentCtx.audioCtx) {
             const alContext = this.Module.AL.currentCtx;
             const audioContext = alContext.audioCtx;
 

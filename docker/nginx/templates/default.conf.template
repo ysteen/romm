@@ -13,13 +13,13 @@ map $http_x_forwarded_proto $forwardscheme {
 # for multi-threaded cores.
 map $request_uri $coep_header {
     default        "";
-    ~^/rom/.*/ejs$ "require-corp";
-    ~^/console/rom/[0-9]+/play "require-corp";
+    ~^/rom/[0-9]+/ejs/?(?:\?.*)?$ "require-corp";
+    ~^/console/rom/[0-9]+/play/?(?:\?.*)?$ "require-corp";
 }
 map $request_uri $coop_header {
     default        "";
-    ~^/rom/.*/ejs$ "same-origin";
-    ~^/console/rom/[0-9]+/play "same-origin";
+    ~^/rom/[0-9]+/ejs/?(?:\?.*)?$ "same-origin";
+    ~^/console/rom/[0-9]+/play/?(?:\?.*)?$ "same-origin";
 }
 
 server {

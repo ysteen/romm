@@ -23,6 +23,7 @@ RUN apk add --no-cache curl git unzip \
 FROM ${ROMM_BASE_IMAGE}
 
 COPY --from=frontend-build /front/dist/ /var/www/html/
+COPY docker/nginx/templates/default.conf.template /etc/nginx/templates/default.conf.template
 
 # Pin one coherent EmulatorJS 4.3 nightly frontend/core snapshot for every
 # platform. Overlay only the RomM integration and custom DOSBox Pure pieces so
