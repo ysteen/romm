@@ -6,15 +6,33 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
+FROM alpine:3.22 AS emulatorjs-nightly
+ARG EJS_NIGHTLY_COMMIT=cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6
+ARG EJS_NIGHTLY_CORES_URL=https://cdn.emulatorjs.org/nightly/data/cores/cores.zip
+ARG EJS_NIGHTLY_CORES_SHA256=1afd578176f1bf438100e0ed1d53c43cf0c9d0358c6831c648a4999a37916698
+RUN apk add --no-cache curl git unzip \
+    && git init /emulatorjs \
+    && git -C /emulatorjs remote add origin https://github.com/EmulatorJS/EmulatorJS.git \
+    && git -C /emulatorjs fetch --depth 1 origin "${EJS_NIGHTLY_COMMIT}" \
+    && git -C /emulatorjs checkout --detach FETCH_HEAD \
+    && curl -fL --retry 3 -o /tmp/cores.zip "${EJS_NIGHTLY_CORES_URL}" \
+    && echo "${EJS_NIGHTLY_CORES_SHA256}  /tmp/cores.zip" | sha256sum -c - \
+    && unzip -q -o /tmp/cores.zip -d /emulatorjs/data/cores \
+    && rm -rf /emulatorjs/.git /tmp/cores.zip
+
 FROM ${ROMM_BASE_IMAGE}
 
 COPY --from=frontend-build /front/dist/ /var/www/html/
 
-# This DOSBox Pure build declares minimumEJSVersion 4.3.0. Overlay the complete
-# matching 4.3 ESM frontend as one coherent set. The custom loader deliberately
-# uses src/emulator.js; remove RomM's bundled 4.2.3 classic minified files so a
-# future loader change cannot silently mix the two incompatible generations.
-COPY custom-emulatorjs/data/ /var/www/html/assets/emulatorjs/data/
-RUN rm -f \
-    /var/www/html/assets/emulatorjs/data/emulator.min.js \
-    /var/www/html/assets/emulatorjs/data/emulator.min.css
+# Pin one coherent EmulatorJS 4.3 nightly frontend/core snapshot for every
+# platform. Overlay only the RomM integration and custom DOSBox Pure pieces so
+# localization, compression, netplay, PPSSPP, melonDS, and the remaining cores
+# all stay on that same nightly baseline.
+RUN rm -rf /var/www/html/assets/emulatorjs/data
+COPY --from=emulatorjs-nightly /emulatorjs/data/ /var/www/html/assets/emulatorjs/data/
+COPY custom-emulatorjs/data/loader.js /var/www/html/assets/emulatorjs/data/loader.js
+COPY custom-emulatorjs/data/version.json /var/www/html/assets/emulatorjs/data/version.json
+COPY custom-emulatorjs/data/src/emulator.js /var/www/html/assets/emulatorjs/data/src/emulator.js
+COPY custom-emulatorjs/data/src/GameManager.js /var/www/html/assets/emulatorjs/data/src/GameManager.js
+COPY custom-emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data
+COPY custom-emulatorjs/data/cores/dosbox_pure-thread-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-wasm.data

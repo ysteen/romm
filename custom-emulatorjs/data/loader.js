@@ -9,6 +9,7 @@ if (!scriptPath.endsWith("/")) {
 }
 
 const debug = window.EJS_DEBUG_XX === true;
+const isDosBoxPure = ["dos", "dosbox_pure"].includes(window.EJS_core);
 
 if (debug) {
     console.log("Script Path:", scriptPath);
@@ -148,7 +149,7 @@ const config = {
     // RomM's URL stays unchanged when a ROM file is replaced, while
     // EmulatorJS may cache it for days. Version DOS package URLs so an older
     // extracted ZIP cannot mask the split-OS/autoboot package.
-    gameUrl: (["dos", "dosbox_pure"].includes(window.EJS_core) && typeof window.EJS_gameUrl === "string")
+    gameUrl: (isDosBoxPure && typeof window.EJS_gameUrl === "string")
         ? window.EJS_gameUrl + (window.EJS_gameUrl.includes("?") ? "&" : "?") + "dosbox_pure_package=split-os-v1"
         : window.EJS_gameUrl,
     dataPath: scriptPath,
@@ -174,7 +175,7 @@ const config = {
     // default 4 GB IndexedDB cache can stall on a stale core transaction after
     // Save & Quit/reload, before the core HTTP request is even issued. This is
     // separate from the states/save-data databases, which remain enabled.
-    cacheConfig: window.EJS_cacheConfig ?? (["dos", "dosbox_pure"].includes(window.EJS_core)
+    cacheConfig: window.EJS_cacheConfig ?? (isDosBoxPure
         ? { enabled: false, cacheMaxSizeMB: 64, cacheMaxAgeMins: 60 }
         : undefined),
     cheats: window.EJS_cheats,
@@ -198,7 +199,7 @@ const config = {
     externalFiles: window.EJS_externalFiles,
     // DOSBox Pure must receive the ZIP itself so it can parse DOS.YML,
     // AUTOBOOT.DBP and disk images. RomM 4.9.2 predates this 4.3 option.
-    dontExtractRom: window.EJS_dontExtractRom ?? ["dos", "dosbox_pure"].includes(window.EJS_core),
+    dontExtractRom: window.EJS_dontExtractRom ?? isDosBoxPure,
     dontExtractBIOS: window.EJS_dontExtractBIOS,
     disableLocalStorage: window.EJS_disableLocalStorage,
     forceLegacyCores: window.EJS_forceLegacyCores,
@@ -207,9 +208,10 @@ const config = {
     hideSettings: window.EJS_hideSettings,
     browserMode: window.EJS_browserMode,
     additionalShaders: window.EJS_shaders,
-    // Keep image-disk difference files in IDBFS durable even when a host
-    // frontend (for example RomM) does not configure a save interval.
-    fixedSaveInterval: window.EJS_fixedSaveInterval ?? 5000,
+    // DOSBox Pure stores writable disk differences outside normal SRAM. Flush
+    // those files frequently, but preserve upstream save timing for every
+    // other core.
+    fixedSaveInterval: window.EJS_fixedSaveInterval ?? (isDosBoxPure ? 5000 : undefined),
     disableAutoUnload: window.EJS_disableAutoUnload,
     disableBatchBootup: window.EJS_disableBatchBootup,
     askBeforeExit: window.EJS_askBeforeExit

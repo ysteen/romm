@@ -460,8 +460,21 @@ window.EJS_onGameStart = async () => {
 
 async function flushDosBoxPureCacheOnQuit() {
   if (!isDosBoxPure) return;
+
+  const flushSaveCache =
+    window.EJS_emulator?.gameManager?.flushDosBoxPureSaveCache;
+  if (typeof flushSaveCache !== "function") {
+    // The player can briefly run with an older cached EmulatorJS asset after
+    // a RomM frontend update. Cache cleanup is an optional DOSBox Pure
+    // extension, so its absence must not break Save & Quit for the game.
+    console.warn(
+      "DOSBox Pure save cache cleanup is unavailable; continuing with normal exit",
+    );
+    return;
+  }
+
   try {
-    await window.EJS_emulator.gameManager.flushDosBoxPureSaveCache();
+    await flushSaveCache.call(window.EJS_emulator.gameManager);
   } catch (error) {
     // Do not trap the user in the player if IndexedDB cleanup fails. The
     // failure remains visible in the console and the normal exit still runs.

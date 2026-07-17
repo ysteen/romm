@@ -76,8 +76,8 @@ async function onPlay() {
   fullScreen.value = fullScreenOnPlay.value;
   playing.value = true;
 
-  const { EJS_NETPLAY_ENABLED } = configStore.config;
-  const EMULATORJS_VERSION = EJS_NETPLAY_ENABLED ? "nightly" : "4.2.3";
+  const EMULATORJS_VERSION = "nightly";
+  const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 
@@ -94,15 +94,18 @@ async function onPlay() {
 
   async function attemptLoad(path: string) {
     window.EJS_pathtodata = path;
-    await loadScript(`${path}/loader.js`);
+    const snapshot = path === LOCAL_PATH ? `?v=${EMULATORJS_SNAPSHOT}` : "";
+    await loadScript(`${path}/loader.js${snapshot}`);
   }
 
   try {
     try {
-      await attemptLoad(EJS_NETPLAY_ENABLED ? CDN_PATH : LOCAL_PATH);
+      // The local image contains a pinned nightly frontend and matching cores,
+      // including the custom DOSBox Pure core. Netplay uses the same snapshot.
+      await attemptLoad(LOCAL_PATH);
     } catch (e) {
       console.warn("[Play] Local loader failed, trying CDN", e);
-      await attemptLoad(EJS_NETPLAY_ENABLED ? LOCAL_PATH : CDN_PATH);
+      await attemptLoad(CDN_PATH);
     }
     playing.value = true;
     fullScreen.value = fullScreenOnPlay.value;

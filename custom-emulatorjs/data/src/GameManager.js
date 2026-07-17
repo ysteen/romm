@@ -44,6 +44,27 @@ class EJS_GameManager {
         this.setupPreLoadSettings();
 
         this.EJS.on("exit", () => {
+            // Preserve upstream EmulatorJS shutdown semantics for non-DOS
+            // cores. Some libretro cores only commit their final SRAM during
+            // restart, so the DOSBox Pure workaround must not be global.
+            if (!this.isDosBoxPure()) {
+                if (!this.EJS.failedToStart) {
+                    this.saveSaveFiles();
+                    this.functions.restart();
+                    this.saveSaveFiles();
+                }
+                this.toggleMainLoop(0);
+                this.FS.unmount("/data/saves");
+                setTimeout(() => {
+                    try {
+                        this.Module.abort();
+                    } catch(e) {
+                        console.warn(e);
+                    }
+                }, 1000);
+                return;
+            }
+
             if (this.exitInProgress) return;
             this.exitInProgress = true;
 
@@ -466,7 +487,7 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
     saveSaveFiles() {
         this.functions.saveSaveFiles();
         this.EJS.callEvent("saveSaveFiles", this.getSaveFile(false));
-        this.syncSaveFileSystem();
+        if (this.isDosBoxPure()) this.syncSaveFileSystem();
     }
     syncSaveFileSystem() {
         // IDBFS only restores files that have been flushed with syncfs(false).

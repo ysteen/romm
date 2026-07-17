@@ -976,11 +976,17 @@ class EmulatorJS {
      */
     async initializeGameManager() {
         this.gameManager = new EJS_GameManager(this.Module, this);
-        await this.gameManager.mountFileSystems();
-        // External save bundles must be restored after IDBFS is mounted. Files
-        // written before the mount are hidden by the mount and DOSBox Pure
-        // starts with an empty differencing disk.
-        await this.gameManager.loadExternalFiles();
+        if (["dos", "dosbox_pure"].includes(this.getCore())) {
+            await this.gameManager.mountFileSystems();
+            // External save bundles must be restored after IDBFS is mounted.
+            // Files written before the mount are hidden by the mount and
+            // DOSBox Pure starts with an empty differencing disk.
+            await this.gameManager.loadExternalFiles();
+        } else {
+            // Keep the upstream order for all other cores.
+            await this.gameManager.loadExternalFiles();
+            await this.gameManager.mountFileSystems();
+        }
         this.callEvent("saveDatabaseLoaded", this.gameManager.FS);
         if (this.getCore() === "ppsspp") {
             await this.gameManager.loadPpssppAssets();

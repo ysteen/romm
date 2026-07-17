@@ -1,10 +1,12 @@
 # Custom DOSBox Pure and shared Windows 95
 
-This workspace overlays the locally built DOSBox Pure core and its matching
-EmulatorJS 4.3 frontend on RomM 4.9.2. The core declares a minimum EmulatorJS
-version of 4.3.0, so RomM's bundled 4.2.3 frontend cannot run it. It also
-supports keeping one Windows 95 disk in RomM's DOS firmware and keeping each
-game as a separate ROM.
+This workspace pins EmulatorJS 4.3 nightly commit
+`cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` and its 2026-05-16 nightly core
+bundle on RomM 4.9.2. The locally built DOSBox Pure core replaces only the two
+DOSBox Pure binaries in that coherent snapshot. The core declares a minimum
+EmulatorJS version of 4.3.0, so RomM's bundled 4.2.3 frontend cannot run it. It
+also supports keeping one Windows 95 disk in RomM's DOS firmware and keeping
+each game as a separate ROM.
 
 ## One-command server deployment
 
@@ -45,12 +47,13 @@ docker compose -f <your-compose.yml> -f compose.custom-dosbox-pure.yml build rom
 docker compose -f <your-compose.yml> -f compose.custom-dosbox-pure.yml up -d romm
 ```
 
-The overlay replaces the EmulatorJS frontend as a complete 4.3 set along with
-both threaded DOSBox Pure core variants. Do not copy only `loader.js` or
-`GameManager.js` over the 4.2.3 assets: 4.3 uses ES modules and all frontend
-modules must remain on the same API generation. The included GameManager
-flushes IDBFS, and the core setting below asks EmulatorJS to save every five
-seconds so C:/D: image differences survive browser reloads.
+The image installs the pinned nightly frontend and all matching nightly cores,
+then overlays the RomM integration files and both custom threaded DOSBox Pure
+variants. The nightly core ZIP is verified by SHA-256 during the Docker build.
+Netplay also uses this local snapshot instead of silently switching every game
+to the mutable CDN nightly. The included GameManager flushes IDBFS every five
+seconds only for DOSBox Pure; other cores retain upstream save timing and
+shutdown behavior.
 
 DOSBox Pure does not store an installed operating system's disk changes in
 RetroArch's nominal `.srm` file. Depending on the boot mode it writes sibling
