@@ -1,10 +1,11 @@
 import html
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Final, NotRequired, TypedDict
 from urllib.parse import urlparse
 
 import pydash
+from fastapi import HTTPException, status
 from unidecode import unidecode as uc
 
 from adapters.services.screenscraper import ScreenScraperService
@@ -140,6 +141,12 @@ ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG = {
 }
 
 
+def _is_daily_quota_error(exc: HTTPException) -> bool:
+    """ScreenScraper only raises 429 when its daily quota is exhausted (the
+    service trips a breaker so the rest of the scan short-circuits)."""
+    return exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+
+
 def _is_notgame(game: SSGame) -> bool:
     if game.get("notgame") == "true":
         return True
@@ -183,6 +190,7 @@ class SSMetadataMedia(TypedDict):
     # Resources stored in filesystem
     bezel_path: str | None
     box2d_back_path: str | None
+    box2d_side_path: str | None
     box3d_path: str | None
     fanart_path: str | None
     miximage_path: str | None
@@ -244,6 +252,7 @@ def extract_media_from_ss_game(rom: Rom, game: SSGame) -> SSMetadataMedia:
         video_normalized_url=None,
         bezel_path=None,
         box2d_back_path=None,
+        box2d_side_path=None,
         box3d_path=None,
         fanart_path=None,
         miximage_path=None,
@@ -358,6 +367,10 @@ def extract_media_from_ss_game(rom: Rom, game: SSGame) -> SSMetadataMedia:
                 ss_media["box2d_side_url"] = strip_sensitive_query_params(
                     media["url"], SENSITIVE_KEYS
                 )
+                if MetadataMediaType.BOX2D_SIDE in preferred_media_types:
+                    ss_media["box2d_side_path"] = (
+                        f"{fs_resource_handler.get_media_resources_path(rom.platform_id, rom.id, MetadataMediaType.BOX2D_SIDE)}/box2d_side.png"
+                    )
             elif media.get("type") == "steamgrid" and not ss_media["steamgrid_url"]:
                 ss_media["steamgrid_url"] = strip_sensitive_query_params(
                     media["url"], SENSITIVE_KEYS
@@ -412,13 +425,17 @@ def extract_metadata_from_ss_rom(rom: Rom, game: SSGame) -> SSMetadata:
             return ""
 
     def _parse_date(date_text: str) -> int | None:
+        # Release dates are date-only, so pin them to UTC midnight; a naive
+        # `.timestamp()` would read them as local time and shift by the host's
+        # UTC offset.
         try:
-            return int(datetime.strptime(date_text, "%Y-%m-%d").timestamp())
+            dt = datetime.strptime(date_text, "%Y-%m-%d")
         except ValueError:
             try:
-                return int(datetime.strptime(date_text, "%Y").timestamp())
+                dt = datetime.strptime(date_text, "%Y")
             except ValueError:
                 return None
+        return int(dt.replace(tzinfo=timezone.utc).timestamp())
 
     def _get_lowest_date(dates: list[SSGameDate]) -> int | None:
         if not dates:
@@ -719,15 +736,22 @@ class SSHandler(MetadataHandler):
             )
             return SSRom(ss_id=None), False
 
-        res = await self.ss_service.get_game_info(
-            system_id=platform_ss_id,
-            md5=md5_hash,
-            sha1=sha1_hash,
-            crc=crc_hash,
-            rom_size_bytes=fs_size_bytes,
-            rom_name=rom_name,
-            rom_type=_get_rom_type(first_file),
-        )
+        try:
+            res = await self.ss_service.get_game_info(
+                system_id=platform_ss_id,
+                md5=md5_hash,
+                sha1=sha1_hash,
+                crc=crc_hash,
+                rom_size_bytes=fs_size_bytes,
+                rom_name=rom_name,
+                rom_type=_get_rom_type(first_file),
+            )
+        except HTTPException as exc:
+            # Daily quota exhausted: skip ScreenScraper for this ROM so the scan
+            # falls back to the other providers.
+            if not _is_daily_quota_error(exc):
+                raise
+            return SSRom(ss_id=None), False
         if not res:
             return SSRom(ss_id=None), False
 
@@ -836,17 +860,23 @@ class SSHandler(MetadataHandler):
         normalized_search_term = self.normalize_search_term(
             search_term, remove_punctuation=False
         )
-        res = await self._search_rom(
-            self.SEARCH_TERM_NORMALIZER.sub(" - ", normalized_search_term),
-            platform_ss_id,
-        )
-
-        # SS API doesn't handle some special characters well
-        if not res and " : " in search_term:
-            terms = re.split(self.SEARCH_TERM_SPLIT_PATTERN, search_term)
+        try:
             res = await self._search_rom(
-                terms[-1], platform_ss_id, split_game_name=True
+                self.SEARCH_TERM_NORMALIZER.sub(" - ", normalized_search_term),
+                platform_ss_id,
             )
+
+            # SS API doesn't handle some special characters well
+            if not res and " : " in search_term:
+                terms = re.split(self.SEARCH_TERM_SPLIT_PATTERN, search_term)
+                res = await self._search_rom(
+                    terms[-1], platform_ss_id, split_game_name=True
+                )
+        except HTTPException as exc:
+            # Daily quota exhausted: fall back to the name-only match (if any).
+            if not _is_daily_quota_error(exc):
+                raise
+            return fallback_rom
 
         if not res or not res.get("id"):
             return fallback_rom
@@ -857,7 +887,13 @@ class SSHandler(MetadataHandler):
         if not self.is_enabled():
             return SSRom(ss_id=None)
 
-        res = await self.ss_service.get_game_info(game_id=ss_id)
+        try:
+            res = await self.ss_service.get_game_info(game_id=ss_id)
+        except HTTPException as exc:
+            # Daily quota exhausted: return an empty match rather than failing.
+            if not _is_daily_quota_error(exc):
+                raise
+            return SSRom(ss_id=None)
         if not res:
             return SSRom(ss_id=None)
 

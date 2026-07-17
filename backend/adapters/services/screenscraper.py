@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import http
 import json
 from typing import Final, cast
@@ -10,14 +9,17 @@ from aiohttp.client import ClientTimeout
 from fastapi import HTTPException, status
 
 from adapters.services.screenscraper_types import SSGame
-from config import SCREENSCRAPER_PASSWORD, SCREENSCRAPER_USER
+from config import (
+    SCREENSCRAPER_DEV_ID,
+    SCREENSCRAPER_DEV_PASSWORD,
+    SCREENSCRAPER_PASSWORD,
+    SCREENSCRAPER_USER,
+)
 from logger.logger import log
 from utils import get_version
 from utils.context import ctx_aiohttp_session
 from utils.rate_limiter import ConcurrencyLimiter
 
-SS_DEV_ID: Final = base64.b64decode("enVyZGkxNQ==").decode()
-SS_DEV_PASSWORD: Final = base64.b64decode("eFRKd29PRmpPUUc=").decode()
 LOGIN_ERROR_CHECK: Final = "Erreur de login"
 
 # ScreenScraper enforces a per-account *thread* (concurrency) cap rather than a
@@ -26,6 +28,36 @@ LOGIN_ERROR_CHECK: Final = "Erreur de login"
 # rejected. We instead bound simultaneous in-flight requests.
 SS_DEFAULT_MAX_THREADS: Final[int] = 1
 _concurrency_limiter = ConcurrencyLimiter(SS_DEFAULT_MAX_THREADS)
+
+# ScreenScraper enforces a *daily* request quota (HTTP 430/431) separate from
+# the transient rate limit (HTTP 429). The daily quota only resets the next day,
+# so once it's hit there's nothing to wait for within a scan. Trip a breaker on
+# the first daily-quota error so the remaining requests short-circuit instead of
+# hammering a dead quota. reset_daily_quota() clears it at the start of a scan.
+_daily_quota_exhausted = False
+
+
+def reset_daily_quota() -> None:
+    """Clear the daily-quota breaker so the next scan re-evaluates the quota."""
+    global _daily_quota_exhausted
+    _daily_quota_exhausted = False
+
+
+def is_daily_quota_exhausted() -> bool:
+    """Whether the ScreenScraper daily quota has been exhausted this scan."""
+    return _daily_quota_exhausted
+
+
+def _trip_daily_quota(reason: str) -> None:
+    """Trip the daily-quota breaker, logging a single clear notice the first time."""
+    global _daily_quota_exhausted
+    if not _daily_quota_exhausted:
+        log.warning(
+            "ScreenScraper %s; skipping ScreenScraper for the rest of this scan "
+            "(quota resets tomorrow)",
+            reason,
+        )
+    _daily_quota_exhausted = True
 
 
 def _update_thread_allowance(response: dict) -> None:
@@ -52,8 +84,8 @@ async def auth_middleware(
     """ScreenScraper API authentication mechanism."""
     req.url = req.url.update_query(
         {
-            "devid": SS_DEV_ID,
-            "devpassword": SS_DEV_PASSWORD,
+            "devid": SCREENSCRAPER_DEV_ID or "",
+            "devpassword": SCREENSCRAPER_DEV_PASSWORD or "",
             "output": "json",
             "softname": "romm",
             "ssid": SCREENSCRAPER_USER or "",
@@ -76,6 +108,16 @@ class ScreenScraperService:
         self.url = yarl.URL(base_url or "https://api.screenscraper.fr/api2")
 
     async def _request(self, url: str, request_timeout: int = 120) -> dict:
+        # Daily quota already exhausted earlier in this scan: skip the request but
+        # still raise the quota error so callers (e.g. manual search) surface a
+        # clear message. The scan loop catches this and falls back to the other
+        # providers instead of hitting a dead quota for every remaining ROM.
+        if _daily_quota_exhausted:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="ScreenScraper daily quota exhausted. Try again tomorrow.",
+            )
+
         aiohttp_session = ctx_aiohttp_session.get()
         log.debug(
             "API request: URL=%s, Timeout=%s",
@@ -122,11 +164,13 @@ class ScreenScraperService:
                     detail="ScreenScraper has blacklisted this application version. Please update RomM.",
                 ) from err
             elif err.status == 430:
+                _trip_daily_quota("daily scrape quota exhausted")
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="ScreenScraper daily scrape quota exhausted. Try again tomorrow.",
                 ) from err
             elif err.status == 431:
+                _trip_daily_quota("daily unrecognized-ROM quota exhausted")
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="ScreenScraper daily unrecognized-ROM quota exhausted. Try again tomorrow.",
@@ -185,11 +229,13 @@ class ScreenScraperService:
                         detail="ScreenScraper has blacklisted this application version. Please update RomM.",
                     ) from err
                 elif err.status == 430:
+                    _trip_daily_quota("daily scrape quota exhausted")
                     raise HTTPException(
                         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                         detail="ScreenScraper daily scrape quota exhausted. Try again tomorrow.",
                     ) from err
                 elif err.status == 431:
+                    _trip_daily_quota("daily unrecognized-ROM quota exhausted")
                     raise HTTPException(
                         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                         detail="ScreenScraper daily unrecognized-ROM quota exhausted. Try again tomorrow.",

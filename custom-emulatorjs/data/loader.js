@@ -171,7 +171,7 @@ const config = {
     filePaths: window.EJS_paths,
     loadState: window.EJS_loadStateURL,
     cacheLimit: window.EJS_CacheLimit,
-    // RomM 4.9.2 does not configure EmulatorJS 4.3's download cache. Its
+    // RomM does not configure EmulatorJS 4.3's download cache. Its
     // default 4 GB IndexedDB cache can stall on a stale core transaction after
     // Save & Quit/reload, before the core HTTP request is even issued. This is
     // separate from the states/save-data databases, which remain enabled.
@@ -198,7 +198,7 @@ const config = {
     capture: window.EJS_screenCapture,
     externalFiles: window.EJS_externalFiles,
     // DOSBox Pure must receive the ZIP itself so it can parse DOS.YML,
-    // AUTOBOOT.DBP and disk images. RomM 4.9.2 predates this 4.3 option.
+    // AUTOBOOT.DBP and disk images. RomM does not expose this 4.3 option.
     dontExtractRom: window.EJS_dontExtractRom ?? isDosBoxPure,
     dontExtractBIOS: window.EJS_dontExtractBIOS,
     disableLocalStorage: window.EJS_disableLocalStorage,

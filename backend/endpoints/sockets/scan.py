@@ -9,13 +9,16 @@ import pydash
 import socketio  # type: ignore
 from rq import Worker
 from rq.job import Job
+from sqlalchemy.exc import IntegrityError
 
+from adapters.services.screenscraper import reset_daily_quota as reset_ss_daily_quota
 from config import DEV_MODE, REDIS_URL, SCAN_TIMEOUT, SCAN_WORKERS, TASK_RESULT_TTL
 from config.config_manager import MetadataMediaType
 from config.config_manager import config_manager as cm
 from endpoints.responses import TaskType
 from endpoints.responses.platform import PlatformSchema
 from endpoints.responses.rom import SimpleRomSchema
+from endpoints.sockets.activity import get_authenticated_user
 from exceptions.fs_exceptions import (
     FOLDER_STRUCT_MSG,
     FirmwareNotFoundException,
@@ -23,6 +26,7 @@ from exceptions.fs_exceptions import (
     RomsNotFoundException,
 )
 from exceptions.socket_exceptions import ScanStoppedException
+from handler.auth.constants import Scope
 from handler.database import db_firmware_handler, db_platform_handler, db_rom_handler
 from handler.filesystem import (
     fs_firmware_handler,
@@ -37,6 +41,7 @@ from handler.redis_handler import get_job_func_name, high_prio_queue, redis_clie
 from handler.scan_handler import (
     MetadataSource,
     ScanType,
+    persist_soundtrack_cover,
     scan_firmware,
     scan_platform,
     scan_rom,
@@ -47,7 +52,7 @@ from logger.formatter import highlight as hl
 from logger.logger import log
 from models.firmware import Firmware
 from models.platform import Platform
-from models.rom import Rom, RomFile
+from models.rom import Rom, RomFile, TrackMeta
 from tasks.tasks import update_job_meta
 from utils import emoji
 from utils.context import initialize_context
@@ -55,6 +60,25 @@ from utils.gamelist_exporter import GamelistExporter
 from utils.pegasus_exporter import PegasusExporter
 
 STOP_SCAN_FLAG: Final = "scan:stop"
+
+
+def _clone_track_meta(src: TrackMeta | None, rom_id: int) -> TrackMeta | None:
+    """Build a fresh TrackMeta from a scanned (transient) one for a new RomFile."""
+    if src is None:
+        return None
+    return TrackMeta(
+        rom_id=rom_id,
+        title=src.title,
+        artist=src.artist,
+        album=src.album,
+        genre=src.genre,
+        year=src.year,
+        track=src.track,
+        disc=src.disc,
+        duration_seconds=src.duration_seconds,
+        has_embedded_cover=src.has_embedded_cover,
+        cover_path=src.cover_path,
+    )
 
 
 @dataclass
@@ -145,7 +169,7 @@ async def _identify_firmware(
     return 1 if not firmware else 0
 
 
-def _should_scan_rom(
+def should_scan_rom(
     scan_type: ScanType,
     rom: Rom | None,
     roms_ids: list[int],
@@ -236,6 +260,7 @@ async def _identify_rom(
     roms_ids: list[int],
     metadata_sources: list[str],
     launchbox_remote_enabled: bool,
+    playmatch_enabled: bool,
     socket_manager: socketio.AsyncRedisManager,
     scan_stats: ScanStats,
 ) -> None:
@@ -250,29 +275,29 @@ async def _identify_rom(
     # Create the entry early so we have the ID
     newly_added: bool = rom is None
     if not rom:
-        rom = db_rom_handler.add_rom(
-            Rom(
-                fs_name=fs_rom["fs_name"],
-                fs_path=roms_path,
-                fs_name_no_tags=fs_rom_handler.get_file_name_with_no_tags(
-                    fs_rom["fs_name"]
-                ),
-                fs_name_no_ext=fs_rom_handler.get_file_name_with_no_extension(
-                    fs_rom["fs_name"]
-                ),
-                fs_extension=fs_rom_handler.parse_file_extension(fs_rom["fs_name"]),
-                regions=parsed_tags.regions,
-                revision=parsed_tags.revision,
-                version=parsed_tags.version,
-                languages=parsed_tags.languages,
-                tags=parsed_tags.other_tags,
-                platform_id=platform.id,
-                name=fs_rom["fs_name"],
-                url_cover="",
-                url_manual="",
-                url_screenshots=[],
+        try:
+            rom = db_rom_handler.add_rom(
+                Rom(
+                    fs_name=fs_rom["fs_name"],
+                    fs_path=roms_path,
+                    regions=parsed_tags.regions,
+                    revision=parsed_tags.revision,
+                    version=parsed_tags.version,
+                    languages=parsed_tags.languages,
+                    tags=parsed_tags.other_tags,
+                    platform_id=platform.id,
+                    name=fs_rom_handler.get_file_name_with_no_tags(fs_rom["fs_name"]),
+                    url_cover="",
+                    url_manual="",
+                    url_screenshots=[],
+                )
             )
-        )
+        except IntegrityError:
+            # A concurrent scan already created this ROM, so skip it here.
+            log.debug(
+                f"Skipping {hl(fs_rom['fs_name'])}: already created by a concurrent scan"
+            )
+            return
 
     # Build rom files object before scanning
     should_update_files = _should_get_rom_files(
@@ -339,6 +364,7 @@ async def _identify_rom(
         metadata_sources=metadata_sources,
         newly_added=newly_added,
         launchbox_remote_enabled=launchbox_remote_enabled,
+        playmatch_enabled=playmatch_enabled,
         socket_manager=socket_manager,
     )
 
@@ -361,7 +387,7 @@ async def _identify_rom(
                     "rom_user",
                     "last_modified",
                     "files",
-                    "siblings",
+                    "sibling_roms",
                 }
             ),
         )
@@ -379,6 +405,7 @@ async def _identify_rom(
                 file_size_bytes=file.file_size_bytes,
                 last_modified=file.last_modified,
                 category=file.category,
+                track_meta=_clone_track_meta(file.track_meta, _added_rom.id),
                 crc_hash=file.crc_hash,
                 md5_hash=file.md5_hash,
                 sha1_hash=file.sha1_hash,
@@ -388,7 +415,8 @@ async def _identify_rom(
             for file in fs_rom["files"]
         ]
         for new_rom_file in new_rom_files:
-            db_rom_handler.add_rom_file(new_rom_file)
+            saved = db_rom_handler.add_rom_file(new_rom_file)
+            persist_soundtrack_cover(saved, _added_rom)
 
     # Short circuit if the scan type is hashes
     if scan_type == ScanType.HASHES:
@@ -487,7 +515,7 @@ async def _identify_rom(
                 "rom_user",
                 "last_modified",
                 "files",
-                "siblings",
+                "sibling_roms",
             }
         ),
     )
@@ -500,6 +528,7 @@ async def _identify_platform(
     roms_ids: list[int],
     metadata_sources: list[str],
     launchbox_remote_enabled: bool,
+    playmatch_enabled: bool,
     socket_manager: socketio.AsyncRedisManager,
     scan_stats: ScanStats,
 ) -> ScanStats:
@@ -597,6 +626,7 @@ async def _identify_platform(
                 roms_ids=roms_ids,
                 metadata_sources=metadata_sources,
                 launchbox_remote_enabled=launchbox_remote_enabled,
+                playmatch_enabled=playmatch_enabled,
                 socket_manager=socket_manager,
                 scan_stats=scan_stats,
             )
@@ -613,7 +643,7 @@ async def _identify_platform(
 
         for fs_rom in fs_roms_batch:
             rom = roms_by_fs_name.get(fs_rom["fs_name"])
-            if _should_scan_rom(
+            if should_scan_rom(
                 scan_type=scan_type,
                 rom=rom,
                 roms_ids=roms_ids,
@@ -669,6 +699,7 @@ async def scan_platforms(
     scan_type: ScanType = ScanType.QUICK,
     roms_ids: list[int] | None = None,
     launchbox_remote_enabled: bool = True,
+    playmatch_enabled: bool = True,
 ) -> ScanStats:
     """Scan all the listed platforms and fetch metadata from different sources
 
@@ -684,6 +715,10 @@ async def scan_platforms(
     socket_manager = _get_socket_manager()
     scan_stats = ScanStats()
 
+    # Reset the ScreenScraper daily-quota breaker so this scan re-evaluates the
+    # quota instead of inheriting a tripped state from a previous scan.
+    reset_ss_daily_quota()
+
     try:
         fs_platforms: list[str] = await fs_platform_handler.get_platforms()
     except FolderStructureNotMatchException as e:
@@ -698,8 +733,30 @@ async def scan_platforms(
     if MetadataSource.HLTB in metadata_sources:
         meta_hltb_handler.initialize()
 
+    # Resolve the platforms that will actually be scanned. When no platform ids
+    # are provided, every filesystem platform is scanned.
+    db_platforms = db_platform_handler.get_platforms()
+    db_platforms_by_slug = {p.fs_slug: p for p in db_platforms}
+
+    platform_list = [
+        p.fs_slug for p in db_platforms if p.id in platform_ids
+    ] or fs_platforms
+    platform_list = sorted(platform_list)
+
+    # A "new platforms" scan skips platforms that already exist in the database,
+    # so they must be excluded from the totals to keep the tracker accurate. This
+    # mirrors the existence check done per-platform in _identify_platform, reusing
+    # the platforms already fetched above instead of querying again per platform.
+    platforms_to_scan = platform_list
+    if scan_type == ScanType.NEW_PLATFORMS:
+        platforms_to_scan = [
+            platform_slug
+            for platform_slug in platform_list
+            if db_platforms_by_slug.get(platform_slug) is None
+        ]
+
     total_roms = 0
-    for platform_slug in fs_platforms:
+    for platform_slug in platforms_to_scan:
         try:
             total_roms += await fs_rom_handler.count_roms(
                 Platform(fs_slug=platform_slug)
@@ -709,7 +766,7 @@ async def scan_platforms(
 
     await scan_stats.update(
         socket_manager=socket_manager,
-        total_platforms=len(fs_platforms),
+        total_platforms=len(platforms_to_scan),
         total_roms=total_roms,
     )
 
@@ -719,13 +776,6 @@ async def scan_platforms(
         redis_client.delete(STOP_SCAN_FLAG)
 
     try:
-        platform_list = [
-            platform.fs_slug
-            for s in platform_ids
-            if (platform := db_platform_handler.get_platform(s)) is not None
-        ] or fs_platforms
-        platform_list = sorted(platform_list)
-
         if len(platform_list) == 0:
             log.warning(
                 f"{hl(emoji.EMOJI_WARNING, color=LIGHTYELLOW)} No platforms found, verify that the folder structure is right and the volume is mounted correctly."
@@ -744,6 +794,7 @@ async def scan_platforms(
                 roms_ids=roms_ids,
                 metadata_sources=metadata_sources,
                 launchbox_remote_enabled=launchbox_remote_enabled,
+                playmatch_enabled=playmatch_enabled,
                 socket_manager=socket_manager,
                 scan_stats=scan_stats,
             )
@@ -756,15 +807,21 @@ async def scan_platforms(
 
         log.info(f"{emoji.EMOJI_CHECK_MARK} Scan completed")
 
+        # The library changed; drop cached filter values.
+        db_rom_handler.invalidate_filter_values_cache()
+
         # Export metadata files if enabled in config
         config = cm.get_config()
-        platforms_by_slug = {p.fs_slug: p for p in db_platform_handler.get_platforms()}
+
+        # Update the list of platforms after the scan to ensure we have the latest data
+        db_platforms = db_platform_handler.get_platforms()
+        db_platforms_by_slug = {p.fs_slug: p for p in db_platforms}
 
         if config.GAMELIST_AUTO_EXPORT_ON_SCAN:
             log.info("Auto-exporting gamelist.xml for all platforms...")
             gamelist_exporter = GamelistExporter(local_export=True)
             for platform_slug in platform_list:
-                platform = platforms_by_slug.get(platform_slug)
+                platform = db_platforms_by_slug.get(platform_slug)
                 if platform:
                     export_success = await gamelist_exporter.export_platform_to_file(
                         platform.id,
@@ -784,7 +841,7 @@ async def scan_platforms(
             log.info("Auto-exporting metadata.pegasus.txt for all platforms...")
             pegasus_exporter = PegasusExporter(local_export=True)
             for platform_slug in platform_list:
-                platform = platforms_by_slug.get(platform_slug)
+                platform = db_platforms_by_slug.get(platform_slug)
                 if platform:
                     export_success = await pegasus_exporter.export_platform_to_file(
                         platform.id,
@@ -813,13 +870,36 @@ async def scan_platforms(
     return scan_stats
 
 
+async def reject_unauthorized_scan(sid: str) -> bool:
+    """Return ``True`` (and notify the caller) if the socket may not run scans.
+
+    Scans are a privileged, destructive operation, so gate them on the same
+    ``TASKS_RUN`` scope the REST task endpoints require, resolved from the
+    server-side session (never from the client payload).
+    """
+    user = await get_authenticated_user(sid)
+    if user is not None and Scope.TASKS_RUN in user.oauth_scopes:
+        return False
+
+    log.warning(f"{emoji.EMOJI_STOP_SIGN} Unauthorized scan request rejected")
+    await socket_handler.socket_server.emit(
+        "scan:done_ko",
+        "You are not authorized to run scans",
+        to=sid,
+    )
+    return True
+
+
 @socket_handler.socket_server.on("scan")  # type: ignore
-async def scan_handler(_sid: str, options: dict[str, Any]):
+async def scan_handler(sid: str, options: dict[str, Any]):
     """Scan socket endpoint
 
     Args:
         options (dict): Socket options
     """
+
+    if await reject_unauthorized_scan(sid):
+        return
 
     log.info(f"{emoji.EMOJI_MAGNIFYING_GLASS_TILTED_RIGHT} Scanning")
 
@@ -828,6 +908,7 @@ async def scan_handler(_sid: str, options: dict[str, Any]):
     roms_ids = options.get("roms_ids", [])
     metadata_sources = options.get("apis", [])
     launchbox_remote_enabled = bool(options.get("launchbox_remote_enabled", True))
+    playmatch_enabled = bool(options.get("playmatch_enabled", True))
 
     if DEV_MODE:
         return await scan_platforms(
@@ -836,6 +917,7 @@ async def scan_handler(_sid: str, options: dict[str, Any]):
             scan_type=scan_type,
             roms_ids=roms_ids,
             launchbox_remote_enabled=launchbox_remote_enabled,
+            playmatch_enabled=playmatch_enabled,
         )
 
     return high_prio_queue.enqueue(
@@ -845,6 +927,7 @@ async def scan_handler(_sid: str, options: dict[str, Any]):
         scan_type=scan_type,
         roms_ids=roms_ids,
         launchbox_remote_enabled=launchbox_remote_enabled,
+        playmatch_enabled=playmatch_enabled,
         job_timeout=SCAN_TIMEOUT,  # Timeout (default of 4 hours)
         result_ttl=TASK_RESULT_TTL,
         meta={
@@ -855,8 +938,11 @@ async def scan_handler(_sid: str, options: dict[str, Any]):
 
 
 @socket_handler.socket_server.on("scan:stop")  # type: ignore
-async def stop_scan_handler(_sid: str):
+async def stop_scan_handler(sid: str):
     """Stop scan socket endpoint"""
+
+    if await reject_unauthorized_scan(sid):
+        return
 
     log.info(f"{emoji.EMOJI_STOP_BUTTON} Stop scan requested...")
 

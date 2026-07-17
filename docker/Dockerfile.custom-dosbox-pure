@@ -1,4 +1,4 @@
-ARG ROMM_BASE_IMAGE=ghcr.io/rommapp/romm:4.9.2
+ARG ROMM_BASE_IMAGE=ghcr.io/rommapp/romm:5.0.0
 FROM node:24-alpine AS frontend-build
 WORKDIR /front
 COPY frontend/package*.json ./

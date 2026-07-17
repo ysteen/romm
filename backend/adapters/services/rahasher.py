@@ -8,6 +8,12 @@ from logger.formatter import LIGHTMAGENTA
 from logger.formatter import highlight as hl
 from logger.logger import log
 from utils.filesystem import COMPRESSED_FILE_EXTENSIONS
+from utils.psp_hasher import calculate_psp_ra_hash, is_psp_native_hash_file
+from utils.rvz_hasher import (
+    calculate_gamecube_ra_hash,
+    calculate_wii_ra_hash,
+    is_rvz_native_hash_file,
+)
 
 RAHASHER_VALID_HASH_REGEX = re.compile(r"[0-9a-f]{32}")
 
@@ -90,6 +96,7 @@ PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID: dict[UPS, int] = {
     UPS.ELEKTOR: 75,
     UPS.FAIRCHILD_CHANNEL_F: 57,
     UPS.FAMICOM: 7,
+    UPS.FDS: 81,
     UPS.GAMEGEAR: 15,
     UPS.GB: 4,
     UPS.GBA: 5,
@@ -101,6 +108,7 @@ PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID: dict[UPS, int] = {
     UPS.LYNX: 13,
     UPS.MEGA_DUCK_SLASH_COUGAR_BOY: 69,
     UPS.MSX: 29,
+    UPS.MSX2: 29,
     UPS.N64: 2,
     UPS.NDS: 18,
     UPS.NEO_GEO_CD: 56,
@@ -126,6 +134,7 @@ PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID: dict[UPS, int] = {
     UPS.SNES: 3,
     UPS.TURBOGRAFX_CD: 76,
     UPS.TG16: 8,
+    UPS.SUPERGRAFX: 8,
     UPS.UZEBOX: 80,
     UPS.VECTREX: 46,
     UPS.VIRTUALBOY: 28,
@@ -140,6 +149,10 @@ PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID: dict[UPS, int] = {
 RA_BUFFER_HASH_UNSUPPORTED_IDS: frozenset[int] = frozenset(
     PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID[ups] for ups in RA_BUFFER_HASH_UNSUPPORTED
 )
+
+PSP_RA_ID: int = PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID[UPS.PSP]
+NGC_RA_ID: int = PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID[UPS.NGC]
+WII_RA_ID: int = PLATFORM_SLUG_TO_RETROACHIEVEMENTS_ID[UPS.WII]
 
 
 class RAHasherError(Exception): ...
@@ -204,6 +217,41 @@ class RAHasherService:
                 resolved = await asyncio.to_thread(_pick_ra_file, folder)
                 if resolved is not None:
                     file_path = str(resolved)
+
+        # PSP compressed-ISO containers (.cso/.ciso/.zso/.dax) can't be read by
+        # RAHasher ("Could not open track"). Compute the PSP RA hash natively
+        # from the container instead, decompressing only PARAM.SFO + EBOOT.BIN.
+        # On failure we fall through to RAHasher (no worse than before).
+        if platform["ra_id"] == PSP_RA_ID and is_psp_native_hash_file(file_path):
+            native_hash = await asyncio.to_thread(calculate_psp_ra_hash, file_path)
+            if native_hash:
+                log.debug(
+                    f"Computed native {hl('RA', color=LIGHTMAGENTA)} hash for PSP "
+                    f"container {hl(file_path)}"
+                )
+                return native_hash
+
+        # GameCube/Wii RVZ and WIA images can't be read by RAHasher ("Not a
+        # Gamecube disc" / "Not a supported Wii file"). Compute the RA hash
+        # natively instead, reconstructing only the disc byte ranges the hash
+        # covers. On failure we fall through to RAHasher (no worse than before).
+        if platform["ra_id"] in (NGC_RA_ID, WII_RA_ID) and is_rvz_native_hash_file(
+            file_path
+        ):
+            native_hash = await asyncio.to_thread(
+                (
+                    calculate_gamecube_ra_hash
+                    if platform["ra_id"] == NGC_RA_ID
+                    else calculate_wii_ra_hash
+                ),
+                file_path,
+            )
+            if native_hash:
+                log.debug(
+                    f"Computed native {hl('RA', color=LIGHTMAGENTA)} hash for "
+                    f"{platform['slug']} RVZ/WIA image {hl(file_path)}"
+                )
+                return native_hash
 
         log.debug(
             f"Executing {hl('RAHasher', color=LIGHTMAGENTA)} for platform: {hl(platform['slug'], color=LIGHTMAGENTA)} - file: {hl(file_path)}"

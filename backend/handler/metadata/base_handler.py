@@ -52,6 +52,7 @@ MULTIPLE_SPACE_PATTERN = re.compile(r"\s+")
 
 class BaseRom(TypedDict):
     name: NotRequired[str]
+    name_sort_key: NotRequired[str | None]
     summary: NotRequired[str]
     url_cover: NotRequired[str]
     url_screenshots: NotRequired[list[str]]
@@ -204,7 +205,7 @@ class MetadataHandler(abc.ABC):
         return search_term
 
     async def _sony_serial_format(self, index_key: str, serial_code: str) -> str | None:
-        index_entry = await async_cache.hget(index_key, serial_code)
+        index_entry = await async_cache.hget(index_key, serial_code.upper())
         if index_entry:
             index_entry = json.loads(index_entry)
             return index_entry["title"]
@@ -674,6 +675,7 @@ class UniversalPlatformSlug(enum.StrEnum):
     SPECTRAVIDEO = "spectravideo"
     SRI_5001000 = "sri-5001000"
     STADIA = "stadia"
+    STEAM = "steam"
     STEAM_VR = "steam-vr"
     STV = "stv"
     SUFAMI_TURBO = "sufami-turbo"

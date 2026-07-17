@@ -20,7 +20,7 @@ services:
       retries: 10
 
   romm:
-    image: ${ROMM_IMAGE:-romm-custom-dosbox-pure:4.9.2}
+    image: ${ROMM_IMAGE:-romm-custom-dosbox-pure:5.0.0}
     build:
       context: .
       dockerfile: docker/Dockerfile.custom-dosbox-pure

@@ -4,13 +4,14 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, ForeignKey, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from models.base import (
     FILE_EXTENSION_MAX_LENGTH,
     FILE_NAME_MAX_LENGTH,
     FILE_PATH_MAX_LENGTH,
     BaseModel,
+    compute_file_name_parts,
 )
 
 if TYPE_CHECKING:
@@ -34,13 +35,29 @@ class BaseAsset(BaseModel):
 
     missing_from_fs: Mapped[bool] = mapped_column(default=False, nullable=False)
 
+    @validates("file_name")
+    def _sync_file_name_parts(self, _key: str, file_name: str) -> str:
+        """Derive the stored `file_name_no_tags` / `file_name_no_ext` /
+        `file_extension` columns whenever `file_name` is assigned.
+
+        Defined on the abstract base so every asset subclass inherits it.
+        """
+        parts = compute_file_name_parts(file_name)
+        self.file_name_no_tags = parts.no_tags
+        self.file_name_no_ext = parts.no_ext
+        self.file_extension = parts.extension
+        return file_name
+
     @cached_property
     def full_path(self) -> str:
         return f"{self.file_path}/{self.file_name}"
 
     @cached_property
     def download_path(self) -> str:
-        return f"/api/raw/assets/{self.full_path}?timestamp={self.updated_at}"
+        # Served by the per-type `/{id}/content` route
+        return (
+            f"/api/{self.__tablename__}/{self.id}/content?timestamp={self.updated_at}"
+        )
 
 
 class RomAsset(BaseAsset):
@@ -53,6 +70,14 @@ class RomAsset(BaseAsset):
 class Screenshot(RomAsset):
     __tablename__ = "screenshots"
     __table_args__ = {"extend_existing": True}
+
+    # `is_gallery` distinguishes intentionally-uploaded gallery screenshots from
+    # the auto-captured save/state thumbnails that also live in this table.
+    # `is_public` mirrors RomNote — lets other users browse a user's public
+    # screenshots (community). Both default false; save/state thumbnails keep the
+    # defaults, only the gallery upload endpoint sets `is_gallery=True`.
+    is_gallery: Mapped[bool] = mapped_column(default=False)
+    is_public: Mapped[bool] = mapped_column(default=False)
 
     rom: Mapped[Rom] = relationship(lazy="joined", back_populates="screenshots")
     user: Mapped[User] = relationship(lazy="joined", back_populates="screenshots")
@@ -70,6 +95,9 @@ class Save(RomAsset):
         ForeignKey("devices.id", ondelete="SET NULL"),
         default=None,
     )
+    # `is_public` mirrors Screenshot/RomNote — lets other users browse and
+    # download a user's public saves (community). Defaults false (private).
+    is_public: Mapped[bool] = mapped_column(default=False)
 
     rom: Mapped[Rom] = relationship(lazy="joined", back_populates="saves")
     user: Mapped[User] = relationship(lazy="joined", back_populates="saves")
@@ -96,6 +124,9 @@ class State(RomAsset):
     __table_args__ = {"extend_existing": True}
 
     emulator: Mapped[str | None] = mapped_column(String(length=50))
+    # `is_public` mirrors Screenshot/RomNote — lets other users browse and
+    # download a user's public states (community). Defaults false (private).
+    is_public: Mapped[bool] = mapped_column(default=False)
 
     rom: Mapped[Rom] = relationship(lazy="joined", back_populates="states")
     user: Mapped[User] = relationship(lazy="joined", back_populates="states")

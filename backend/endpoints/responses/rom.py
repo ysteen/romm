@@ -6,9 +6,16 @@ from datetime import datetime, timezone
 from typing import NotRequired, TypedDict, get_type_hints
 
 from fastapi import Request
-from pydantic import ConfigDict, Field, computed_field, field_validator
+from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
-from endpoints.responses.assets import SaveSchema, ScreenshotSchema, StateSchema
+from endpoints.responses.assets import (
+    SaveSchema,
+    ScreenshotSchema,
+    StateSchema,
+    UserSaveSchema,
+    UserScreenshotSchema,
+    UserStateSchema,
+)
 from handler.metadata.flashpoint_handler import FlashpointMetadata
 from handler.metadata.gamelist_handler import GamelistMetadata
 from handler.metadata.hasheous_handler import HasheousMetadata
@@ -38,6 +45,9 @@ class UserNoteSchema(BaseModel):
     updated_at: UTCDatetime
     user_id: int
     username: str
+    # Author identity for rendering an avatar next to community notes.
+    user_avatar_path: str = ""
+    user_updated_at: UTCDatetime | None = None
 
 
 RomIGDBMetadata = TypedDict(  # type: ignore[misc]
@@ -148,6 +158,21 @@ class RomUserSchema(BaseModel):
         return rom_user_schema_factory()
 
 
+class TrackMetaSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    year: int | None = None
+    genre: str | None = None
+    track: int | None = None
+    disc: int | None = None
+    duration_seconds: float | None = None
+    has_embedded_cover: bool = False
+    cover_path: str | None = None
+
+
 class RomFileSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -157,6 +182,7 @@ class RomFileSchema(BaseModel):
     file_path: str
     file_size_bytes: int
     full_path: str
+    is_top_level: bool
     created_at: UTCDatetime
     updated_at: UTCDatetime
     last_modified: UTCDatetime
@@ -167,6 +193,22 @@ class RomFileSchema(BaseModel):
     chd_sha1_hash: str | None
     archive_members: list[RomArchiveMember] | None
     category: RomFileCategory | None
+    track_meta: TrackMetaSchema | None = None
+
+    @model_validator(mode="after")
+    def default_category_for_non_nested(self) -> RomFileSchema:
+        if self.category is None and self.is_top_level:
+            self.category = RomFileCategory.GAME
+        return self
+
+
+class SoundtrackTrackMetaSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    file_id: int
+    file_name: str
+    file_size_bytes: int
+    track_meta: TrackMetaSchema | None = None
 
 
 class RomMetadataSchema(BaseModel):
@@ -247,6 +289,7 @@ class RomSchema(BaseModel):
     fs_size_bytes: int
 
     name: str | None
+    name_sort_key: str | None
     slug: str | None
     summary: str | None
 
@@ -269,6 +312,7 @@ class RomSchema(BaseModel):
     url_cover: str | None
 
     has_manual: bool
+    has_soundtrack: bool
     path_manual: str | None
     url_manual: str | None
 
@@ -336,6 +380,7 @@ class SiblingRomSchema(BaseModel):
     name: str | None
     fs_name_no_tags: str
     fs_name_no_ext: str
+    is_main_sibling: bool
 
     @computed_field  # type: ignore
     @property
@@ -350,29 +395,75 @@ class SiblingRomSchema(BaseModel):
         )
 
     @classmethod
-    def from_rom(cls, rom: Rom) -> SiblingRomSchema:
+    def from_rom(cls, rom: Rom, *, is_main_sibling: bool = False) -> SiblingRomSchema:
         return cls(
             id=rom.id,
             name=rom.name,
             fs_name_no_tags=rom.fs_name_no_tags,
             fs_name_no_ext=rom.fs_name_no_ext,
+            is_main_sibling=is_main_sibling,
         )
 
 
+def _visible_siblings(db_rom: Rom, request: Request) -> list[Rom]:
+    """`db_rom.sibling_roms` minus any sibling hidden from the caller.
+
+    Single-rom endpoints (detail / simple fallback) read siblings off the
+    eager-loaded relationship, which bypasses the list query's hidden filter.
+    """
+    siblings = list(db_rom.sibling_roms)
+    if not request.user.is_authenticated:
+        return siblings
+
+    # Local import: breaks the responses.rom <-> handler.auth.dependencies cycle.
+    from handler.auth.dependencies import get_permissions
+
+    perms = get_permissions(request)
+    return [s for s in siblings if perms.can_see_rom(s.id, s.platform_id)]
+
+
 class SimpleRomSchema(RomSchema):
+    screenshot_path: str | None = None
+
     @classmethod
     def from_orm_with_request(
         cls,
         db_rom: Rom,
         request: Request,
         files: Sequence[RomFile] | None = None,
-        siblings: Sequence[Rom] | None = None,
+        siblings: Sequence[tuple[Rom, bool]] | None = None,
+        screenshot_path: str | None = None,
     ) -> SimpleRomSchema:
         db_rom = cls.populate_properties(db_rom, request)
-        db_rom.included_files = files or []  # type: ignore[assignment]
-        db_rom.included_sibling_roms = (  # type: ignore[assignment]
-            [SiblingRomSchema.from_rom(s) for s in siblings] if siblings else []
-        )
+        db_rom.screenshot_path = screenshot_path  # type: ignore[assignment]
+
+        # The list endpoint passes pre-fetched `files`/`siblings` (batched via
+        # get_files_for_roms / get_siblings_for_roms, no per-row hydration).
+        # Single-rom endpoints (e.g. `/{id}/simple`, loaded via the
+        # `with_details` decorator) pass neither and fall back to the
+        # eager-loaded relationships. `None` (not provided) is distinct from an
+        # explicit empty list (e.g. the gallery list, which intentionally omits
+        # files unless `with_files` is set).
+        if files is None:
+            files = db_rom.files
+        if siblings is None:
+            user_id = request.user.id
+            siblings = [
+                (
+                    s,
+                    any(
+                        ru.user_id == user_id and ru.is_main_sibling
+                        for ru in s.rom_users
+                    ),
+                )
+                for s in _visible_siblings(db_rom, request)
+            ]
+
+        db_rom.included_files = list(files)  # type: ignore[assignment]
+        db_rom.included_sibling_roms = [  # type: ignore[assignment]
+            SiblingRomSchema.from_rom(s, is_main_sibling=is_main)
+            for s, is_main in siblings
+        ]
         return cls.model_validate(db_rom)
 
     @classmethod
@@ -381,6 +472,7 @@ class SimpleRomSchema(RomSchema):
         db_rom.included_files = []  # type: ignore[assignment]
         db_rom.included_sibling_roms = []  # type: ignore[assignment]
         db_rom.has_notes = False  # type: ignore[assignment]
+        db_rom.screenshot_path = None  # type: ignore[assignment]
         return cls.model_validate(db_rom)
 
 
@@ -405,7 +497,10 @@ class UserCollectionSchema(BaseModel):
 class DetailedRomSchema(RomSchema):
     user_saves: list[SaveSchema]
     user_states: list[StateSchema]
+    all_user_saves: list[UserSaveSchema]
+    all_user_states: list[UserStateSchema]
     user_screenshots: list[ScreenshotSchema]
+    all_user_screenshots: list[UserScreenshotSchema]
     user_collections: list[UserCollectionSchema]
     all_user_notes: list[UserNoteSchema]
 
@@ -415,7 +510,16 @@ class DetailedRomSchema(RomSchema):
         db_rom = cls.populate_properties(db_rom, request)
 
         sorted_siblings = sorted(
-            (SiblingRomSchema.from_rom(s) for s in db_rom.sibling_roms),
+            (
+                SiblingRomSchema.from_rom(
+                    s,
+                    is_main_sibling=any(
+                        ru.user_id == user_id and ru.is_main_sibling
+                        for ru in s.rom_users
+                    ),
+                )
+                for s in _visible_siblings(db_rom, request)
+            ),
             key=lambda x: x.sort_comparator,
         )
         db_rom.included_sibling_roms = sorted_siblings  # type: ignore[assignment]
@@ -454,12 +558,73 @@ class DetailedRomSchema(RomSchema):
                 "updated_at": note.updated_at,
                 "user_id": note.user_id,
                 "username": note.user.username,
+                "user_avatar_path": note.user.avatar_path,
+                "user_updated_at": note.user.updated_at,
             }
             all_notes.append(UserNoteSchema.model_validate(note_dict))
 
         # Sort notes by updated_at (most recent first)
         all_notes.sort(key=lambda x: x.updated_at, reverse=True)
         db_rom.all_user_notes = all_notes  # type: ignore[assignment]
+
+        # Gallery screenshots visible to this user: own (public + private) plus
+        # other users' public ones. Mirrors the notes flow above. Excludes the
+        # auto-captured save/state thumbnails (is_gallery == False).
+        from handler.database import db_screenshot_handler
+
+        gallery_screenshots = db_screenshot_handler.get_rom_gallery_screenshots(
+            rom_id=db_rom.id, user_id=user_id
+        )
+        db_rom.all_user_screenshots = [  # type: ignore[assignment]
+            UserScreenshotSchema.model_validate(
+                {
+                    **{
+                        field: getattr(s, field)
+                        for field in ScreenshotSchema.model_fields
+                    },
+                    "username": s.user.username,
+                    "user_avatar_path": s.user.avatar_path,
+                    "user_updated_at": s.user.updated_at,
+                }
+            )
+            for s in gallery_screenshots
+        ]
+
+        # Saves/states visible to this user: own (public + private) plus other
+        # users' public ones. Mirrors the screenshots flow above.
+        from handler.database import db_save_handler, db_state_handler
+
+        # SaveSchema.model_validate handles the lazy `device_syncs` relationship
+        # (skips it when unloaded); reuse it rather than getattr-ing raw fields.
+        shared_saves = db_save_handler.get_rom_shared_saves(
+            rom_id=db_rom.id, user_id=user_id
+        )
+        db_rom.all_user_saves = [  # type: ignore[assignment]
+            UserSaveSchema.model_validate(
+                {
+                    **SaveSchema.model_validate(s).model_dump(),
+                    "username": s.user.username,
+                    "user_avatar_path": s.user.avatar_path,
+                    "user_updated_at": s.user.updated_at,
+                }
+            )
+            for s in shared_saves
+        ]
+
+        shared_states = db_state_handler.get_rom_shared_states(
+            rom_id=db_rom.id, user_id=user_id
+        )
+        db_rom.all_user_states = [  # type: ignore[assignment]
+            UserStateSchema.model_validate(
+                {
+                    **StateSchema.model_validate(s).model_dump(),
+                    "username": s.user.username,
+                    "user_avatar_path": s.user.avatar_path,
+                    "user_updated_at": s.user.updated_at,
+                }
+            )
+            for s in shared_states
+        ]
 
         return cls.model_validate(db_rom)
 
@@ -486,4 +651,5 @@ class RomFiltersDict(TypedDict):
     player_counts: list[str]
     regions: list[str]
     languages: list[str]
+    tags: list[str]
     platforms: list[int]

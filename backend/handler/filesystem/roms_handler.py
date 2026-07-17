@@ -23,7 +23,7 @@ from exceptions.fs_exceptions import (
 )
 from handler.metadata.base_handler import UniversalPlatformSlug as UPS
 from models.platform import Platform
-from models.rom import Rom, RomFile, RomFileCategory
+from models.rom import Rom, RomFile, RomFileCategory, TrackMeta
 from utils.archives import (
     detect_mime_type,
     extract_chd_hash,
@@ -47,7 +47,6 @@ from .base_handler import (
     LANGUAGES_NAME_KEYS,
     REGIONS_BY_SHORTCODE,
     REGIONS_NAME_KEYS,
-    TAG_REGEX,
     FSHandler,
 )
 
@@ -141,7 +140,8 @@ def _make_file_hash(
     )
 
 
-VERSION_TAG_REGEX = re.compile(r"^(?:version|ver|v)[\s_-]?(.*)", re.I)
+GENERIC_TAG_REGEX = re.compile(r"\(([^)]+)\)|\[([^]]+)\]")
+VERSION_TAG_REGEX = re.compile(r"^(?:version|ver|v)(?:[\s._-](.*)|([.\d].*))", re.I)
 REGION_TAG_REGEX = re.compile(r"^reg[\s|-](.*)$", re.I)
 REVISION_TAG_REGEX = re.compile(r"^rev[\s|-](.*)$", re.I)
 
@@ -179,7 +179,7 @@ class FSRomsHandler(FSHandler):
     def parse_tags(self, fs_name: str) -> ParsedTags:
         tags = [
             chunk.strip()
-            for tag in (m[0] or m[1] for m in TAG_REGEX.findall(fs_name))
+            for tag in (m[0] or m[1] for m in GENERIC_TAG_REGEX.findall(fs_name))
             for chunk in tag.split(",")
         ]
 
@@ -208,7 +208,7 @@ class FSRomsHandler(FSHandler):
             # Version
             version_match = VERSION_TAG_REGEX.match(raw_tag)
             if version_match:
-                version = version_match[1]
+                version = (version_match[1] or version_match[2] or "").strip()
                 continue
 
             # Region prefix
@@ -279,6 +279,19 @@ class FSRomsHandler(FSHandler):
             None,
         )
 
+        track_meta = None
+        if matching_category == RomFileCategory.SOUNDTRACK:
+            from utils.audio_tags import (
+                extract_audio_meta,
+                is_allowed_audio_file,
+                track_meta_columns,
+            )
+
+            if is_allowed_audio_file(file_name):
+                meta = extract_audio_meta(str(abs_file_path))
+                if meta:
+                    track_meta = TrackMeta(rom_id=rom.id, **track_meta_columns(meta))
+
         return RomFile(
             rom=rom,
             rom_id=rom.id,
@@ -295,6 +308,7 @@ class FSRomsHandler(FSHandler):
                 else os.path.getmtime(abs_file_path)
             ),
             category=matching_category,
+            track_meta=track_meta,
             crc_hash=file_hash["crc_hash"],
             md5_hash=file_hash["md5_hash"],
             sha1_hash=file_hash["sha1_hash"],

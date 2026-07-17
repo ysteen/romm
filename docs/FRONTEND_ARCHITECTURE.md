@@ -509,7 +509,7 @@ Server capability flags used throughout the UI:
 ```typescript
 METADATA_SOURCES: { IGDB, SS, MOBY, RA, STEAMGRIDDB, LAUNCHBOX, ... }
 EMULATION: { DISABLE_EMULATOR_JS, DISABLE_RUFFLE_RS }
-FRONTEND: { DISABLE_USERPASS_LOGIN, YOUTUBE_BASE_URL }
+FRONTEND: { DISABLE_USERPASS_LOGIN, DISABLE_LOGS_VIEWER, YOUTUBE_BASE_URL }
 OIDC: { ENABLED, AUTOLOGIN, PROVIDER, RP_INITIATED_LOGOUT }
 TASKS: { scheduled task configurations }
 ```
@@ -1030,6 +1030,7 @@ Request Flow with Cache:
 - `getSupportedEJSCores()`: platform → EmulatorJS core mapping
 - `isEJSEmulationSupported()`: WebGL + config check
 - `isCDBasedSystem()`: 31 CD-based platforms
+- `isArcadeSystem()`: 3 arcade platforms
 
 **Game Status:**
 

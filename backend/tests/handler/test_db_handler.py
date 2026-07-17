@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from config import ROMM_DB_DRIVER
 from handler.auth import auth_handler
 from handler.database import (
     db_platform_handler,
@@ -14,7 +15,7 @@ from handler.database import (
 )
 from models.assets import Save, Screenshot, State
 from models.platform import Platform
-from models.rom import Rom
+from models.rom import Rom, compute_name_sort_key
 from models.user import Role, User
 
 
@@ -219,6 +220,59 @@ def test_filter_by_search_term_with_multiple_terms(platform: Platform):
     assert actual_rom_ids_single == expected_rom_ids_single
 
 
+def test_filter_by_search_term_multi_word_and_ranking(platform: Platform):
+    def _add(name: str) -> Rom:
+        fs = name.replace(" ", "_")
+        return db_rom_handler.add_rom(
+            Rom(
+                platform_id=platform.id,
+                name=name,
+                slug=name.lower().replace(" ", "-"),
+                fs_name=f"{fs}.zip",
+                fs_name_no_tags=fs,
+                fs_name_no_ext=fs,
+                fs_extension="zip",
+                fs_path=f"{platform.slug}/roms",
+            )
+        )
+
+    ff = _add("Final Fantasy")
+    ff7 = _add("Final Fantasy VII")
+    fantasy_final = _add("Fantasy Final")  # both words, reversed order
+    _add("Final Combat")  # only "final"
+    _add("Angelique - Voice Fantasy")  # only "fantasy"
+    _add("Super Mario World")  # neither word
+
+    results = db_rom_handler.get_roms_scalar(search_term="final fantasy")
+    result_ids = [r.id for r in results]
+
+    # Only titles containing BOTH words appear (AND semantics).
+    assert set(result_ids) == {ff.id, ff7.id, fantasy_final.id}
+
+    # Relevance ordering uses MATCH ... AGAINST, which only runs on
+    # MySQL/MariaDB; PostgreSQL falls back to name ordering, so the
+    # phrase-ranking assertions only hold on those drivers.
+    if ROMM_DB_DRIVER in ("mariadb", "mysql"):
+        # Exact-order phrase matches rank above the reversed-order match.
+        assert result_ids.index(ff.id) < result_ids.index(fantasy_final.id)
+        assert result_ids.index(ff7.id) < result_ids.index(fantasy_final.id)
+
+    # The relevance ORDER BY must also survive the group_by_meta_id subquery
+    # wrapping used by the gallery (each ROM here is its own group).
+    grouped = db_rom_handler.get_roms_scalar(
+        search_term="final fantasy", group_by_meta_id=True
+    )
+    assert {r.id for r in grouped} == {ff.id, ff7.id, fantasy_final.id}
+
+    # An explicit sort takes priority over relevance: ordering by name asc puts
+    # "Fantasy Final" first (relevance is only the tiebreaker here).
+    explicit = db_rom_handler.get_roms_scalar(
+        search_term="final fantasy", order_by="name", order_dir="asc"
+    )
+    explicit_ids = [r.id for r in explicit]
+    assert explicit_ids.index(fantasy_final.id) < explicit_ids.index(ff.id)
+
+
 def test_sibling_roms_empty_fs_name_no_tags_not_matched(platform: Platform):
     """ROMs with empty fs_name_no_tags should NOT be matched as siblings.
 
@@ -376,6 +430,33 @@ def test_article_stripping_sort(platform: Platform):
     )
     # "The Legend" → sorts as "legend", "A Quest" → "quest", "Zelda" → "zelda"
     assert [r.name for r in roms] == ["The Legend", "A Quest", "Zelda"]
+
+
+def test_custom_name_sort_key_overrides_name_sort_order(platform: Platform):
+    for name, sort_override in [
+        ("Display Z", "Alpha"),
+        ("Display M", None),
+        ("Display A", "Zulu"),
+    ]:
+        rom = Rom(
+            platform_id=platform.id,
+            name=name,
+            slug=name.lower().replace(" ", "-"),
+            fs_name=f"{name}.zip",
+            fs_name_no_tags=name,
+            fs_name_no_ext=name,
+            fs_extension="zip",
+            fs_path=f"{platform.slug}/roms",
+        )
+        # A custom key pins ordering; without one it derives from `name`.
+        if sort_override is not None:
+            rom.name_sort_key = compute_name_sort_key(sort_override)
+        db_rom_handler.add_rom(rom)
+
+    roms = db_rom_handler.get_roms_scalar(
+        platform_ids=[platform.id], order_by="name", order_dir="asc"
+    )
+    assert [r.name for r in roms] == ["Display Z", "Display M", "Display A"]
 
 
 def test_bulk_mark_present(platform: Platform):
@@ -684,14 +765,14 @@ def test_users(admin_user):
     new_user = db_user_handler.get_user_by_username("new_user")
     assert new_user is not None
     assert new_user.username == "new_user"
-    assert new_user.role == Role.VIEWER
+    assert new_user.role == Role.USER
     assert new_user.enabled
 
-    db_user_handler.update_user(new_user.id, {"role": Role.EDITOR})
+    db_user_handler.update_user(new_user.id, {"role": Role.ADMIN})
 
     new_user = db_user_handler.get_user(new_user.id)
     assert new_user is not None
-    assert new_user.role == Role.EDITOR
+    assert new_user.role == Role.ADMIN
 
     db_user_handler.delete_user(new_user.id)
 
@@ -813,3 +894,120 @@ def test_screenshots(screenshot: Screenshot, platform: Platform, admin_user: Use
     rom = db_rom_handler.get_rom(id=screenshot.rom_id)
     assert rom is not None
     assert len(rom.screenshots) == 1
+
+
+def _add_rom_with_providers(platform: Platform, slug: str, **provider_ids) -> Rom:
+    return db_rom_handler.add_rom(
+        Rom(
+            platform_id=platform.id,
+            name=slug,
+            slug=slug,
+            fs_name=f"{slug}.zip",
+            fs_name_no_tags=slug,
+            fs_name_no_ext=slug,
+            fs_extension="zip",
+            fs_path=f"{platform.slug}/roms",
+            **provider_ids,
+        )
+    )
+
+
+def test_filter_by_metadata_providers(rom: Rom, platform: Platform):
+    # `rom` fixture has no provider ids (unmatched).
+    rom_igdb = _add_rom_with_providers(platform, "rom_igdb", igdb_id=1)
+    rom_moby = _add_rom_with_providers(platform, "rom_moby", moby_id=2)
+    rom_both = _add_rom_with_providers(platform, "rom_both", igdb_id=3, moby_id=4)
+
+    # "any" (OR): matched to at least one of the selected providers.
+    any_igdb = db_rom_handler.get_roms_scalar(metadata_providers=["igdb"])
+    assert {r.id for r in any_igdb} == {rom_igdb.id, rom_both.id}
+
+    any_either = db_rom_handler.get_roms_scalar(
+        metadata_providers=["igdb", "moby"], metadata_providers_logic="any"
+    )
+    assert {r.id for r in any_either} == {rom_igdb.id, rom_moby.id, rom_both.id}
+
+    # "all" (AND): matched to every selected provider.
+    all_both = db_rom_handler.get_roms_scalar(
+        metadata_providers=["igdb", "moby"], metadata_providers_logic="all"
+    )
+    assert {r.id for r in all_both} == {rom_both.id}
+
+    # "none" (NOT): matched to none of the selected providers.
+    none_igdb = db_rom_handler.get_roms_scalar(
+        metadata_providers=["igdb"], metadata_providers_logic="none"
+    )
+    assert {r.id for r in none_igdb} == {rom.id, rom_moby.id}
+
+
+def test_filter_by_metadata_providers_unknown_value_is_ignored(
+    rom: Rom, platform: Platform
+):
+    """Unknown provider slugs are dropped so the filter is a no-op rather than
+    raising, keeping a stale bookmark or hand-edited URL from 500-ing."""
+    rom_igdb = _add_rom_with_providers(platform, "rom_igdb", igdb_id=1)
+
+    only_unknown = db_rom_handler.get_roms_scalar(metadata_providers=["bogus"])
+    assert {r.id for r in only_unknown} == {rom.id, rom_igdb.id}
+
+    known_and_unknown = db_rom_handler.get_roms_scalar(
+        metadata_providers=["igdb", "bogus"]
+    )
+    assert {r.id for r in known_and_unknown} == {rom_igdb.id}
+
+
+def _add_rom_with_tags(platform: Platform, slug: str, tags: list[str]) -> Rom:
+    return db_rom_handler.add_rom(
+        Rom(
+            platform_id=platform.id,
+            name=slug,
+            slug=slug,
+            fs_name=f"{slug}.zip",
+            fs_name_no_tags=slug,
+            fs_name_no_ext=slug,
+            fs_extension="zip",
+            fs_path=f"{platform.slug}/roms",
+            tags=tags,
+        )
+    )
+
+
+def test_filter_by_tags(rom: Rom, platform: Platform):
+    # `rom` fixture has no tags (untagged).
+    rom_proto = _add_rom_with_tags(platform, "rom_proto", ["Proto"])
+    rom_beta = _add_rom_with_tags(platform, "rom_beta", ["Beta"])
+    rom_both = _add_rom_with_tags(platform, "rom_both", ["Proto", "Beta"])
+
+    # "any" (OR): carries at least one of the selected tags.
+    any_proto = db_rom_handler.get_roms_scalar(tags=["Proto"])
+    assert {r.id for r in any_proto} == {rom_proto.id, rom_both.id}
+
+    any_either = db_rom_handler.get_roms_scalar(
+        tags=["Proto", "Beta"], tags_logic="any"
+    )
+    assert {r.id for r in any_either} == {rom_proto.id, rom_beta.id, rom_both.id}
+
+    # "all" (AND): carries every selected tag.
+    all_both = db_rom_handler.get_roms_scalar(tags=["Proto", "Beta"], tags_logic="all")
+    assert {r.id for r in all_both} == {rom_both.id}
+
+    # "none" (NOT): carries none of the selected tags.
+    none_proto = db_rom_handler.get_roms_scalar(tags=["Proto"], tags_logic="none")
+    assert {r.id for r in none_proto} == {rom.id, rom_beta.id}
+
+
+def test_filter_by_tags_unknown_value_returns_no_matches(rom: Rom, platform: Platform):
+    """A tag that no ROM carries simply matches nothing under "any" logic
+    (free-form text match), rather than erroring."""
+    _add_rom_with_tags(platform, "rom_proto", ["Proto"])
+
+    only_unknown = db_rom_handler.get_roms_scalar(tags=["Nonexistent"])
+    assert list(only_unknown) == []
+
+
+def test_get_rom_filters_includes_tags(rom: Rom, platform: Platform):
+    _add_rom_with_tags(platform, "rom_proto", ["Proto"])
+    _add_rom_with_tags(platform, "rom_beta", ["Beta", "Demo"])
+
+    filters = db_rom_handler.get_rom_filters()
+    assert filters["tags"] == ["Beta", "Demo", "Proto"]

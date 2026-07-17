@@ -2,7 +2,7 @@
 
 This workspace pins EmulatorJS 4.3 nightly commit
 `cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` and its 2026-05-16 nightly core
-bundle on RomM 4.9.2. The locally built DOSBox Pure core replaces only the two
+bundle on RomM 5.0.0. The locally built DOSBox Pure core replaces only the two
 DOSBox Pure binaries in that coherent snapshot. The core declares a minimum
 EmulatorJS version of 4.3.0, so RomM's bundled 4.2.3 frontend cannot run it. It
 also supports keeping one Windows 95 disk in RomM's DOS firmware and keeping
@@ -115,8 +115,8 @@ DOSBox Pure mounts the embedded hard disk as the guest's D: drive and reinserts
 the first CUE/ISO as the guest's E: CD-ROM. A sibling `<game>.zip.img` outside
 the archive remains supported and takes precedence.
 
-The EmulatorJS download cache is disabled for DOSBox Pure because RomM 4.9.2
-does not provide the 4.3 cache configuration and the default 4 GB IndexedDB
+The EmulatorJS download cache is disabled for DOSBox Pure because RomM does
+not provide the 4.3 cache configuration and the default 4 GB IndexedDB
 cache can stall during core lookup after a Save & Quit reload. This does not
 disable the separate save/state databases or the `/data/saves` IDBFS mount.
 After either RomM Quit action, the DOSBox Pure player clears `/data/saves` from

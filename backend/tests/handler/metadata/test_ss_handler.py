@@ -1,10 +1,11 @@
 """Tests for the ScreenScraper metadata handler."""
 
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from fastapi import HTTPException, status
 
 from adapters.services.screenscraper_types import SSGame
 from config.config_manager import Config, MetadataMediaType
@@ -207,6 +208,86 @@ class TestExtractMediaFromSsGame:
 
         assert result["box2d_url"] is not None
         assert "box-2D(us)" in result["box2d_url"]
+
+    def _make_game_with_box_faces(self) -> SSGame:
+        """A game exposing all three box faces: front, back and spine."""
+        return cast(
+            SSGame,
+            {
+                "medias": [
+                    {
+                        "type": "box-2D",
+                        "parent": "jeu",
+                        "region": "us",
+                        "url": "https://screenscraper.example.com/box-2D",
+                        "crc": "aabbccdd",
+                        "md5": "deadbeef",
+                        "sha1": "cafebabe",
+                        "size": "12345",
+                        "format": "png",
+                    },
+                    {
+                        "type": "box-2D-back",
+                        "parent": "jeu",
+                        "region": "us",
+                        "url": "https://screenscraper.example.com/box-2D-back",
+                        "crc": "11223344",
+                        "md5": "feedface",
+                        "sha1": "baadf00d",
+                        "size": "23456",
+                        "format": "png",
+                    },
+                    {
+                        "type": "box-2D-side",
+                        "parent": "jeu",
+                        "region": "us",
+                        "url": "https://screenscraper.example.com/box-2D-side",
+                        "crc": "55667788",
+                        "md5": "0ddba11",
+                        "sha1": "f00dcafe",
+                        "size": "34567",
+                        "format": "png",
+                    },
+                ]
+            },
+        )
+
+    def test_box2d_side_path_set_when_in_config(self):
+        """When 'box2d_side' is in SCAN_MEDIA the spine is persisted locally."""
+        config = _make_config(scan_media=["box2d", "box2d_back", "box2d_side"])
+        rom = self._make_rom()
+        game = self._make_game_with_box_faces()
+
+        with (
+            patch("handler.metadata.ss_handler.cm.get_config", return_value=config),
+            patch(
+                "handler.metadata.ss_handler.fs_resource_handler.get_media_resources_path",
+                side_effect=lambda pid, rid, mt: f"roms/{pid}/{rid}/{mt.value}",
+            ),
+        ):
+            result = extract_media_from_ss_game(rom, game)
+
+        assert result["box2d_side_url"] is not None
+        assert "box-2D-side" in result["box2d_side_url"]
+        assert result["box2d_side_path"] == "roms/1/100/box2d_side/box2d_side.png"
+
+    def test_box2d_side_path_not_set_when_absent_from_config(self):
+        """Without 'box2d_side' in SCAN_MEDIA the spine URL is kept but not stored."""
+        config = _make_config(scan_media=["box2d", "box2d_back"])
+        rom = self._make_rom()
+        game = self._make_game_with_box_faces()
+
+        with (
+            patch("handler.metadata.ss_handler.cm.get_config", return_value=config),
+            patch(
+                "handler.metadata.ss_handler.fs_resource_handler.get_media_resources_path",
+                side_effect=lambda pid, rid, mt: f"roms/{pid}/{rid}/{mt.value}",
+            ),
+        ):
+            result = extract_media_from_ss_game(rom, game)
+
+        assert result["box2d_side_url"] is not None
+        assert result["box2d_side_path"] is None
 
     def _make_game_with_both_miximage_versions(self) -> SSGame:
         """A game that has both mixrbv1 and mixrbv2 (v1 listed first, matching SS API order)."""
@@ -928,6 +1009,110 @@ class TestLookupRom:
             )
         assert result["ss_id"] is None
         assert is_not_game is True
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_daily_quota_exhausted(self):
+        """A daily-quota 429 yields an empty match so the scan falls back to the
+        other providers instead of failing."""
+        handler = SSHandler()
+        mock_get_info = AsyncMock(
+            side_effect=HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="quota"
+            )
+        )
+        with (
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_USER", "user1"),
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_PASSWORD", "pw1"),
+            patch.object(handler.ss_service, "get_game_info", mock_get_info),
+        ):
+            result, is_not_game = await handler.lookup_rom(
+                MagicMock(platform_slug="snes"), 3, [self._make_mock_file()]
+            )
+        mock_get_info.assert_awaited_once()
+        assert result["ss_id"] is None
+        assert is_not_game is False
+
+    @pytest.mark.asyncio
+    async def test_reraises_non_quota_http_error(self):
+        """A non-429 error is a real failure and must propagate."""
+        handler = SSHandler()
+        with (
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_USER", "user1"),
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_PASSWORD", "pw1"),
+            patch.object(
+                handler.ss_service,
+                "get_game_info",
+                AsyncMock(
+                    side_effect=HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="down"
+                    )
+                ),
+            ),
+        ):
+            with pytest.raises(HTTPException):
+                await handler.lookup_rom(
+                    MagicMock(platform_slug="snes"), 3, [self._make_mock_file()]
+                )
+
+
+class TestScreenScraperQuotaFallback:
+    """The scan-facing lookups return an empty match when the daily quota is
+    exhausted (HTTP 429), so a scan degrades to the other providers. Non-429
+    errors are real failures and must propagate."""
+
+    @pytest.mark.asyncio
+    async def test_get_rom_by_id_returns_empty_on_daily_quota(self):
+        handler = SSHandler()
+        mock_get_info = AsyncMock(
+            side_effect=HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="quota"
+            )
+        )
+        with (
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_USER", "user1"),
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_PASSWORD", "pw1"),
+            patch.object(handler.ss_service, "get_game_info", mock_get_info),
+        ):
+            result = await handler.get_rom_by_id(MagicMock(), 1234)
+        mock_get_info.assert_awaited_once()
+        assert result["ss_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_rom_by_id_reraises_non_quota_error(self):
+        handler = SSHandler()
+        with (
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_USER", "user1"),
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_PASSWORD", "pw1"),
+            patch.object(
+                handler.ss_service,
+                "get_game_info",
+                AsyncMock(
+                    side_effect=HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="down"
+                    )
+                ),
+            ),
+        ):
+            with pytest.raises(HTTPException):
+                await handler.get_rom_by_id(MagicMock(), 1234)
+
+    @pytest.mark.asyncio
+    async def test_get_rom_returns_empty_on_daily_quota(self):
+        handler = SSHandler()
+        rom = MagicMock(platform_slug="genesis", platform_id=1, id=1, regions=[])
+        mock_search = AsyncMock(
+            side_effect=HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="quota"
+            )
+        )
+        with (
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_USER", "user1"),
+            patch("handler.metadata.ss_handler.SCREENSCRAPER_PASSWORD", "pw1"),
+            patch.object(handler.ss_service, "search_games", mock_search),
+        ):
+            result = await handler.get_rom(rom, "Sonic.bin", platform_ss_id=3)
+        mock_search.assert_awaited()
+        assert result["ss_id"] is None
 
 
 class TestSearchTermEncoding:

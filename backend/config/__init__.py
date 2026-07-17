@@ -41,6 +41,17 @@ FRONTEND_RESOURCES_PATH: Final[str] = "/assets/romm/resources"
 # SEVEN ZIP
 SEVEN_ZIP_TIMEOUT: Final[int] = safe_int(_get_env("SEVEN_ZIP_TIMEOUT"), 60)
 
+# ROM PATCHER
+ROM_PATCHER_TIMEOUT: Final[int] = safe_int(_get_env("ROM_PATCHER_TIMEOUT"), 120)
+# RomPatcher.js loads the whole ROM into memory in Node, so cap inputs to avoid OOM.
+ROM_PATCHER_MAX_FILE_SIZE_BYTES: Final[int] = safe_int(
+    _get_env("ROM_PATCHER_MAX_FILE_SIZE_BYTES"), 4 * 1024 * 1024 * 1024  # 4 GiB
+)
+# Limit concurrent patch subprocesses to bound total memory use.
+ROM_PATCHER_MAX_CONCURRENCY: Final[int] = max(
+    1, safe_int(_get_env("ROM_PATCHER_MAX_CONCURRENCY"), 2)
+)
+
 # DATABASE
 DB_HOST: Final[str | None] = _get_env("DB_HOST")
 DB_PORT: Final[int] = safe_int(_get_env("DB_PORT"), 3306)
@@ -78,6 +89,9 @@ MOBYGAMES_API_KEY: Final[str | None] = _get_env("MOBYGAMES_API_KEY")
 # SCREENSCRAPER
 SCREENSCRAPER_USER: Final[str | None] = _get_env("SCREENSCRAPER_USER")
 SCREENSCRAPER_PASSWORD: Final[str | None] = _get_env("SCREENSCRAPER_PASSWORD")
+# Developer credentials, injected at build time.
+SCREENSCRAPER_DEV_ID: Final[str | None] = _get_env("SCREENSCRAPER_DEV_ID")
+SCREENSCRAPER_DEV_PASSWORD: Final[str | None] = _get_env("SCREENSCRAPER_DEV_PASSWORD")
 
 # STEAMGRIDDB
 STEAMGRIDDB_API_KEY: Final[str | None] = _get_env("STEAMGRIDDB_API_KEY")
@@ -142,6 +156,9 @@ INVITE_TOKEN_EXPIRY_SECONDS: Final[int] = safe_int(
 # OIDC
 OIDC_ENABLED: Final[bool] = safe_str_to_bool(_get_env("OIDC_ENABLED"))
 OIDC_AUTOLOGIN: Final[bool] = safe_str_to_bool(_get_env("OIDC_AUTOLOGIN"))
+OIDC_ALLOW_REGISTRATION: Final[bool] = safe_str_to_bool(
+    _get_env("OIDC_ALLOW_REGISTRATION", "true")
+)
 OIDC_PROVIDER: Final[str] = _get_env("OIDC_PROVIDER", "")
 OIDC_CLIENT_ID: Final[str] = _get_env("OIDC_CLIENT_ID", "")
 OIDC_CLIENT_SECRET: Final[str] = _get_env("OIDC_CLIENT_SECRET", "")
@@ -239,6 +256,7 @@ DISABLE_RUFFLE_RS: Final[bool] = safe_str_to_bool(_get_env("DISABLE_RUFFLE_RS"))
 
 # FRONTEND
 KIOSK_MODE: Final[bool] = safe_str_to_bool(_get_env("KIOSK_MODE"))
+DISABLE_LOGS_VIEWER: Final[bool] = safe_str_to_bool(_get_env("DISABLE_LOGS_VIEWER"))
 
 # LOGGING
 LOGLEVEL: Final[str] = _get_env("LOGLEVEL", "INFO").upper()

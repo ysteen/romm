@@ -1,12 +1,15 @@
 """Tests for SSRF defense: URL validator + httpcore network backends."""
 
 import asyncio
+import ipaddress
 import socket
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpcore
 import pytest
+from hypothesis import assume, given
+from hypothesis import strategies as st
 
 from utils.ssrf import (
     SSRFProtectedAsyncBackend,
@@ -62,19 +65,31 @@ class TestIsForbiddenIp:
             "fc00::1",
             "fe80::1",
             "ff02::1",
+            # NAT64-wrapped internal IPv4 must stay blocked (embedded IPv4 checked).
+            "64:ff9b::7f00:1",  # 127.0.0.1 loopback
+            "64:ff9b::a00:1",  # 10.0.0.1 private
+            "64:ff9b::c0a8:101",  # 192.168.1.1 private
+            "64:ff9b::a9fe:a9fe",  # 169.254.169.254 cloud metadata
+            # RFC 8215 local-use NAT64 prefix is private; not unwrapped, stays blocked.
+            "64:ff9b:1::8d5f:accd",
         ],
     )
     def test_forbidden(self, ip):
-        import ipaddress
-
         assert is_forbidden_ip(ipaddress.ip_address(ip)) is True
 
     @pytest.mark.parametrize(
-        "ip", ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2001:4860:4860::8888"]
+        "ip",
+        [
+            "8.8.8.8",
+            "1.1.1.1",
+            "93.184.216.34",
+            "2001:4860:4860::8888",
+            # NAT64-wrapped public IPv4 (DNS64) must be allowed. See issue #3668.
+            "64:ff9b::8d5f:accd",  # 141.95.172.205
+            "64:ff9b::808:808",  # 8.8.8.8
+        ],
     )
     def test_allowed(self, ip):
-        import ipaddress
-
         assert is_forbidden_ip(ipaddress.ip_address(ip)) is False
 
 
@@ -112,6 +127,36 @@ class TestSSRFProtectedAsyncBackend:
         # That is what pins the address against DNS rebinding.
         assert calls[0][0][0] == "93.184.216.34"
         assert calls[0][0][1] == 443
+
+    async def test_nat64_wrapped_public_ip_connects(self, monkeypatch):
+        """DNS64 case (issue #3668): a NAT64-wrapped public IPv4 must be reachable."""
+        calls: list[ConnectCall] = []
+        inner = _stub_async_inner(calls)
+        backend = SSRFProtectedAsyncBackend(inner=inner)
+
+        async def fake_getaddrinfo(host, port, *args, **kwargs):
+            return _addr_info("64:ff9b::8d5f:accd", port)  # wraps 141.95.172.205
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_getaddrinfo)
+
+        await backend.connect_tcp("neoclone.screenscraper.fr", 443)
+
+        assert calls[0][0][0] == "64:ff9b::8d5f:accd"
+        assert calls[0][0][1] == 443
+
+    async def test_nat64_wrapped_private_ip_is_rejected(self, monkeypatch):
+        """A NAT64-wrapped private/loopback IPv4 must still be blocked."""
+        inner = _stub_async_inner([])
+        backend = SSRFProtectedAsyncBackend(inner=inner)
+
+        async def fake_getaddrinfo(host, port, *args, **kwargs):
+            return _addr_info("64:ff9b::7f00:1", port)  # wraps 127.0.0.1
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_getaddrinfo)
+
+        with pytest.raises(httpcore.ConnectError, match="forbidden IP"):
+            await backend.connect_tcp("nat64.rebind.example.com", 80)
+        inner.connect_tcp.assert_not_called()
 
     async def test_hostname_resolving_to_private_ip_is_rejected(self, monkeypatch):
         """DNS rebinding case: hostname resolves to 127.0.0.1 must fail."""
@@ -464,3 +509,53 @@ class TestValidateUrlForHttpRequest:
         with pytest.raises(ValidationError) as exc_info:
             validate_url_for_http_request("http://", "test_url")
         assert "missing hostname" in exc_info.value.message
+
+
+_LOWER_ALNUM = "abcdefghijklmnopqrstuvwxyz0123456789"
+_LOWER = "abcdefghijklmnopqrstuvwxyz"
+
+
+class TestValidateUrlProperties:
+    """Property-based tests for the SSRF-prevention URL validator."""
+
+    @given(st.ip_addresses(v=4))
+    def test_globally_routable_ipv4_is_allowed(self, ip):
+        # is_global already excludes private/loopback/link-local/reserved.
+        assume(ip.is_global and not ip.is_multicast)
+        # Should not raise.
+        validate_url_for_http_request(f"http://{ip}/path")
+
+    @given(st.ip_addresses(v=4))
+    def test_internal_ipv4_is_always_blocked(self, ip):
+        assume(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast)
+        with pytest.raises(ValidationError):
+            validate_url_for_http_request(f"http://{ip}/")
+
+    @given(st.ip_addresses(v=6))
+    def test_internal_ipv6_is_always_blocked(self, ip):
+        assume(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast)
+        with pytest.raises(ValidationError):
+            validate_url_for_http_request(f"http://[{ip}]/")
+
+    @given(st.text(alphabet=_LOWER, min_size=1, max_size=10))
+    def test_non_http_scheme_is_always_blocked(self, scheme):
+        assume(scheme not in ("http", "https"))
+        with pytest.raises(ValidationError):
+            validate_url_for_http_request(f"{scheme}://example.com/")
+
+    @given(
+        st.text(alphabet=_LOWER_ALNUM, min_size=1, max_size=20),
+        st.sampled_from([".local", ".internal", ".localhost"]),
+    )
+    def test_internal_tld_is_always_blocked(self, label, tld):
+        with pytest.raises(ValidationError):
+            validate_url_for_http_request(f"http://{label}{tld}/")
+
+    @given(st.text())
+    def test_never_raises_unexpected_exception(self, url):
+        # The validator must only ever signal failure via ValidationError,
+        # never leak a parsing/socket error to the caller.
+        try:
+            validate_url_for_http_request(url)
+        except ValidationError:
+            pass
