@@ -132,6 +132,9 @@ const supportedCores = getSupportedEJSCores(
 window.EJS_core =
   supportedCores.find((core) => core === props.core) ?? supportedCores[0];
 const isDosBoxPure = ["dos", "dosbox_pure"].includes(window.EJS_core);
+// Keep DOSBox Pure packages intact. The core scans ZIP contents itself for
+// AUTOBOOT.DBP, ISO/CUE media, and disk images.
+window.EJS_dontExtractRom = isDosBoxPure;
 // DOSBox Pure opens its C: differencing file during core startup. Restore the
 // RomM save bundle into /data/saves before that happens.
 window.EJS_externalFiles =
@@ -399,6 +402,7 @@ window.EJS_onGameStart = async () => {
   exitEmulation.addEventListener("click", async () => {
     if (!romRef.value || !window.EJS_emulator) return immediateExit();
     romsStore.update(romRef.value);
+    await flushDosBoxPureCacheOnQuit();
     immediateExit();
   });
 
@@ -427,6 +431,7 @@ window.EJS_onGameStart = async () => {
     });
 
     romsStore.update(romRef.value);
+    await flushDosBoxPureCacheOnQuit();
     immediateExit();
   });
 
@@ -452,6 +457,17 @@ window.EJS_onGameStart = async () => {
     };
   };
 };
+
+async function flushDosBoxPureCacheOnQuit() {
+  if (!isDosBoxPure) return;
+  try {
+    await window.EJS_emulator.gameManager.flushDosBoxPureSaveCache();
+  } catch (error) {
+    // Do not trap the user in the player if IndexedDB cleanup fails. The
+    // failure remains visible in the console and the normal exit still runs.
+    console.error("Failed to flush DOSBox Pure save cache", error);
+  }
+}
 
 function immediateExit() {
   if (!sessionStartTime.value) {

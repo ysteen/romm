@@ -55,7 +55,7 @@ class EJS_GameManager {
                 this.EJS.saveSaveInterval = null;
             }
 
-            if (!this.EJS.failedToStart) {
+            if (!this.EJS.failedToStart && !this.discardDosBoxPureSaveCacheOnExit) {
                 this.saveSaveFiles();
             }
             this.toggleMainLoop(0);
@@ -489,6 +489,48 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
                 this.syncSaveFileSystem();
             }
         });
+    }
+    async flushDosBoxPureSaveCache() {
+        if (!this.isDosBoxPure()) return;
+
+        // The RomM player calls this only after it has uploaded the final save
+        // bundle (or when the user explicitly quits without saving). Prevent
+        // the exit handler and the periodic timer from recreating files while
+        // the shared IDBFS save directory is being cleared.
+        this.discardDosBoxPureSaveCacheOnExit = true;
+        this.saveSyncPending = false;
+        if (this.EJS.saveSaveInterval) {
+            clearInterval(this.EJS.saveSaveInterval);
+            this.EJS.saveSaveInterval = null;
+        }
+
+        const deadline = Date.now() + 3000;
+        while (this.saveSyncInFlight && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        const removeTree = (path) => {
+            if (!this.FS.analyzePath(path).exists) return;
+            for (const name of this.FS.readdir(path)) {
+                if (name === "." || name === "..") continue;
+                const child = path + "/" + name;
+                const stat = this.FS.stat(child);
+                if (this.FS.isDir(stat.mode)) {
+                    removeTree(child);
+                    this.FS.rmdir(child);
+                } else {
+                    this.FS.unlink(child);
+                }
+            }
+        };
+
+        removeTree("/data/saves");
+        await new Promise((resolve, reject) => {
+            this.FS.syncfs(false, (error) => error ? reject(error) : resolve());
+        });
+        if (typeof window.__reportBrowserLog === "function") {
+            window.__reportBrowserLog("dosbox-save-cache-flush", "Cleared /data/saves after quit");
+        }
     }
     supportsStates() {
         return !!this.functions.supportsStates();

@@ -236,8 +236,13 @@ async function prepareLanguage() {
         EmulatorJS = await loadScript("emulator.js");
         await loadStyle("emulator.css");
     } else {
-        EmulatorJS = await loadScript("emulator.min.js");
-        await loadStyle("emulator.min.css");
+        // This RomM image overlays the custom EmulatorJS ESM sources, but the
+        // base RomM image also contains an older classic-script minified build.
+        // Loading that stale file through import() returns no default export
+        // and leaves EmulatorJS undefined. Keep the loader and runtime from
+        // the same source set until matching minified artifacts are produced.
+        EmulatorJS = await loadScript("emulator.js");
+        await loadStyle("emulator.css");
     }
 
     if (!EmulatorJS) {

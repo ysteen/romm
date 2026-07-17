@@ -11,6 +11,10 @@ FROM ${ROMM_BASE_IMAGE}
 COPY --from=frontend-build /front/dist/ /var/www/html/
 
 # This DOSBox Pure build declares minimumEJSVersion 4.3.0. Overlay the complete
-# matching 4.3 frontend as one coherent set; mixing its ESM loader/GameManager
-# with RomM's bundled EmulatorJS 4.2.3 classic scripts breaks initialization.
+# matching 4.3 ESM frontend as one coherent set. The custom loader deliberately
+# uses src/emulator.js; remove RomM's bundled 4.2.3 classic minified files so a
+# future loader change cannot silently mix the two incompatible generations.
 COPY custom-emulatorjs/data/ /var/www/html/assets/emulatorjs/data/
+RUN rm -f \
+    /var/www/html/assets/emulatorjs/data/emulator.min.js \
+    /var/www/html/assets/emulatorjs/data/emulator.min.css

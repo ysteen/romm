@@ -104,10 +104,22 @@ custom loader keeps the DOS ROM compressed so the core sees the ZIP, and adds
 a package revision to RomM's otherwise stable download URL to avoid reusing an
 older browser-cached copy.
 
+For games that need both a writable hard disk and a CD, both images may be
+kept in that single game ZIP. Put the hard disk in the archive as either
+`<game>.zip.img` (for example `test.zip.img`) or `image.img`, and include the
+CD's CUE/BIN files in the same archive. When an installed OS is started,
+DOSBox Pure mounts the embedded hard disk as the guest's D: drive and reinserts
+the first CUE/ISO as the guest's E: CD-ROM. A sibling `<game>.zip.img` outside
+the archive remains supported and takes precedence.
+
 The EmulatorJS download cache is disabled for DOSBox Pure because RomM 4.9.2
 does not provide the 4.3 cache configuration and the default 4 GB IndexedDB
 cache can stall during core lookup after a Save & Quit reload. This does not
 disable the separate save/state databases or the `/data/saves` IDBFS mount.
+After either RomM Quit action, the DOSBox Pure player clears `/data/saves` from
+IDBFS after the final server save upload. This cleanup is limited to DOSBox
+Pure so stale differencing disks from another BIOS/content combination cannot
+leak into the next launch.
 
 Add the following to RomM's `/romm/config/config.yml` (the firmware filename
 must exactly match the name shown in RomM):
