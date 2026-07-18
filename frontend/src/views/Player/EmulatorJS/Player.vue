@@ -132,13 +132,15 @@ const supportedCores = getSupportedEJSCores(
 window.EJS_core =
   supportedCores.find((core) => core === props.core) ?? supportedCores[0];
 const isDosBoxPure = ["dos", "dosbox_pure"].includes(window.EJS_core);
+const isPpsspp = window.EJS_core === "ppsspp";
+const isAzahar = window.EJS_core === "azahar";
+const usesDirectorySaveBundle = isDosBoxPure || isPpsspp || isAzahar;
 // Keep DOSBox Pure packages intact. The core scans ZIP contents itself for
 // AUTOBOOT.DBP, ISO/CUE media, and disk images.
 window.EJS_dontExtractRom = isDosBoxPure;
-// DOSBox Pure opens its C: differencing file during core startup. Restore the
-// RomM save bundle into /data/saves before that happens.
+// Directory-backed cores need their RomM save bundle restored before startup.
 window.EJS_externalFiles =
-  isDosBoxPure && props.save?.download_path
+  usesDirectorySaveBundle && props.save?.download_path
     ? { "/data/saves/": props.save.download_path }
     : {};
 window.EJS_controlScheme = getControlSchemeForPlatform(
@@ -170,6 +172,9 @@ window.EJS_defaultOptions = {
   "save-state-location": "browser",
   rewindEnabled: "enabled",
   ...coreOptions,
+  // Azahar savestate serialization is currently too expensive for realtime
+  // rewind and can starve the emulator before the first frame is displayed.
+  ...(isAzahar ? { rewindEnabled: "disabled" } : {}),
 };
 const ejsControls = configStore.getEJSControls(props.core);
 if (ejsControls) window.EJS_defaultControls = ejsControls;
@@ -289,7 +294,13 @@ async function loadSave(save: SaveSchema) {
     responseType: "arraybuffer",
   });
   if (data) {
-    loadEmulatorJSSave(new Uint8Array(data));
+    if (usesDirectorySaveBundle) {
+      await window.EJS_emulator.gameManager.loadDirectorySaveBundle(
+        new Uint8Array(data),
+      );
+    } else {
+      loadEmulatorJSSave(new Uint8Array(data));
+    }
     displayMessage("Save loaded from server", {
       duration: 3000,
       icon: "mdi-cloud-download-outline",
@@ -298,7 +309,12 @@ async function loadSave(save: SaveSchema) {
   }
 
   const file = await window.EJS_emulator.selectFile();
-  loadEmulatorJSSave(new Uint8Array(await file.arrayBuffer()));
+  const saveData = new Uint8Array(await file.arrayBuffer());
+  if (usesDirectorySaveBundle) {
+    await window.EJS_emulator.gameManager.loadDirectorySaveBundle(saveData);
+  } else {
+    loadEmulatorJSSave(saveData);
+  }
 }
 
 window.EJS_onLoadSave = async function () {
@@ -397,7 +413,7 @@ window.EJS_onGameStart = async () => {
     if (!ready) {
       console.warn("Game manager not ready for save/state injection");
     } else {
-      if (props.save && !isDosBoxPure) await loadSave(props.save);
+      if (props.save && !usesDirectorySaveBundle) await loadSave(props.save);
       if (props.state) {
         await new Promise((resolve) =>
           setTimeout(resolve, STATE_APPLY_SETTLE_MS),
@@ -444,36 +460,86 @@ window.EJS_onGameStart = async () => {
   saveAndQuit.addEventListener("click", async () => {
     if (!romRef.value || !window.EJS_emulator) return immediateExit();
 
-    // Grab the screenshot while the game is still running (EmulatorJS reads
-    // the live canvas), then pause before serializing state/save. Reading
-    // state from a running threaded core (SNES, N64) races the worker thread
-    // and yields torn buffers, producing corrupt states that never load.
-    const screenshotFile = await window.EJS_emulator.gameManager.screenshot();
-    window.EJS_emulator.pause();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      const gameManager = window.EJS_emulator.gameManager;
+      const supportsStates = !isAzahar && gameManager.supportsStates();
 
-    const stateFile = window.EJS_emulator.gameManager.getState();
-    const saveFile = window.EJS_emulator.gameManager.getSaveFile();
+      // EmulatorJS screenshots and 4.3 state serialization both require the
+      // core's main loop to be running. Pausing here makes threaded cores such
+      // as melonDS fail inside EmulatorJSGetState and may also trigger a
+      // rejected browser wake-lock request.
+      const screenshotFile = await gameManager.screenshot();
+      let saveCompleted = false;
+      const failures: unknown[] = [];
 
-    // Force a save of the current state
-    await saveState({
-      rom: romRef.value,
-      stateFile,
-      screenshotFile,
-    });
+      // Some cores (including PPSSPP) persist a directory-backed virtual
+      // memory card and deliberately expose no single save file. Flush those
+      // files through the core, but do not upload a bogus null `.srm`.
+      try {
+        if (
+          window.EJS_emulator.saveFileExt === false &&
+          !usesDirectorySaveBundle
+        ) {
+          gameManager.saveSaveFiles();
+          await new Promise<void>((resolve, reject) => {
+            gameManager.FS.syncfs(false, (error?: Error) => {
+              if (error) reject(error);
+              else resolve();
+            });
+          });
+          saveCompleted = true;
+        } else {
+          const saveFile = await Promise.resolve(gameManager.getSaveFile());
+          if (saveFile?.byteLength) {
+            const saved = await saveSave({
+              rom: romRef.value,
+              save: saveRef.value,
+              saveFile,
+              screenshotFile,
+              deviceId: deviceIDRef.value,
+            });
+            saveCompleted = saved !== null;
+          } else {
+            gameManager.saveSaveFiles();
+            saveCompleted = true;
+          }
+        }
+      } catch (error) {
+        failures.push(error);
+        console.error("Failed to save in-game save data", error);
+      }
 
-    // Force a save of the save file
-    await saveSave({
-      rom: romRef.value,
-      save: saveRef.value,
-      saveFile,
-      screenshotFile,
-      deviceId: deviceIDRef.value,
-    });
+      // State support is independent from normal in-game saves. Never let a
+      // state failure prevent an NDS/PSP memory-card save from being committed.
+      if (supportsStates) {
+        try {
+          const stateFile = await Promise.resolve(gameManager.getState());
+          const state = await saveState({
+            rom: romRef.value,
+            stateFile,
+            screenshotFile,
+          });
+          saveCompleted ||= state !== null;
+        } catch (error) {
+          failures.push(error);
+          console.error("Failed to save emulator state", error);
+        }
+      }
 
-    romsStore.update(romRef.value);
-    await flushDosBoxPureCacheOnQuit();
-    immediateExit();
+      if (!saveCompleted) {
+        throw new AggregateError(failures, "No save data could be persisted");
+      }
+      romsStore.update(romRef.value);
+      await flushDosBoxPureCacheOnQuit();
+      immediateExit();
+    } catch (error) {
+      console.error("Save & Quit failed", error);
+      displayMessage("Error saving game", {
+        duration: 4000,
+        className: "msg-error",
+        icon: "mdi-sync-alert",
+      });
+    }
   });
 
   // The netplay implementation is finnicky, these overrides make it work

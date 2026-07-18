@@ -3,9 +3,9 @@ class EJS_GameManager {
         this.EJS = EJS;
         this.Module = Module;
         this.FS = this.Module.FS;
+        this.saveSessionStartedAt = Date.now();
         this.functions = {
             restart: this.Module.cwrap("system_restart", "", []),
-            //saveStateInfo: this.Module.cwrap("save_state_info", "string", []),
             loadState: this.Module.cwrap("load_state", "number", ["string", "number"]),
             screenshot: this.Module.cwrap("cmd_take_screenshot", "", []),
             simulateInput: this.Module.cwrap("simulate_input", "null", ["number", "number", "number"]),
@@ -44,10 +44,9 @@ class EJS_GameManager {
         this.setupPreLoadSettings();
 
         this.EJS.on("exit", () => {
-            // Preserve upstream EmulatorJS shutdown semantics for non-DOS
-            // cores. Some libretro cores only commit their final SRAM during
-            // restart, so the DOSBox Pure workaround must not be global.
-            if (!this.isDosBoxPure()) {
+            // Preserve upstream shutdown semantics for cores with a single
+            // save file. Some cores only commit their final SRAM on restart.
+            if (!this.supportsDirectorySaveBundle()) {
                 if (!this.EJS.failedToStart) {
                     this.saveSaveFiles();
                     this.functions.restart();
@@ -68,9 +67,8 @@ class EJS_GameManager {
             if (this.exitInProgress) return;
             this.exitInProgress = true;
 
-            // Stop periodic saves before the final flush. Restarting a running
-            // Windows guest here blocks the browser main thread and prevents
-            // RomM from completing its route change after Save & Quit.
+            // Directory-backed cores flush their virtual save filesystem
+            // directly. Avoid a synchronous core restart during navigation.
             if (this.EJS.saveSaveInterval) {
                 clearInterval(this.EJS.saveSaveInterval);
                 this.EJS.saveSaveInterval = null;
@@ -211,6 +209,7 @@ class EJS_GameManager {
             "slowmotion_ratio = 3.0\n" +
             (this.EJS.rewindEnabled ? "rewind_enable = true\n" : "") +
             (this.EJS.rewindEnabled ? "rewind_granularity = 6\n" : "") +
+            (this.isPpsspp() ? "core_info_savestate_bypass = true\n" : "") +
             "savefile_directory = \"/data/saves\"\n";
 
         if (this.EJS.retroarchOpts && Array.isArray(this.EJS.retroarchOpts)) {
@@ -487,7 +486,7 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
     saveSaveFiles() {
         this.functions.saveSaveFiles();
         this.EJS.callEvent("saveSaveFiles", this.getSaveFile(false));
-        if (this.isDosBoxPure()) this.syncSaveFileSystem();
+        if (this.supportsDirectorySaveBundle()) this.syncSaveFileSystem();
     }
     syncSaveFileSystem() {
         // IDBFS only restores files that have been flushed with syncfs(false).
@@ -554,7 +553,7 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         }
     }
     supportsStates() {
-        return !!this.functions.supportsStates();
+        return this.isPpsspp() || !!this.functions.supportsStates();
     }
     setControllerPortDevice(port, device) {
         this.functions.setControllerPortDevice(port, device);
@@ -570,11 +569,30 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
             const bundle = this.createDosBoxPureSaveBundle();
             if (bundle) return bundle;
         }
+        if (this.isPpsspp()) {
+            const bundle = this.createPpssppSaveBundle();
+            if (bundle) return bundle;
+            return null;
+        }
+        if (this.isAzahar()) {
+            const bundle = this.createAzaharSaveBundle();
+            if (bundle) return bundle;
+            return null;
+        }
         const exists = this.FS.analyzePath(this.getSaveFilePath()).exists;
         return (exists ? this.FS.readFile(this.getSaveFilePath()) : null);
     }
     isDosBoxPure() {
         return ["dos", "dosbox_pure"].includes(this.EJS.getCore());
+    }
+    isPpsspp() {
+        return this.EJS.getCore() === "ppsspp";
+    }
+    isAzahar() {
+        return this.EJS.getCore() === "azahar";
+    }
+    supportsDirectorySaveBundle() {
+        return this.isDosBoxPure() || this.isPpsspp() || this.isAzahar();
     }
     getDosBoxPureSaveFiles() {
         const savePath = this.getSaveFilePath();
@@ -599,6 +617,107 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         }
         return result;
     }
+    getPpssppSaveFiles() {
+        const root = "/data/saves";
+        const saveRoot = root + "/PPSSPP/PSP/SAVEDATA";
+        const result = [];
+        if (!this.FS.analyzePath(saveRoot).exists) return result;
+
+        const collectFiles = (path) => {
+            const files = [];
+            for (const name of this.FS.readdir(path)) {
+                if (name === "." || name === "..") continue;
+                const child = path + "/" + name;
+                const stat = this.FS.stat(child);
+                if (this.FS.isDir(stat.mode)) {
+                    files.push(...collectFiles(child));
+                } else if (this.FS.isFile(stat.mode)) {
+                    files.push({ path: child, stat });
+                }
+            }
+            return files;
+        };
+
+        // PPSSPP stores each title in one or more top-level SAVEDATA folders.
+        // Include every file from a folder when at least one file was written
+        // during this session. This keeps companion PARAM.SFO/icon files while
+        // excluding unrelated PSP games restored from the shared browser DB.
+        const changedAfter = this.saveSessionStartedAt - 2000;
+        for (const name of this.FS.readdir(saveRoot)) {
+            if (name === "." || name === "..") continue;
+            const path = saveRoot + "/" + name;
+            const stat = this.FS.stat(path);
+            const files = this.FS.isDir(stat.mode) ? collectFiles(path) : [{ path, stat }];
+            const changed = files.some((file) => {
+                const modifiedAt = file.stat.mtime instanceof Date
+                    ? file.stat.mtime.getTime()
+                    : new Date(file.stat.mtime).getTime();
+                return modifiedAt >= changedAfter;
+            });
+            if (!changed) continue;
+            for (const file of files) {
+                result.push({
+                    name: file.path.substring(root.length + 1),
+                    bytes: this.FS.readFile(file.path)
+                });
+            }
+        }
+        return result;
+    }
+    getAzaharSaveFiles() {
+        const root = "/data/saves";
+        // RetroArch gives the core /data/saves/Azahar as its save directory,
+        // then Azahar appends its own Azahar user-directory component.
+        const saveRoot = root + "/Azahar/Azahar/sdmc";
+        if (!this.FS.analyzePath(saveRoot).exists) return [];
+
+        const collectFiles = (path) => {
+            const files = [];
+            for (const name of this.FS.readdir(path)) {
+                if (name === "." || name === "..") continue;
+                const child = path + "/" + name;
+                const stat = this.FS.stat(child);
+                if (this.FS.isDir(stat.mode)) {
+                    files.push(...collectFiles(child));
+                } else if (this.FS.isFile(stat.mode)) {
+                    files.push({ path: child, stat });
+                }
+            }
+            return files;
+        };
+
+        const changedAfter = this.saveSessionStartedAt - 2000;
+        const changedFiles = collectFiles(saveRoot).filter((file) => {
+            const modifiedAt = file.stat.mtime instanceof Date
+                ? file.stat.mtime.getTime()
+                : new Date(file.stat.mtime).getTime();
+            return modifiedAt >= changedAfter;
+        });
+        const saveDirectories = new Set();
+        for (const file of changedFiles) {
+            const relativeParts = file.path.substring(saveRoot.length + 1).split("/");
+            const marker = relativeParts.findIndex((part) => part === "title" || part === "extdata");
+            if (marker >= 0 && relativeParts.length >= marker + 3) {
+                saveDirectories.add(saveRoot + "/" + relativeParts.slice(0, marker + 3).join("/"));
+            } else {
+                saveDirectories.add(file.path.substring(0, file.path.lastIndexOf("/")));
+            }
+        }
+
+        const result = [];
+        const included = new Set();
+        for (const directory of saveDirectories) {
+            for (const file of collectFiles(directory)) {
+                if (included.has(file.path)) continue;
+                included.add(file.path);
+                result.push({
+                    name: file.path.substring(root.length + 1),
+                    bytes: this.FS.readFile(file.path)
+                });
+            }
+        }
+        return result;
+    }
     crc32(data) {
         if (!EJS_GameManager.crcTable) {
             EJS_GameManager.crcTable = new Uint32Array(256);
@@ -612,8 +731,7 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         for (const value of data) crc = EJS_GameManager.crcTable[(crc ^ value) & 0xff] ^ (crc >>> 8);
         return (crc ^ 0xffffffff) >>> 0;
     }
-    createDosBoxPureSaveBundle() {
-        const files = this.getDosBoxPureSaveFiles();
+    createZipSaveBundle(files, label) {
         if (!files.length) return null;
         const encoder = new TextEncoder();
         const entries = files.map((file) => ({
@@ -650,8 +768,51 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         write32(offset, 0x06054b50); write16(offset + 4, 0); write16(offset + 6, 0);
         write16(offset + 8, entries.length); write16(offset + 10, entries.length);
         write32(offset + 12, centralSize); write32(offset + 16, centralOffset); write16(offset + 20, 0);
-        if (this.EJS.debug) console.log("[DOSBOX SAVE] Bundled files:", entries.map((file) => `${file.name} (${file.bytes.length})`));
+        if (this.EJS.debug) console.log(`[${label} SAVE] Bundled files:`, entries.map((file) => `${file.name} (${file.bytes.length})`));
         return output;
+    }
+    createDosBoxPureSaveBundle() {
+        return this.createZipSaveBundle(this.getDosBoxPureSaveFiles(), "DOSBOX");
+    }
+    createPpssppSaveBundle() {
+        return this.createZipSaveBundle(this.getPpssppSaveFiles(), "PPSSPP");
+    }
+    createAzaharSaveBundle() {
+        return this.createZipSaveBundle(this.getAzaharSaveFiles(), "AZAHAR");
+    }
+    async loadDirectorySaveBundle(data) {
+        if (!this.supportsDirectorySaveBundle()) {
+            throw new Error("Directory save bundles are unsupported by this core");
+        }
+        const files = await this.EJS.compression.decompress(
+            data,
+            () => {},
+            null
+        );
+        if (files["!!notCompressedData"]) {
+            throw new Error("Directory save bundle is not a supported archive");
+        }
+        let restored = 0;
+        for (const name in files) {
+            const normalized = name.replaceAll("\\", "/").replace(/^\/+/, "");
+            if (!normalized || normalized.split("/").includes("..")) {
+                throw new Error(`Unsafe save bundle path: ${name}`);
+            }
+            if (this.isPpsspp() && !normalized.startsWith("PPSSPP/PSP/SAVEDATA/")) {
+                continue;
+            }
+            if (this.isAzahar() && !normalized.startsWith("Azahar/Azahar/sdmc/")) {
+                continue;
+            }
+            this.writeFile("/data/saves/" + normalized, files[name]);
+            restored++;
+        }
+        if (!restored) throw new Error("Save bundle contained no files for this core");
+        await new Promise((resolve, reject) => {
+            this.FS.syncfs(false, (error) => error ? reject(error) : resolve());
+        });
+        this.loadSaveFiles();
+        if (this.EJS.debug) console.log(`[${this.EJS.getCore().toUpperCase()} SAVE] Restored ${restored} bundled files`);
     }
     loadSaveFiles() {
         this.clearEJSResetTimer();

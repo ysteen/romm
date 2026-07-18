@@ -196,6 +196,22 @@ async function saveAndExit() {
   savingState.value = true;
 
   try {
+    const gameManager = window.EJS_emulator.gameManager;
+
+    // Cores without state serialization still need their normal in-game saves
+    // committed before leaving the player.
+    if (!gameManager.supportsStates()) {
+      gameManager.saveSaveFiles();
+      await new Promise<void>((resolve, reject) => {
+        gameManager.FS.syncfs(false, (error?: Error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+      immediateExit();
+      return;
+    }
+
     // CRITICAL: The game must be RUNNING for screenshot to work!
     // We paused it in showPrompt(), so we need to resume it first
     console.info(
@@ -207,8 +223,8 @@ async function saveAndExit() {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
-    const screenshotFile = await window.EJS_emulator.gameManager.screenshot();
-    const stateFile = window.EJS_emulator.gameManager.getState();
+    const screenshotFile = await gameManager.screenshot();
+    const stateFile = gameManager.getState();
 
     // Upload using original saveState utility
     await uploadState(stateFile, screenshotFile);
@@ -420,6 +436,7 @@ async function boot() {
   const coreOptions = configStore.getEJSCoreOptions(core);
   window.EJS_core = core;
   const isDosBoxPure = ["dos", "dosbox_pure"].includes(core);
+  const isAzahar = core === "azahar";
   window.EJS_externalFiles =
     isDosBoxPure && selectedInitialSave?.download_path
       ? { "/data/saves/": selectedInitialSave.download_path }
@@ -507,6 +524,9 @@ async function boot() {
     "save-state-location": "browser",
     rewindEnabled: "enabled",
     ...coreOptions,
+    // Azahar savestate serialization is currently too expensive for realtime
+    // rewind and can starve the emulator before the first frame is displayed.
+    ...(isAzahar ? { rewindEnabled: "disabled" } : {}),
   };
   const ejsControls = configStore.getEJSControls(core);
   if (ejsControls) window.EJS_defaultControls = ejsControls;

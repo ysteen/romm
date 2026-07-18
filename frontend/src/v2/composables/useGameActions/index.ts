@@ -178,12 +178,18 @@ export function useGameActions(
   function play() {
     const rom = getRom();
     if (!rom) return;
+    if (canPlayEJS.value) {
+      // EJS player documents need nginx's COEP/COOP response headers. A Vue
+      // router transition keeps the original document and cannot enable
+      // SharedArrayBuffer for threaded cores.
+      window.location.assign(`/rom/${rom.id}/ejs`);
+      return;
+    }
     // The launch "load" flourish (disc/cartridge insert) lives on the
     // player view itself — see EmulatorJS's onPlay — so navigation is
     // immediate here.
     let path: string | null = null;
-    if (canPlayEJS.value) path = `/rom/${rom.id}/ejs`;
-    else if (canPlayRuffle.value) path = `/rom/${rom.id}/ruffle`;
+    if (canPlayRuffle.value) path = `/rom/${rom.id}/ruffle`;
     if (!path) return;
     const target = path;
     // When the caller supplies a cover element (the gallery card / detail

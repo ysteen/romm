@@ -471,6 +471,8 @@ const _EJS_CORES_MAP: Record<string, string[]> = {
   colecovision: ["gearcoleco"],
   doom: ["prboom"],
   dos: ["dosbox_pure"],
+  "3ds": ["azahar"],
+  "new-nintendo-3ds": ["azahar"],
   jaguar: ["virtualjaguar"],
   lynx: ["handy"],
   "atari-lynx-mkii": ["handy"],
@@ -533,8 +535,6 @@ const _EJS_CORES_MAP: Record<string, string[]> = {
 
 // TODO: Merge with _EJS_CORES_MAP next emukatorjs release (post 4.2.3)
 const _EJS_NIGHTLY_CORES_MAP: Record<string, string[]> = {
-  "3ds": ["azahar"],
-  "new-nintendo-3ds": ["azahar"],
   intellivision: ["freeintv"],
   segacd: ["genesis_plus_gx", "genesis_plus_gx_wide", "picodrive"],
   gamegear: ["genesis_plus_gx", "genesis_plus_gx_wide"],
@@ -752,7 +752,18 @@ export function getI18nKeyForStatus(status: PlayingStatus): string | null {
 }
 
 export function isNintendoDSFile(rom: SimpleRom): boolean {
-  return ["cia", "nds", "3ds", "dsi"].includes(rom.fs_extension.toLowerCase());
+  return [
+    "cia",
+    "3ds",
+    "3dsx",
+    "cci",
+    "cxi",
+    "app",
+    "elf",
+    "axf",
+    "nds",
+    "dsi",
+  ].includes(rom.fs_extension.toLowerCase());
 }
 
 export function getNintendoDSFiles(
@@ -767,8 +778,14 @@ export function getNintendoDSFiles(
     const fileName = file.file_name.toLowerCase();
     return (
       fileName.endsWith(".cia") ||
-      fileName.endsWith(".nds") ||
       fileName.endsWith(".3ds") ||
+      fileName.endsWith(".3dsx") ||
+      fileName.endsWith(".cci") ||
+      fileName.endsWith(".cxi") ||
+      fileName.endsWith(".app") ||
+      fileName.endsWith(".elf") ||
+      fileName.endsWith(".axf") ||
+      fileName.endsWith(".nds") ||
       fileName.endsWith(".dsi")
     );
   });

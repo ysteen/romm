@@ -681,7 +681,8 @@ class EmulatorJS {
                 }
             }
 
-            if (this.saveFileExt === false) {
+            const hasDirectorySaveAdapter = ["dos", "dosbox_pure", "ppsspp", "azahar"].includes(this.getCore());
+            if (this.saveFileExt === false && !hasDirectorySaveAdapter) {
                 this.elements.bottomBar.saveSavFiles[0].style.display = "none";
                 this.elements.bottomBar.loadSavFiles[0].style.display = "none";
             }
@@ -730,7 +731,11 @@ class EmulatorJS {
 
             // Download the core
             console.log("[EJS Core] Downloading core:", filename);
-            const corePath = "cores/" + filename;
+            // Match the core cache key to the report that selected it. RomM
+            // can replace a bundled core without changing its filename, and
+            // the EmulatorJS IndexedDB cache otherwise keeps the old binary
+            // until its multi-day expiry elapses.
+            const corePath = "cores/" + filename + "?v=" + encodeURIComponent(rep.buildStart);
             const res = await this.downloadFile(corePath, this.downloadType.core.name, (progress) => {
                 this.textElem.innerText = this.localization("Download Game Core") + progress;
             }, false, { responseType: "arraybuffer", method: "GET" }, true, this.downloadType.core.dontCache);
@@ -976,11 +981,10 @@ class EmulatorJS {
      */
     async initializeGameManager() {
         this.gameManager = new EJS_GameManager(this.Module, this);
-        if (["dos", "dosbox_pure"].includes(this.getCore())) {
+        if (["dos", "dosbox_pure", "ppsspp", "azahar"].includes(this.getCore())) {
             await this.gameManager.mountFileSystems();
             // External save bundles must be restored after IDBFS is mounted.
-            // Files written before the mount are hidden by the mount and
-            // DOSBox Pure starts with an empty differencing disk.
+            // Files written before the mount are hidden by the mount.
             await this.gameManager.loadExternalFiles();
         } else {
             // Keep the upstream order for all other cores.
@@ -1271,6 +1275,9 @@ class EmulatorJS {
         this.setVirtualGamepad();
         this.addEventListener(this.elements.parent, "keydown keyup", this.keyChange.bind(this));
         this.addEventListener(this.elements.parent, "mousedown touchstart", (e) => {
+            // Popup controls must retain focus. In particular, Azahar's HLE
+            // software keyboard uses an HTML input inside the player.
+            if (this.isPopupOpen() || e.target.closest?.("input, textarea, button, select, [contenteditable='true']")) return;
             if (document.activeElement !== this.elements.parent && this.config.noAutoFocus !== true) this.elements.parent.focus();
         })
         this.addEventListener(window, "resize", this.handleResize.bind(this));
@@ -1925,6 +1932,12 @@ class EmulatorJS {
         const maxLength = opts.maxLength | 0;
         const password = !!opts.password;
         return new Promise((resolve) => {
+            // Keyboard applets may open while the game canvas owns pointer
+            // lock and focus. Release the lock before showing the HTML input,
+            // otherwise mouse and keyboard events keep targeting the canvas.
+            if (document.pointerLockElement && document.exitPointerLock) {
+                document.exitPointerLock();
+            }
             const popups = this.createSubPopup();
             this.currentPopup = popups;
             this.game.appendChild(popups[0]);
@@ -1938,7 +1951,8 @@ class EmulatorJS {
             popup.appendChild(header);
             
             const input = this.createElement("input");
-            input.type = "text";
+            input.type = password ? "password" : "text";
+            if (maxLength > 0) input.maxLength = maxLength;
             input.style.width = "100%";
             popup.appendChild(input);
             
@@ -1947,13 +1961,37 @@ class EmulatorJS {
             submit.classList.add("ejs_popup_submit");
             submit.innerText = this.localization("Submit");
             popup.appendChild(submit);
-            this.addEventListener(submit, "click", (e) => {
-                if (!input.value.trim())
+
+            const submitInput = () => {
+                if (!input.value.trim()) {
+                    input.focus({ preventScroll: true });
                     return;
+                }
                 popups[0].remove();
                 this.currentPopup = null;
                 resolve(input.value.trim());
+            };
+            this.addEventListener(submit, "mousedown touchstart", (e) => {
+                e.stopPropagation();
             });
+            this.addEventListener(submit, "click", (e) => {
+                e.stopPropagation();
+                submitInput();
+            });
+            this.addEventListener(input, "mousedown touchstart click keypress keyup", (e) => {
+                // The player container automatically focuses itself on pointer
+                // input. Keep popup interaction local so the text field stays
+                // focused and typed characters are not treated as controls.
+                e.stopPropagation();
+            });
+            this.addEventListener(input, "keydown", (e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitInput();
+                }
+            });
+            requestAnimationFrame(() => input.focus({ preventScroll: true }));
         });
     }
     selectFile() {

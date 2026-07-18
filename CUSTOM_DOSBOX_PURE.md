@@ -69,6 +69,13 @@ Old four-byte `.srm` uploads contain no disk sectors and cannot be recovered.
 Create a new RomM save with this overlay active. A working upload is a ZIP and
 will normally be much larger than four bytes.
 
+PPSSPP uses the same directory-bundle adapter. The visible RomM save filename
+keeps the `.srm` extension, but its contents are a ZIP containing the title's
+changed `PSP/SAVEDATA/<game-id>/` directories. On launch, EmulatorJS mounts
+IDBFS first and extracts the selected RomM save under `/data/saves`, which is
+the PPSSPP Memory Stick root. This also enables the EmulatorJS Export/Import
+Save buttons even though the upstream PPSSPP core declares `save: false`.
+
 DOSBox Pure derives these sibling filenames from the loaded content name.
 Renaming or replacing a ROM under a different filename creates a different
 save key, so an older browser-only differencing disk will not be selected
