@@ -2,7 +2,7 @@
 
 This workspace pins EmulatorJS 4.3 nightly commit
 `cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` and its 2026-05-16 nightly core
-bundle on RomM 5.0.0. The locally built DOSBox Pure core replaces only the two
+bundle on RomM 5.1.0. The locally built DOSBox Pure core replaces only the two
 DOSBox Pure binaries in that coherent snapshot. The core declares a minimum
 EmulatorJS version of 4.3.0, so RomM's bundled 4.2.3 frontend cannot run it. It
 also supports keeping one Windows 95 disk in RomM's DOS firmware and keeping

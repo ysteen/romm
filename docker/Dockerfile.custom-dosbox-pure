@@ -1,4 +1,6 @@
-ARG ROMM_BASE_IMAGE=ghcr.io/rommapp/romm:5.0.0
+ARG ROMM_BASE_IMAGE=ghcr.io/rommapp/romm:5.1.0
+FROM ${ROMM_BASE_IMAGE} AS romm-base
+
 FROM node:24-alpine AS frontend-build
 WORKDIR /front
 COPY frontend/package*.json ./
@@ -8,27 +10,27 @@ RUN npm run build
 
 FROM alpine:3.22 AS emulatorjs-nightly
 ARG EJS_NIGHTLY_COMMIT=cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6
-ARG EJS_NIGHTLY_CORES_URL=https://cdn.emulatorjs.org/nightly/data/cores/cores.zip
-ARG EJS_NIGHTLY_CORES_SHA256=1afd578176f1bf438100e0ed1d53c43cf0c9d0358c6831c648a4999a37916698
-RUN apk add --no-cache curl git unzip \
+RUN apk add --no-cache curl git \
     && git init /emulatorjs \
     && git -C /emulatorjs remote add origin https://github.com/EmulatorJS/EmulatorJS.git \
     && git -C /emulatorjs fetch --depth 1 origin "${EJS_NIGHTLY_COMMIT}" \
     && git -C /emulatorjs checkout --detach FETCH_HEAD \
-    && curl -fL --retry 3 -o /tmp/cores.zip "${EJS_NIGHTLY_CORES_URL}" \
-    && echo "${EJS_NIGHTLY_CORES_SHA256}  /tmp/cores.zip" | sha256sum -c - \
-    && unzip -q -o /tmp/cores.zip -d /emulatorjs/data/cores \
-    && rm -rf /emulatorjs/.git /tmp/cores.zip
+    && rm -rf /emulatorjs/.git
+COPY --from=romm-base /var/www/html/assets/emulatorjs/data/cores/ /emulatorjs/data/cores/
+RUN find /emulatorjs/data/cores -type f \( -name '*.data' -o -path '*/reports/*.json' \) -print \
+    | while IFS= read -r file; do \
+        relative="${file#/emulatorjs/data/}"; \
+        curl -fL --retry 3 -o "${file}.download" "https://cdn.emulatorjs.org/nightly/data/${relative}"; \
+        mv "${file}.download" "${file}"; \
+      done
 
 FROM ${ROMM_BASE_IMAGE}
 
 COPY --from=frontend-build /front/dist/ /var/www/html/
 COPY docker/nginx/templates/default.conf.template /etc/nginx/templates/default.conf.template
 
-# Pin one coherent EmulatorJS 4.3 nightly frontend/core snapshot for every
-# platform. Overlay only the RomM integration and custom DOSBox Pure pieces so
-# localization, compression, netplay, PPSSPP, melonDS, and the remaining cores
-# all stay on that same nightly baseline.
+# Use the pinned EmulatorJS nightly frontend and the current nightly core set
+# for every platform. Overlay only the RomM integration and custom cores.
 RUN rm -rf /var/www/html/assets/emulatorjs/data
 COPY --from=emulatorjs-nightly /emulatorjs/data/ /var/www/html/assets/emulatorjs/data/
 COPY custom-emulatorjs/data/loader.js /var/www/html/assets/emulatorjs/data/loader.js
@@ -37,6 +39,7 @@ COPY custom-emulatorjs/data/src/emulator.js /var/www/html/assets/emulatorjs/data
 COPY custom-emulatorjs/data/src/GameManager.js /var/www/html/assets/emulatorjs/data/src/GameManager.js
 COPY custom-emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data
 COPY custom-emulatorjs/data/cores/dosbox_pure-thread-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-wasm.data
+COPY custom-emulatorjs/data/cores/reports/dosbox_pure.json /var/www/html/assets/emulatorjs/data/cores/reports/dosbox_pure.json
 COPY custom-emulatorjs/data/cores/ppsspp-thread-wasm.data /var/www/html/assets/emulatorjs/data/cores/ppsspp-thread-wasm.data
 COPY custom-emulatorjs/data/cores/reports/ppsspp.json /var/www/html/assets/emulatorjs/data/cores/reports/ppsspp.json
 COPY custom-emulatorjs/data/cores/azahar-thread-wasm.data /var/www/html/assets/emulatorjs/data/cores/azahar-thread-wasm.data
