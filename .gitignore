@@ -86,3 +86,10 @@ switch_product_ids.json
 /custom-emulatorjs/firmware/*.zip
 /custom-emulatorjs/roms/*.zip
 /test-instance/
+
+# Playwright (e2e) artifacts
+frontend/playwright/.auth/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.last-run.json

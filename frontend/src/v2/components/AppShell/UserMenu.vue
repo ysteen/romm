@@ -4,7 +4,8 @@
 // architecture so the user has the same mental model in both places:
 //
 //   • Account  — Profile, User interface
-//   • Library  — Library management, Metadata sources, Client API tokens
+//   • Library  — Library management, Scan settings, Metadata sources,
+//                Client API tokens
 //   • System   — Administration, Server stats
 //   • Tools    — Controller debug
 //   • Actions  — Scan, Upload (librarian actions, not settings)
@@ -74,6 +75,9 @@ const canUpload = computed(() => scopes.value.includes("roms.write"));
 const canSeeLibraryMgmt = computed(() =>
   scopes.value.includes("platforms.write"),
 );
+const canSeeScanSettings = computed(() =>
+  scopes.value.includes("platforms.write"),
+);
 const canSeeApiTokens = computed(() => scopes.value.includes("me.write"));
 const canSeeAdmin = computed(() => scopes.value.includes("users.write"));
 
@@ -101,8 +105,7 @@ async function onLogout() {
     snackbar.success("Logged out", { icon: "mdi-check-bold" });
     await router.push({ name: ROUTES.LOGIN });
     const pinia = getActivePinia() as
-      | { _s?: Map<string, { reset?: () => void } & StateTree> }
-      | undefined;
+      { _s?: Map<string, { reset?: () => void } & StateTree> } | undefined;
     pinia?._s?.forEach((store) => {
       store.reset?.();
     });
@@ -205,6 +208,13 @@ async function onLogout() {
         :to="{ name: ROUTES.LIBRARY_MANAGEMENT }"
         icon="mdi-table-cog"
         :label="t('common.library-management')"
+        @click="open = false"
+      />
+      <RMenuItem
+        v-if="canSeeScanSettings"
+        :to="{ name: ROUTES.SCAN_SETTINGS }"
+        icon="mdi-magnify-scan"
+        :label="t('settings.scan-settings')"
         @click="open = false"
       />
       <RMenuItem

@@ -16,7 +16,7 @@ from handler.metadata.launchbox_handler.types import LaunchboxRom
 from handler.metadata.moby_handler import MobyGamesHandler, MobyGamesRom
 from handler.metadata.ra_handler import RAGameRom, RAHandler
 from handler.metadata.ss_handler import SSHandler, SSRom
-from models.collection import Collection
+from models.collection import Collection, SmartCollection
 from models.permission import HiddenEntity, PermEntity
 from models.platform import Platform
 from models.rom import Rom, RomFile, compute_name_sort_key
@@ -42,6 +42,146 @@ def test_get_rom(client: TestClient, access_token: str, rom: Rom):
 
     body = response.json()
     assert body["id"] == rom.id
+
+
+def test_get_rom_simple(client: TestClient, access_token: str, rom: Rom):
+    response = client.get(
+        f"/api/roms/{rom.id}/simple",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+
+    body = response.json()
+    assert body["id"] == rom.id
+    # SimpleRomSchema stays lightweight: none of the detail-only arrays are
+    # present, so the endpoint must not eager-load them.
+    assert "user_saves" not in body
+    assert "user_states" not in body
+    assert "user_screenshots" not in body
+    assert "user_collections" not in body
+    assert "all_user_notes" not in body
+
+
+def test_get_rom_simple_missing_returns_404(client: TestClient, access_token: str):
+    response = client.get(
+        "/api/roms/999999/simple",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def _user_collections_by_name(body: dict) -> dict:
+    return {c["name"]: c for c in body["user_collections"]}
+
+
+def test_get_rom_lists_standard_and_smart_collections(
+    client: TestClient, access_token: str, admin_user: User, rom: Rom
+):
+    """The detail response lists both standard and smart collections the ROM
+    belongs to, tagging smart ones with `is_smart` (issue #3934)."""
+    standard = db_collection_handler.add_collection(
+        Collection(name="My Standard", description="", user_id=admin_user.id)
+    )
+    db_collection_handler.add_roms_to_collection(standard.id, [rom.id])
+
+    smart = db_collection_handler.add_smart_collection(
+        SmartCollection(
+            name="My Smart",
+            description="",
+            user_id=admin_user.id,
+            rom_ids=[rom.id],
+            filter_criteria={},
+        )
+    )
+
+    response = client.get(
+        f"/api/roms/{rom.id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+
+    collections = _user_collections_by_name(response.json())
+    assert set(collections) == {"My Standard", "My Smart"}
+    assert collections["My Standard"]["id"] == standard.id
+    assert collections["My Standard"]["is_smart"] is False
+    assert collections["My Smart"]["id"] == smart.id
+    assert collections["My Smart"]["is_smart"] is True
+
+
+def test_get_rom_omits_smart_collection_without_rom(
+    client: TestClient, access_token: str, admin_user: User, rom: Rom
+):
+    """A smart collection whose membership doesn't include the ROM is not listed."""
+    db_collection_handler.add_smart_collection(
+        SmartCollection(
+            name="Unrelated Smart",
+            description="",
+            user_id=admin_user.id,
+            rom_ids=[rom.id + 999],
+            filter_criteria={},
+        )
+    )
+
+    response = client.get(
+        f"/api/roms/{rom.id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+
+    assert "Unrelated Smart" not in _user_collections_by_name(response.json())
+
+
+def test_get_rom_omits_other_users_private_smart_collection(
+    client: TestClient, access_token: str, viewer_user: User, rom: Rom
+):
+    """A private smart collection owned by another user is hidden even when it
+    contains the ROM."""
+    db_collection_handler.add_smart_collection(
+        SmartCollection(
+            name="Private Smart",
+            description="",
+            user_id=viewer_user.id,
+            is_public=False,
+            rom_ids=[rom.id],
+            filter_criteria={},
+        )
+    )
+
+    response = client.get(
+        f"/api/roms/{rom.id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+
+    assert "Private Smart" not in _user_collections_by_name(response.json())
+
+
+def test_get_rom_lists_public_smart_collection_from_other_user(
+    client: TestClient, access_token: str, viewer_user: User, rom: Rom
+):
+    """A public smart collection owned by another user is listed when it contains
+    the ROM."""
+    smart = db_collection_handler.add_smart_collection(
+        SmartCollection(
+            name="Public Smart",
+            description="",
+            user_id=viewer_user.id,
+            is_public=True,
+            rom_ids=[rom.id],
+            filter_criteria={},
+        )
+    )
+
+    response = client.get(
+        f"/api/roms/{rom.id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+
+    collections = _user_collections_by_name(response.json())
+    assert "Public Smart" in collections
+    assert collections["Public Smart"]["id"] == smart.id
+    assert collections["Public Smart"]["is_smart"] is True
 
 
 def test_download_multi_file_rom_content(
@@ -146,6 +286,31 @@ def test_get_all_roms(
     assert items[0]["id"] == rom.id
     assert items[0]["files"] == []
     assert items[0]["sibling_roms"] == []
+
+
+def test_get_roms_without_rom_id_index(
+    client: TestClient, access_token: str, rom: Rom, platform: Platform
+):
+    response = client.get(
+        "/api/roms",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={
+            "platform_id": platform.id,
+            "limit": 15,
+            "with_rom_id_index": False,
+        },
+    )
+    assert response.status_code == status.HTTP_200_OK
+
+    body = response.json()
+
+    # The page and total stay correct, but the full id index is not built.
+    assert body["total"] == 1
+    assert body["rom_id_index"] == []
+
+    items = body["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == rom.id
 
 
 def test_get_roms_filter_by_metadata_providers(
@@ -280,6 +445,22 @@ def test_get_rom_content_single_file(
     assert response.status_code == status.HTTP_200_OK
     # Single-file roms are proxied through nginx via X-Accel-Redirect.
     assert "X-Accel-Redirect" in response.headers
+
+
+def test_get_rom_content_single_file_missing_on_disk_returns_404(
+    client: TestClient, access_token: str, rom: Rom, rom_file, mocker
+):
+    # In DEV_MODE the endpoint serves the file directly. If the file is gone
+    # from disk (e.g. a renamed/moved ROM whose old entry is now missing), it
+    # must return a clean 404 instead of raising a RuntimeError from
+    # FileResponse when starlette fails to stat the path.
+    mocker.patch("endpoints.roms.DEV_MODE", True)
+    response = client.get(
+        f"/api/roms/{rom.id}/content/test_rom.zip",
+        headers={"Authorization": f"Bearer {access_token}"},
+        follow_redirects=False,
+    )
+    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 def test_get_rom_content_valid_file_id(
@@ -519,6 +700,23 @@ def test_delete_roms(client: TestClient, access_token: str, rom: Rom):
     assert body["successful_items"] == 1
 
 
+def test_delete_roms_reports_failed_ids(
+    client: TestClient, access_token: str, rom: Rom
+):
+    missing_id = rom.id + 999999
+    response = client.post(
+        "/api/roms/delete",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"roms": [rom.id, missing_id], "delete_from_fs": []},
+    )
+    assert response.status_code == status.HTTP_200_OK
+
+    body = response.json()
+    assert body["successful_items"] == 1
+    # The failed id stays reported so the client can keep it selected for retry.
+    assert body["failed_ids"] == [missing_id]
+
+
 @patch(
     "endpoints.roms.fs_rom_handler.remove_directory",
     new_callable=AsyncMock,
@@ -556,7 +754,7 @@ def test_delete_roms_from_fs_flat(
 
     body = response.json()
     assert body["successful_items"] == 1
-    assert body["failed_items"] == 0
+    assert body["failed_ids"] == []
     mock_remove_file.assert_called_once()
     mock_remove_directory.assert_not_called()
 
@@ -600,7 +798,7 @@ def test_delete_roms_from_fs_flat_cleans_empty_parent(
 
     body = response.json()
     assert body["successful_items"] == 1
-    assert body["failed_items"] == 0
+    assert body["failed_ids"] == []
     mock_remove_file.assert_called_once()
     # remove_directory should be called to clean up the empty parent dir
     mock_remove_directory.assert_called_once()
@@ -652,7 +850,7 @@ def test_delete_roms_from_fs_nested(
 
     body = response.json()
     assert body["successful_items"] == 1
-    assert body["failed_items"] == 0
+    assert body["failed_ids"] == []
     mock_remove_directory.assert_called_once()
 
 
@@ -677,7 +875,7 @@ def test_delete_roms_from_fs_missing_file_still_deletes_db_entry(
 
     body = response.json()
     assert body["successful_items"] == 1
-    assert body["failed_items"] == 0
+    assert body["failed_ids"] == []
     assert body["errors"] == []
     assert db_rom_handler.get_rom(rom.id) is None
 

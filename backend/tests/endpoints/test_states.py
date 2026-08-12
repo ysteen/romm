@@ -1,16 +1,25 @@
 from unittest import mock
 
+import pytest
 from fastapi import status
 
 from handler.database import db_screenshot_handler, db_state_handler
+from handler.database.base_handler import sync_session
 from models.assets import Screenshot, State
+from models.permission import HiddenEntity, PermEntity
 from models.platform import Platform
 from models.rom import Rom
 from models.user import User
+from utils import uploads
 
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _hide(entity: PermEntity, entity_id: int, user_id: int) -> None:
+    with sync_session.begin() as s:
+        s.add(HiddenEntity(entity=entity, entity_id=entity_id, user_id=user_id))
 
 
 @mock.patch("endpoints.states.fs_asset_handler.validate_path")
@@ -53,6 +62,37 @@ def test_other_user_downloads_public_state(
     assert response.content == b"SHARED_STATE"
 
 
+def test_hidden_rom_masks_public_state_download(
+    client, viewer_access_token: str, viewer_user: User, state: State, rom: Rom
+):
+    # A public state on a ROM hidden from the caller must stay 404-masked;
+    # sharing cannot override the hidden-resource boundary.
+    db_state_handler.update_state(state.id, {"is_public": True})
+    _hide(PermEntity.ROMS, rom.id, viewer_user.id)
+
+    response = client.get(
+        f"/api/states/{state.id}/content", headers=_auth(viewer_access_token)
+    )
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_hidden_platform_masks_public_state_download(
+    client,
+    viewer_access_token: str,
+    viewer_user: User,
+    state: State,
+    platform: Platform,
+):
+    # Hiding the parent platform cascades to its states as well.
+    db_state_handler.update_state(state.id, {"is_public": True})
+    _hide(PermEntity.PLATFORMS, platform.id, viewer_user.id)
+
+    response = client.get(
+        f"/api/states/{state.id}/content", headers=_auth(viewer_access_token)
+    )
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
 def test_download_state_not_found(client, access_token: str):
     response = client.get("/api/states/99999/content", headers=_auth(access_token))
     assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -88,3 +128,27 @@ def test_sharing_state_syncs_thumbnail_visibility(
 
     refreshed = db_screenshot_handler.get_screenshot_by_id(thumb.id)
     assert refreshed is not None and refreshed.is_public is True
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"stateFile": ("game.state", b"x" * 64, "application/octet-stream")},
+        {
+            "stateFile": ("game.state", b"small", "application/octet-stream"),
+            "screenshotFile": ("shot.png", b"x" * 64, "image/png"),
+        },
+    ],
+    ids=["state-file", "screenshot-file"],
+)
+def test_add_state_rejects_oversized_uploads(
+    client, access_token: str, rom: Rom, files: dict
+):
+    with mock.patch.object(uploads, "MAX_ASSET_UPLOAD_SIZE_BYTES", 32):
+        response = client.post(
+            f"/api/states?rom_id={rom.id}",
+            files=files,
+            headers=_auth(access_token),
+        )
+
+    assert response.status_code == status.HTTP_413_CONTENT_TOO_LARGE
