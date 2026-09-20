@@ -37,6 +37,7 @@ COPY custom-emulatorjs/data/loader.js /var/www/html/assets/emulatorjs/data/loade
 COPY custom-emulatorjs/data/version.json /var/www/html/assets/emulatorjs/data/version.json
 COPY custom-emulatorjs/data/src/emulator.js /var/www/html/assets/emulatorjs/data/src/emulator.js
 COPY custom-emulatorjs/data/src/GameManager.js /var/www/html/assets/emulatorjs/data/src/GameManager.js
+COPY custom-emulatorjs/data/src/azahar-system-data.js /var/www/html/assets/emulatorjs/data/src/azahar-system-data.js
 COPY custom-emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data
 COPY custom-emulatorjs/data/cores/dosbox_pure-thread-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-wasm.data
 COPY custom-emulatorjs/data/cores/reports/dosbox_pure.json /var/www/html/assets/emulatorjs/data/cores/reports/dosbox_pure.json

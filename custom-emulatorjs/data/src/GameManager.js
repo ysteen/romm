@@ -116,12 +116,43 @@ class EJS_GameManager {
         }
     }
     mountFileSystems() {
-        return new Promise(async resolve => {
+        return new Promise((resolve, reject) => {
             this.mkdir("/data");
             this.mkdir("/data/saves");
             this.FS.mount(this.FS.filesystems.IDBFS, { autoPersist: true }, "/data/saves");
-            this.FS.syncfs(true, resolve);
+            this.FS.syncfs(true, error => {
+                // Do not boot or import over an apparently empty Azahar NAND
+                // when reading existing persistent storage actually failed.
+                if (error && this.isAzahar()) reject(error);
+                else resolve();
+            });
         });
+    }
+    async withAzaharSystemDataTransaction(action) {
+        const idbfs = this.FS.filesystems?.IDBFS;
+        const mount = this.FS.lookupPath("/data/saves").node.mount;
+        if (!idbfs || typeof idbfs.queuePersist !== "function" || !mount || this.azaharImportPending) {
+            throw new Error("This runtime cannot safely import persistent Azahar system data.");
+        }
+        this.azaharImportPending = true;
+        const original = idbfs.queuePersist;
+        // IDBFS installs its auto-persist hooks at mount time. Temporarily
+        // suspend only this mount; toggling mount.opts.autoPersist is not enough.
+        idbfs.queuePersist = function (candidate) {
+            if (candidate !== mount) return original.call(this, candidate);
+        };
+        try {
+            const deadline = Date.now() + 10000;
+            while (mount.idbPersistState) {
+                if (Date.now() >= deadline) throw new Error("Azahar browser storage is busy. Try again after restarting the player.");
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            return await action();
+        } finally {
+            idbfs.queuePersist = original;
+            this.azaharImportPending = false;
+            original.call(idbfs, mount);
+        }
     }
     writeConfigFile() {
         if (!this.EJS.defaultCoreOpts.file || !this.EJS.defaultCoreOpts.settings) {
@@ -267,9 +298,38 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         this.functions.restart();
     }
     getState() {
-        return this.Module.EmulatorJSGetState();
+        if (this.isAzahar() && !this.supportsStates()) {
+            throw new Error("This Azahar core does not support safe manual states. Update the core first.");
+        }
+        const state = this.Module.EmulatorJSGetState();
+        if (this.isAzahar() && (!(state instanceof Uint8Array) || !state.byteLength)) {
+            throw new Error("Azahar could not capture a state.");
+        }
+        return state;
     }
     loadState(state) {
+        if (this.isAzahar()) {
+            if (!this.supportsStates()) {
+                throw new Error("This Azahar core does not support safe manual states. Update the core first.");
+            }
+            if (!(state instanceof Uint8Array) || !state.byteLength || state.byteLength > 256 * 1024 * 1024) {
+                throw new Error("Invalid Azahar state size (maximum 256 MiB).");
+            }
+            const path = "/azahar-manual.state";
+            this.clearEJSResetTimer();
+            try {
+                this.FS.writeFile(path, state);
+                // The ordinary load_state export only queues a task and returns
+                // its input argument. It cannot report a failed restore.
+                const loaded = this.Module.cwrap("load_state_sync", "number", ["string"])(path);
+                if (loaded !== 1) {
+                    throw new Error("Azahar rejected the state. Check the game/core/system data; restart before continuing if rendering is incorrect.");
+                }
+            } finally {
+                try { this.FS.unlink(path); } catch (e) {}
+            }
+            return;
+        }
         try {
             this.FS.unlink("game.state");
         } catch(e) {}
@@ -287,12 +347,17 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
             this.FS.unlink("/screenshot.png");
         } catch(e) {}
         this.functions.screenshot();
-        return new Promise(async resolve => {
+        return new Promise(async (resolve, reject) => {
+            const deadline = this.isAzahar() ? Date.now() + 2000 : Infinity;
             while (1) {
                 try {
                     this.FS.stat("/screenshot.png");
                     return resolve(this.FS.readFile("/screenshot.png"));
                 } catch(e) {}
+                if (Date.now() >= deadline) {
+                    reject(new Error("Azahar screenshot timed out"));
+                    return;
+                }
                 await new Promise(res => setTimeout(res, 50));
             }
         })
@@ -313,6 +378,15 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
     }
     quickLoad(slot) {
         if (!slot) slot = 1;
+        if (this.isAzahar()) {
+            try {
+                this.loadState(this.FS.readFile("/" + slot + "-quick.state"));
+                return true;
+            } catch (error) {
+                console.warn("Azahar quick state restore failed", error);
+                return false;
+            }
+        }
         (async () => {
             let name = slot + "-quick.state";
             this.clearEJSResetTimer();
@@ -320,6 +394,9 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         })();
     }
     simulateInput(player, index, value) {
+        // RomM's managed controls confirm restores and upload manual captures.
+        // Do not allow overlapping legacy quick-state keyboard/gamepad actions.
+        if (this.isAzahar() && this.EJS.config.azaharManagedStates && [24, 25, 26].includes(index)) return;
         this.EJS.recordInputTelemetry?.("retro-input", { player, index, value });
         if (this.EJS.isNetplay) {
             this.EJS.netplay.simulateInput(player, index, value);
@@ -336,8 +413,11 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
             }
             if (index === 25 && value === 1) {
                 const slot = this.EJS.settings["save-state-slot"] ? this.EJS.settings["save-state-slot"] : "1";
-                this.quickLoad(slot);
-                this.EJS.displayMessage(this.EJS.localization("LOADED STATE FROM SLOT") + " " + slot);
+                if (this.quickLoad(slot) !== false) {
+                    this.EJS.displayMessage(this.EJS.localization("LOADED STATE FROM SLOT") + " " + slot);
+                } else {
+                    this.EJS.displayMessage(this.EJS.localization("FAILED TO LOAD STATE"));
+                }
             }
             if (index === 26 && value === 1) {
                 let newSlot;
@@ -554,6 +634,9 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         }
     }
     supportsStates() {
+        if (this.isAzahar()) {
+            return typeof this.Module._load_state_sync === "function" && !!this.functions.supportsStates();
+        }
         return this.isPpsspp() || !!this.functions.supportsStates();
     }
     setControllerPortDevice(port, device) {

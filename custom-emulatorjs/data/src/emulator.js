@@ -2,7 +2,8 @@ import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
-import { EJS_GameManager } from "./GameManager.js?v=20260921.1";
+import { EJS_GameManager } from "./GameManager.js?v=20260921.2";
+import "./azahar-system-data.js?v=20260921.2";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
 import { cyrb53 } from "./utils.js";
@@ -858,6 +859,10 @@ class EmulatorJS {
             });
         }
 
+        if (this.getCore() === "azahar" && type.name === "BIOS") {
+            return this.downloadAzaharSystemData(url);
+        }
+
         if (!this.compression) {
             this.compression = new EJS_COMPRESSION(this);
         }
@@ -1003,6 +1008,65 @@ class EmulatorJS {
             resolve(returnData);
         });
     }
+    async downloadAzaharSystemData(url) {
+        const helper = globalThis.EJS_AzaharSystemData;
+        const limit = helper.MAX_ARCHIVE_BYTES;
+        let archive;
+        if (url instanceof File) {
+            if (url.size > limit) throw new Error("Azahar system-data ZIP exceeds 128 MiB.");
+            archive = new Uint8Array(await url.arrayBuffer());
+        } else {
+            const response = await fetch(url, { credentials: "same-origin", cache: "no-cache" });
+            if (!response.ok || !response.body) throw new Error("Could not download Azahar system data.");
+            const reader = response.body.getReader();
+            const chunks = [];
+            let length = 0;
+            try {
+                if (Number(response.headers.get("content-length")) > limit) throw new Error("Azahar system-data ZIP exceeds 128 MiB.");
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    length += value.byteLength;
+                    if (length > limit) throw new Error("Azahar system-data ZIP exceeds 128 MiB.");
+                    chunks.push(value);
+                }
+            } finally {
+                await reader.cancel();
+                reader.releaseLock();
+            }
+            archive = new Uint8Array(length);
+            let offset = 0;
+            for (const chunk of chunks) { archive.set(chunk, offset); offset += chunk.byteLength; }
+        }
+        const files = helper.prepareFiles(await helper.extractZip(archive));
+        // Validate the entire archive before touching NAND. Keep the replaced
+        // files until the explicit persistent sync has succeeded.
+        const fs = this.gameManager.FS;
+        const originals = new Map();
+        const sync = () => new Promise((resolve, reject) => fs.syncfs(false, error => error ? reject(error) : resolve()));
+        await this.gameManager.withAzaharSystemDataTransaction(async () => {
+            try {
+                for (const file of files) {
+                    originals.set(file.filename, fs.analyzePath(file.filename).exists ? fs.readFile(file.filename) : null);
+                    this.gameManager.writeFile(file.filename, file.bytes);
+                }
+                await sync();
+            } catch (error) {
+                for (const [path, bytes] of originals) {
+                    try {
+                        if (bytes) fs.writeFile(path, bytes);
+                        else if (fs.analyzePath(path).exists) fs.unlink(path);
+                    } catch (rollbackError) {
+                        console.warn("Could not restore a system-data file", rollbackError);
+                    }
+                }
+                try { await sync(); } catch (rollbackError) { console.warn("Could not persist system-data rollback", rollbackError); }
+                throw error;
+            }
+        });
+        return { files };
+    }
+
     /**
      * Initialize GameManager and load external files and file systems
      */
@@ -1149,7 +1213,10 @@ class EmulatorJS {
 
             this.determineCueSettings();
             this.startGameFromDownload(romData);
-        })();
+        })().catch(error => {
+            console.error("EmulatorJS startup failed", error);
+            this.startGameError(error instanceof Error ? error.message : this.localization("Failed to start game"));
+        });
     }
     initModule(wasmData, threadData) {
         if (typeof window.EJS_Runtime !== "function") {

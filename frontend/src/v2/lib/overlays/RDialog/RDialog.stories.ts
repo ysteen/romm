@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ref } from "vue";
 import RBtn from "@/v2/lib/primitives/RBtn/RBtn.vue";
 import REmptyState from "@/v2/lib/primitives/REmptyState/REmptyState.vue";
@@ -49,6 +50,55 @@ export const Basic: Story = {
       </div>
     `,
   }),
+};
+
+export const ExplicitInitialFocus: Story = {
+  args: { width: "440" },
+  render: (args) => ({
+    components: { RDialog, RBtn },
+    setup() {
+      const open = ref(false);
+      return { args, open };
+    },
+    template: `
+      <div class="r-v2 pa-6">
+        <RBtn @click="open = true">Open confirmation</RBtn>
+        <RDialog v-bind="args" v-model="open">
+          <template #header>Confirm action</template>
+          <template #content>Cancel is the safe default action.</template>
+          <template #footer>
+            <RBtn autofocus variant="text" @click="open = false">Cancel</RBtn>
+            <RBtn color="error" @click="open = false">Continue</RBtn>
+          </template>
+        </RDialog>
+      </div>
+    `,
+  }),
+  play: async ({ canvasElement, step }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    const trigger = canvas.getByRole("button", { name: "Open confirmation" });
+    await step(
+      "explicit autofocus takes priority over the header close button",
+      async () => {
+        await userEvent.click(trigger);
+        const dialog = await body.findByRole("dialog");
+        await waitFor(() =>
+          expect(
+            within(dialog).getByRole("button", { name: "Cancel" }),
+          ).toHaveFocus(),
+        );
+      },
+    );
+    await step(
+      "Enter activates Cancel and restores focus to the trigger",
+      async () => {
+        await userEvent.keyboard("{Enter}");
+        await waitFor(() => expect(body.queryByRole("dialog")).toBeNull());
+        await expect(trigger).toHaveFocus();
+      },
+    );
+  },
 };
 
 // Loading and empty states aren't built into the primitive any more —

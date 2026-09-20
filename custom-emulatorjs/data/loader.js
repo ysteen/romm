@@ -166,6 +166,7 @@ const config = {
     dataPath: scriptPath,
     system: window.EJS_core,
     biosUrl: window.EJS_biosUrl,
+    azaharManagedStates: window.EJS_core === "azahar" && window.EJS_azaharManagedStates === true,
     gameName: window.EJS_gameName,
     color: window.EJS_color,
     adUrl: window.EJS_AdUrl,
@@ -174,7 +175,9 @@ const config = {
     adSize: window.EJS_AdSize,
     alignStartButton: window.EJS_alignStartButton,
     VirtualGamepadSettings: window.EJS_VirtualGamepadSettings,
-    buttonOpts: window.EJS_Buttons,
+    buttonOpts: window.EJS_core === "azahar" && window.EJS_azaharManagedStates === true
+        ? { ...window.EJS_Buttons, saveState: false, loadState: false, quickSave: false, quickLoad: false }
+        : window.EJS_Buttons,
     volume: window.EJS_volume,
     defaultControllers: window.EJS_defaultControls,
     startOnLoad: window.EJS_startOnLoaded,

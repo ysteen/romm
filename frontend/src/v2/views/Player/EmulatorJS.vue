@@ -41,6 +41,8 @@ import storeRoms, { type DetailedRom, type SimpleRom } from "@/stores/roms";
 import type { Events } from "@/types/emitter";
 import { getSupportedEJSCores } from "@/utils";
 import AssetPreview from "@/v2/components/Player/AssetPreview.vue";
+import AzaharStateControls from "@/v2/components/Player/AzaharStateControls.vue";
+import AzaharSystemData from "@/v2/components/Player/AzaharSystemData.vue";
 import AssetList from "@/v2/components/shared/AssetList.vue";
 import AssetStrip from "@/v2/components/shared/AssetStrip.vue";
 import GameCover from "@/v2/components/shared/GameCover.vue";
@@ -58,6 +60,7 @@ import {
   resolveStoredBezelVisible,
 } from "@/v2/utils/playerBezel";
 import { resolveStoredDisc } from "@/v2/utils/playerDisc";
+import { resolvePlayerFirmware } from "@/v2/utils/playerFirmware";
 import { installIOSFullscreenShim } from "@/views/Player/EmulatorJS/utils";
 
 // Reuse v1's heavy emulator integration — do NOT rewrite this. Lazy so the
@@ -124,6 +127,13 @@ const selectedState = ref<StateSchema | null>(null);
 const selectedDisc = ref<number | null>(null);
 const selectedCore = ref<string | null>(null);
 const selectedFirmware = ref<FirmwareSchema | null>(null);
+
+declare global {
+  interface Window {
+    EJS_azaharManagedStates?: boolean;
+  }
+}
+
 const supportedCores = ref<string[]>([]);
 const gameRunning = ref(false);
 const removeIOSFullscreenShim = ref<(() => void) | null>(null);
@@ -261,6 +271,8 @@ async function onPlay() {
   removeIOSFullscreenShim.value?.();
   removeIOSFullscreenShim.value = installIOSFullscreenShim();
 
+  window.EJS_azaharManagedStates = selectedCore.value === "azahar";
+
   gameRunning.value = true;
   window.EJS_fullscreenOnLoaded = fullscreenOnPlay.value;
   fullScreen.value = fullscreenOnPlay.value;
@@ -268,7 +280,7 @@ async function onPlay() {
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
-  const ROMM_RUNTIME_REVISION = "20260921.1";
+  const ROMM_RUNTIME_REVISION = "20260921.2";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 
@@ -450,19 +462,12 @@ onMounted(async () => {
     `player:${rom.value.platform_slug}:bios_id`,
   );
 
-  const biosFromStorage = storedBiosID
-    ? firmwareOptions.value.find((f) => f.id === parseInt(storedBiosID))
-    : undefined;
-  const biosFromConfig = coreOptions["bios_file"]
-    ? firmwareOptions.value.find(
-        (f) => f.file_name === coreOptions["bios_file"],
-      )
-    : undefined;
-  const biosFromSingleOption =
-    firmwareOptions.value.length === 1 ? firmwareOptions.value[0] : undefined;
-
-  selectedFirmware.value =
-    biosFromStorage ?? biosFromConfig ?? biosFromSingleOption ?? null;
+  selectedFirmware.value = resolvePlayerFirmware(
+    firmwareOptions.value,
+    selectedCore.value,
+    storedBiosID,
+    coreOptions["bios_file"],
+  );
 
   // Autofocus the Play CTA so gamepad/keyboard users land on the
   // primary action without an extra Tab. Mouse / touch keep the
@@ -499,6 +504,7 @@ function onGamepadButton(e: CustomEvent<{ name?: string }>) {
 }
 
 onBeforeUnmount(() => {
+  delete window.EJS_azaharManagedStates;
   // Leaving the player (back nav / route change) ends the session even if
   // the user never exited the game to the config screen first. flush() is
   // idempotent, so an exit that already flushed via the watch is a no-op.
@@ -757,6 +763,11 @@ const selectedAsset = computed<SaveSchema | StateSchema | null>(() =>
             return-object
           />
           <RSwitch v-model="fullscreenOnPlay" :label="t('play.full-screen')" />
+          <AzaharSystemData
+            v-if="selectedCore === 'azahar'"
+            :firmware="selectedFirmware"
+            :platform-fs-slug="rom?.platform_fs_slug ?? '3ds'"
+          />
           <!-- Only offered when this game actually has a bezel, so the user can
                hide a bad / misaligned one that obscures the game (#3939). -->
           <RSwitch
@@ -788,10 +799,20 @@ const selectedAsset = computed<SaveSchema | StateSchema | null>(() =>
     </div>
 
     <!-- Running state -->
-    <div v-else-if="rom" class="r-v2-ejs__stage">
+    <div
+      v-else-if="rom"
+      class="r-v2-ejs__stage"
+      :class="{ 'r-v2-ejs__stage--azahar': selectedCore === 'azahar' }"
+    >
+      <AzaharStateControls
+        v-if="selectedCore === 'azahar'"
+        :rom="rom"
+        :initial-state="selectedState"
+        @update:rom="rom = $event"
+      />
       <Player
         :rom="rom"
-        :state="selectedState"
+        :state="selectedCore === 'azahar' ? null : selectedState"
         :save="selectedSave"
         :bios="selectedFirmware"
         :core="selectedCore"
@@ -1016,6 +1037,15 @@ const selectedAsset = computed<SaveSchema | StateSchema | null>(() =>
   inset: var(--r-nav-h) 0 0 0;
   background: var(--r-color-canvas-bg);
   z-index: 1;
+}
+
+.r-v2-ejs__stage--azahar {
+  display: flex;
+  flex-direction: column;
+}
+.r-v2-ejs__stage--azahar :deep(#game) {
+  flex: 1;
+  min-height: 0;
 }
 
 /* Scraped bezel framing the running game. Full-height, centred, aspect

@@ -122,9 +122,13 @@ watch(
       // Defer to the next tick so the panel is mounted before we
       // try to move focus into it.
       nextTick(() => {
-        const focusTarget = panelRef.value?.querySelector<HTMLElement>(
-          "[autofocus], button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
-        );
+        const focusTarget =
+          panelRef.value?.querySelector<HTMLElement>(
+            "[autofocus]:not(:disabled)",
+          ) ??
+          panelRef.value?.querySelector<HTMLElement>(
+            "button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])",
+          );
         focusTarget?.focus();
       });
     } else {

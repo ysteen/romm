@@ -362,6 +362,9 @@ export function installIOSFullscreenShim() {
 export function createQuickLoadButton(): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
+  // The legacy quick-loader cannot confirm Azahar restores or report failures.
+  // Its v2 player provides managed, awaited state controls instead.
+  if (window.EJS_core === "azahar") return button;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("role", "presentation");
   svg.setAttribute("focusable", "false");

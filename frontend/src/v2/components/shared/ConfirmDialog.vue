@@ -13,14 +13,7 @@
 // Tone defaults to "warning"; pass "danger" for irreversible-and-serious.
 import { RBtn, RDialog, RTextField } from "@v2/lib";
 import type { Emitter } from "mitt";
-import {
-  computed,
-  inject,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-} from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Events } from "@/types/emitter";
 
@@ -34,7 +27,6 @@ const emitter = inject<Emitter<Events>>("emitter");
 const open = ref(false);
 const payload = ref<Payload | null>(null);
 const typed = ref("");
-const cancelButtonRef = ref<InstanceType<typeof RBtn> | null>(null);
 
 const tone = computed(() => payload.value?.tone ?? "warning");
 const confirmColor = computed(() =>
@@ -50,9 +42,6 @@ function onShow(p: Payload) {
   payload.value = p;
   typed.value = "";
   open.value = true;
-  nextTick(() => {
-    cancelButtonRef.value?.$el?.focus?.();
-  });
 }
 
 // Closing without picking (header X, route change) counts as a cancel.
@@ -85,7 +74,9 @@ onBeforeUnmount(() => emitter?.off("showConfirm", onShow));
     </template>
     <template v-if="payload" #content>
       <div class="r-confirm">
-        <p v-if="payload.body" class="r-confirm__body">{{ payload.body }}</p>
+        <p v-if="payload.body" class="r-confirm__body">
+          {{ payload.body }}
+        </p>
 
         <div v-if="payload.requireTyped" class="r-confirm__typed">
           <i18n-t
@@ -107,7 +98,8 @@ onBeforeUnmount(() => emitter?.off("showConfirm", onShow));
     </template>
     <template v-if="payload" #footer>
       <div class="r-confirm__actions">
-        <RBtn ref="cancelButtonRef" variant="text" @click="onCancel">
+        <!-- eslint-disable-next-line vuejs-accessibility/no-autofocus -- A modal must move focus inside; Cancel is the safe initial action. -->
+        <RBtn autofocus variant="text" @click="onCancel">
           {{ payload.cancelText ?? t("common.cancel") }}
         </RBtn>
         <RBtn
