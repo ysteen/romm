@@ -1,6 +1,13 @@
 {
   "all-saves": "Tüm kayıtlar",
   "all-states": "Tüm durum kayıtları",
+  "aram-error-format": "ARAM platformunda .dat, .jar veya .zip biçiminde bir oyun kullanın.",
+  "aram-error-runtime": "ARAM başlatılamadı. Çalışma ortamını, oyun dosyasını ve tarayıcı depolama izinlerini kontrol edin.",
+  "aram-error-size": "ARAM, 32 MiB boyutuna kadar oyunları destekler.",
+  "aram-exit-warning": "Kayıtları korumak için çıkmadan önce ARAM içinde oyunu durdurun. Kaydedilmemiş ilerleme kaybolabilir. Şimdi çıkılsın mı?",
+  "aram-not-installed": "İsteğe bağlı ARAM web çalışma ortamı yüklü değil.",
+  "aram-playable": "ARAM ile tarayıcıda oynanabilir",
+  "aram-save-notice": "Kayıtlar bu RomM kullanıcısı için bu tarayıcıda saklanır. Çıkmadan önce ARAM içinde oyunu durdurun. Sunucu kayıtları ve kayıt durumları bağlı değildir.",
   "back-to-gallery": "Galeriye dön",
   "back-to-game-details": "Oyun ayrıntılarına dön",
   "background-color": "Arka plan rengi",

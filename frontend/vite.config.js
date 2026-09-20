@@ -112,6 +112,12 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       target: "esnext",
+      rolldownOptions: {
+        input: {
+          main: fileURLToPath(new URL("./index.html", import.meta.url)),
+          aram: fileURLToPath(new URL("./aram.html", import.meta.url)),
+        },
+      },
       // Browser targets for CSS (prefixing + down-leveling) come from the
       // shared `.browserslistrc`. Never hand-write a `-webkit-` twin next to a
       // standard property: Lightning CSS collapses the pair to whichever is
@@ -128,6 +134,10 @@ export default defineConfig(({ mode }) => {
       }),
       VitePWA({
         injectRegister: null,
+        workbox: {
+          navigateFallbackDenylist: [/^\/aram\.html$/],
+          globIgnores: ["**/assets/aram/**"],
+        },
         manifest: {
           icons: [
             {

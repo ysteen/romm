@@ -1,6 +1,13 @@
 {
   "all-saves": "Toate salvările",
   "all-states": "Toate stările",
+  "aram-error-format": "Folosește un joc .dat, .jar sau .zip pe o platformă ARAM.",
+  "aram-error-runtime": "ARAM nu a putut porni. Verifică mediul de execuție, fișierul jocului și permisiunile de stocare ale browserului.",
+  "aram-error-size": "ARAM acceptă jocuri de până la 32 MiB.",
+  "aram-exit-warning": "Oprește jocul în ARAM înainte de a ieși pentru a păstra salvările. Progresul nesalvat se poate pierde. Ieși acum?",
+  "aram-not-installed": "Mediul web opțional ARAM nu este instalat.",
+  "aram-playable": "Se poate juca în browser prin ARAM",
+  "aram-save-notice": "Salvările rămân în acest browser pentru acest utilizator RomM. Oprește jocul în ARAM înainte de a ieși. Salvările și stările de pe server nu sunt conectate.",
   "back-to-gallery": "Înapoi la galerie",
   "back-to-game-details": "Înapoi la detaliile jocului",
   "background-color": "Culoare de fundal",

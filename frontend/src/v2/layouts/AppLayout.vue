@@ -18,6 +18,7 @@ import {
   watch,
 } from "vue";
 import { useRouter } from "vue-router";
+import { useAramStore } from "@/stores/aram";
 import storeCollections from "@/stores/collections";
 import storePlatforms from "@/stores/platforms";
 import { useStreamingStore } from "@/stores/streaming";
@@ -70,6 +71,7 @@ watch(
 const collectionsStore = storeCollections();
 const platformsStore = storePlatforms();
 const streamingStore = useStreamingStore();
+const aramStore = useAramStore();
 
 // Developer debug overlay — opt-in via Settings → Developer (per-device).
 // Lazily loaded so its chunk (and the vueuse perf hooks it pulls in) is only
@@ -165,6 +167,7 @@ onMounted(() => {
 
   // Streaming config is fetched once on app load
   void streamingStore.fetchConfig();
+  void aramStore.checkRuntime();
 });
 
 onBeforeUnmount(() => {

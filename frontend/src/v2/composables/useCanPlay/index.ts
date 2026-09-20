@@ -10,6 +10,8 @@
 // route (EJS vs Ruffle).
 import { storeToRefs } from "pinia";
 import { computed, type ComputedRef } from "vue";
+import { isAramEmulationSupported } from "@/players/aram/content";
+import { useAramStore } from "@/stores/aram";
 import storeConfig from "@/stores/config";
 import storeHeartbeat from "@/stores/heartbeat";
 import type { SimpleRom } from "@/stores/roms";
@@ -19,9 +21,11 @@ export function useCanPlay(getRom: () => SimpleRom | null | undefined): {
   canPlay: ComputedRef<boolean>;
   canPlayEJS: ComputedRef<boolean>;
   canPlayRuffle: ComputedRef<boolean>;
+  canPlayAram: ComputedRef<boolean>;
 } {
   const heartbeatStore = storeHeartbeat();
   const configStore = storeConfig();
+  const aramStore = useAramStore();
   const { value: heartbeat } = storeToRefs(heartbeatStore);
 
   const canPlayEJS = computed(() => {
@@ -44,7 +48,18 @@ export function useCanPlay(getRom: () => SimpleRom | null | undefined): {
     );
   });
 
-  const canPlay = computed(() => canPlayEJS.value || canPlayRuffle.value);
+  const canPlayAram = computed(() => {
+    const rom = getRom();
+    return Boolean(
+      rom &&
+      aramStore.available &&
+      isAramEmulationSupported(rom.platform_slug, configStore.config),
+    );
+  });
 
-  return { canPlay, canPlayEJS, canPlayRuffle };
+  const canPlay = computed(
+    () => canPlayEJS.value || canPlayRuffle.value || canPlayAram.value,
+  );
+
+  return { canPlay, canPlayEJS, canPlayRuffle, canPlayAram };
 }

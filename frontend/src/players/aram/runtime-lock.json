@@ -1,0 +1,8 @@
+{
+  "version": "0.3.0",
+  "revision": "88d6061c4a739389936356eae4b5bfef7ab898aa",
+  "archiveSha256": "deff01ba78c09956e6372c6da4bfd5ad88624e42b7f5b7644de8c9fbaf40fa70",
+  "wasmSha256": "58589dbd9578e6bc9a0d21ab0c3364a886b74daecfaae4d5a92cdaffabc7f57b",
+  "loaderSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
+  "licenseSha256": "52384ccc4232c5185801dc73252acc287d90b7972c8c65e3b34d47febfeba3a6"
+}

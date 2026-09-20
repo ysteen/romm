@@ -1,6 +1,13 @@
 {
   "all-saves": "Alle Spielstände",
   "all-states": "Alle Zustände",
+  "aram-error-format": "Verwende ein .dat-, .jar- oder .zip-Spiel auf einer ARAM-Plattform.",
+  "aram-error-runtime": "ARAM konnte nicht starten. Prüfe die Laufzeitumgebung, die Spieldatei und die Speicherberechtigungen des Browsers.",
+  "aram-error-size": "ARAM unterstützt Spiele bis zu 32 MiB.",
+  "aram-exit-warning": "Stoppe das Spiel in ARAM vor dem Verlassen, um Spielstände zu sichern. Ungespeicherter Fortschritt kann verloren gehen. Jetzt beenden?",
+  "aram-not-installed": "Die optionale ARAM-Web-Laufzeitumgebung ist nicht installiert.",
+  "aram-playable": "Mit ARAM im Browser spielbar",
+  "aram-save-notice": "Spielstände bleiben für diesen RomM-Benutzer in diesem Browser. Stoppe das Spiel in ARAM vor dem Verlassen. Server-Spielstände und Speicherzustände sind nicht angebunden.",
   "back-to-gallery": "Zurück zur Plattformübersicht",
   "back-to-game-details": "Zurück zu den Spieldetails",
   "background-color": "Hintergrundfarbe",

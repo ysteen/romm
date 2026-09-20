@@ -1,6 +1,13 @@
 {
   "all-saves": "All saves",
   "all-states": "All states",
+  "aram-error-format": "Use a .dat, .jar or .zip game on an ARAM platform.",
+  "aram-error-runtime": "ARAM could not start. Check the runtime, game file and browser storage permissions.",
+  "aram-error-size": "ARAM accepts games up to 32 MiB.",
+  "aram-exit-warning": "Stop the game in ARAM before leaving to persist in-game saves. Unsaved progress may be lost. Quit now?",
+  "aram-not-installed": "The optional ARAM web runtime is not installed.",
+  "aram-playable": "Playable in browser through ARAM",
+  "aram-save-notice": "Saves stay in this browser for this RomM user. Stop the game in ARAM before leaving. Server saves and save states are not connected.",
   "back-to-gallery": "Back to gallery",
   "back-to-game-details": "Back to game details",
   "background-color": "Background color",

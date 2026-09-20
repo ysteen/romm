@@ -75,6 +75,8 @@ export function useViewTransition() {
     const transition = document.startViewTransition(async () => {
       await navigate();
     });
+    // Superseded animations reject ready even when navigation succeeds.
+    void transition.ready.catch(() => undefined);
 
     // Clean up the inline style after the transition finishes — the
     // source element usually unmounts during navigate(), but if a route
@@ -101,7 +103,10 @@ function morphNameForRoute(route: RouteLocationNormalized): string | null {
   // `rom-cover-<id>` hero, so morph between any of them and the gallery /
   // each other.
   if (
-    (name === "rom" || name === "emulatorjs" || name === "ruffle") &&
+    (name === "rom" ||
+      name === "emulatorjs" ||
+      name === "ruffle" ||
+      name === "aram") &&
     params.rom
   ) {
     return `rom-cover-${params.rom}`;
@@ -163,6 +168,7 @@ export function installBackMorph(router: Router): () => void {
         await nextTick();
         await nextTick();
       });
+      void transition.ready.catch(() => undefined);
       transition.finished.finally(() => {
         pendingMorphName.value = null;
       });

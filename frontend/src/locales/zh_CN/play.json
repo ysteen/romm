@@ -1,6 +1,13 @@
 {
   "all-saves": "所有存档",
   "all-states": "所有状态",
+  "aram-error-format": "请使用 ARAM 平台的 .dat、.jar 或 .zip 游戏。",
+  "aram-error-runtime": "无法启动 ARAM。请检查运行时、游戏文件和浏览器存储权限。",
+  "aram-error-size": "ARAM 支持最大 32 MiB 的游戏。",
+  "aram-exit-warning": "离开前请在 ARAM 中停止游戏以保存存档。未保存的进度可能丢失。现在退出吗？",
+  "aram-not-installed": "尚未安装可选的 ARAM 网页运行时。",
+  "aram-playable": "可通过 ARAM 在浏览器中游玩",
+  "aram-save-notice": "存档仅保存在此浏览器的当前 RomM 用户下。离开前请在 ARAM 中停止游戏。尚未连接服务器存档和即时存档。",
   "back-to-gallery": "返回游戏库",
   "back-to-game-details": "返回游戏详情",
   "background-color": "背景颜色",

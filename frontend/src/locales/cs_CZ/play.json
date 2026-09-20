@@ -1,6 +1,13 @@
 {
   "all-saves": "Všechny uložené pozice",
   "all-states": "Všechny stavy",
+  "aram-error-format": "Použijte hru .dat, .jar nebo .zip na platformě ARAM.",
+  "aram-error-runtime": "ARAM se nepodařilo spustit. Zkontrolujte běhové prostředí, soubor hry a oprávnění úložiště prohlížeče.",
+  "aram-error-size": "ARAM podporuje hry do velikosti 32 MiB.",
+  "aram-exit-warning": "Před odchodem zastavte hru v ARAM, aby se zachovaly uložené pozice. Neuložený postup se může ztratit. Ukončit nyní?",
+  "aram-not-installed": "Volitelné webové běhové prostředí ARAM není nainstalováno.",
+  "aram-playable": "Lze hrát v prohlížeči přes ARAM",
+  "aram-save-notice": "Uložené pozice zůstávají v tomto prohlížeči pro tohoto uživatele RomM. Před odchodem zastavte hru v ARAM. Serverové pozice a uložené stavy nejsou propojeny.",
   "back-to-gallery": "Zpět do galerie",
   "back-to-game-details": "Zpět k detailům hry",
   "background-color": "Barva pozadí",

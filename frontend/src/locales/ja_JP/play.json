@@ -1,6 +1,13 @@
 {
   "all-saves": "すべてのセーブ",
   "all-states": "すべてのステートセーブ",
+  "aram-error-format": "ARAMプラットフォームの.dat、.jar、.zip形式のゲームを使用してください。",
+  "aram-error-runtime": "ARAMを起動できませんでした。ランタイム、ゲームファイル、ブラウザーの保存権限を確認してください。",
+  "aram-error-size": "ARAMは最大32 MiBのゲームに対応しています。",
+  "aram-exit-warning": "セーブデータを保持するには、終了前にARAMでゲームを停止してください。未保存の進行状況は失われる可能性があります。終了しますか？",
+  "aram-not-installed": "オプションのARAMウェブランタイムがインストールされていません。",
+  "aram-playable": "ARAMを使ってブラウザーでプレイ可能",
+  "aram-save-notice": "セーブデータはこのブラウザーの現在のRomMユーザーに保存されます。終了前にARAMでゲームを停止してください。サーバーのセーブとステートセーブには連携していません。",
   "back-to-gallery": "ギャラリーへ戻る",
   "back-to-game-details": "ゲーム詳細へ戻る",
   "background-color": "背景色",

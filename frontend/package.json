@@ -21,6 +21,7 @@
   "type": "module",
   "scripts": {
     "build:tokens": "tsx scripts/build-tokens.ts",
+    "install:aram": "node scripts/install-aram.mjs",
     "predev": "npm run build:tokens",
     "prebuild": "npm run build:tokens",
     "dev": "vite --host",
@@ -35,6 +36,7 @@
     "storybook:build": "storybook build",
     "storybook:test": "vitest run test/storybook.test.ts",
     "test:e2e": "playwright test",
+    "test:aram": "ARAM_BROWSER_TEST=1 playwright test --config playwright.aram.config.ts",
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {

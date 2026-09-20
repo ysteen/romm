@@ -34,6 +34,7 @@ export const ROUTES = {
   ROM: "rom",
   EMULATORJS: "emulatorjs",
   RUFFLE: "ruffle",
+  ARAM: "aram",
   STREAM: "stream",
   SCAN: "scan",
   UPLOAD: "upload",
@@ -259,6 +260,14 @@ const routes = [
         components: {
           default: () => import("@/views/Player/RuffleRS/Base.vue"),
           v2: v2For(ROUTES.RUFFLE),
+        },
+      },
+      {
+        path: "rom/:rom/aram",
+        name: ROUTES.ARAM,
+        components: {
+          default: () => import("@/views/Home.vue"),
+          v2: v2For(ROUTES.ARAM),
         },
       },
       {
@@ -701,6 +710,8 @@ router.beforeResolve(async (to, from) => {
   // the fixed navbar. Skip them — matching `scrollBehavior` above.
   if (to.path === from.path) return;
   const viewTransition = startViewTransition();
+  // A v2 cover morph may supersede this whole-page animation.
+  void viewTransition.ready.catch(() => undefined);
   await viewTransition.captured;
 });
 

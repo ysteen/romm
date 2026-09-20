@@ -18,6 +18,7 @@ const confirmFn = vi.fn();
 const confirmProtectedLaunch = { value: true };
 const canPlayEJS = { value: true };
 const canPlayRuffle = { value: false };
+const canPlayAram = { value: false };
 const streamContainer = { value: null as object | null };
 let originalLocation: Location;
 // Granted action keys — `null` means "everything" (the default).
@@ -65,7 +66,7 @@ vi.mock("@/v2/composables/useCan", () => ({
   }),
 }));
 vi.mock("@/v2/composables/useCanPlay", () => ({
-  useCanPlay: () => ({ canPlayEJS, canPlayRuffle }),
+  useCanPlay: () => ({ canPlayEJS, canPlayRuffle, canPlayAram }),
 }));
 vi.mock("@/v2/composables/useClipboard", () => ({
   useClipboard: () => ({ copy: vi.fn() }),
@@ -122,6 +123,7 @@ beforeEach(() => {
   confirmProtectedLaunch.value = true;
   canPlayEJS.value = true;
   canPlayRuffle.value = false;
+  canPlayAram.value = false;
   streamContainer.value = null;
   grantedActions.value = null;
 });
@@ -184,6 +186,24 @@ describe("useGameActions.play — launch confirmation", () => {
 
     expect(push).toHaveBeenCalledWith("/rom/1/ruffle");
     expect(locationAssign).not.toHaveBeenCalled();
+  });
+
+  it("launches ARAM through its independent route", async () => {
+    canPlayEJS.value = false;
+    canPlayAram.value = true;
+    const actions = useGameActions(() => makeRom());
+    expect(actions.canPlay.value).toBe(true);
+    await actions.play();
+    expect(push).toHaveBeenCalledWith("/rom/1/aram");
+    expect(locationAssign).not.toHaveBeenCalled();
+  });
+
+  it("keeps streaming priority over ARAM", async () => {
+    canPlayEJS.value = false;
+    canPlayAram.value = true;
+    streamContainer.value = {};
+    await useGameActions(() => makeRom()).play();
+    expect(push).toHaveBeenCalledWith("/rom/1/stream");
   });
 });
 

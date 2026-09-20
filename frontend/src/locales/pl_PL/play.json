@@ -1,6 +1,13 @@
 {
   "all-saves": "Wszystkie zapisy",
   "all-states": "Wszystkie stany",
+  "aram-error-format": "Użyj gry .dat, .jar lub .zip na platformie ARAM.",
+  "aram-error-runtime": "Nie udało się uruchomić ARAM. Sprawdź środowisko uruchomieniowe, plik gry i uprawnienia pamięci przeglądarki.",
+  "aram-error-size": "ARAM obsługuje gry do 32 MiB.",
+  "aram-exit-warning": "Zatrzymaj grę w ARAM przed wyjściem, aby zachować zapisy. Niezapisany postęp może zostać utracony. Wyjść teraz?",
+  "aram-not-installed": "Opcjonalne środowisko internetowe ARAM nie jest zainstalowane.",
+  "aram-playable": "Można grać w przeglądarce przez ARAM",
+  "aram-save-notice": "Zapisy pozostają w tej przeglądarce dla tego użytkownika RomM. Zatrzymaj grę w ARAM przed wyjściem. Zapisy i stany z serwera nie są połączone.",
   "back-to-gallery": "Powrót do galerii",
   "back-to-game-details": "Powrót do szczegółów gry",
   "background-color": "Kolor tła",

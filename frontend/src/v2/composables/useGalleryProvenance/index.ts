@@ -30,6 +30,7 @@ const CHAIN_ROUTES: ReadonlySet<string> = new Set([
   ROUTES.ROM,
   ROUTES.EMULATORJS,
   ROUTES.RUFFLE,
+  ROUTES.ARAM,
   ROUTES.STREAM,
 ]);
 

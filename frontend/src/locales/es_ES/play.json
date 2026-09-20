@@ -1,6 +1,13 @@
 {
   "all-saves": "Todas las partidas",
   "all-states": "Todos los estados",
+  "aram-error-format": "Usa un juego .dat, .jar o .zip de una plataforma ARAM.",
+  "aram-error-runtime": "No se pudo iniciar ARAM. Comprueba el entorno de ejecución, el archivo del juego y los permisos de almacenamiento del navegador.",
+  "aram-error-size": "ARAM admite juegos de hasta 32 MiB.",
+  "aram-exit-warning": "Detén el juego en ARAM antes de salir para conservar las partidas. Puedes perder el progreso no guardado. ¿Salir ahora?",
+  "aram-not-installed": "El entorno web opcional de ARAM no está instalado.",
+  "aram-playable": "Jugable en el navegador mediante ARAM",
+  "aram-save-notice": "Las partidas permanecen en este navegador para este usuario de RomM. Detén el juego en ARAM antes de salir. Las partidas y los estados guardados del servidor no están conectados.",
   "back-to-gallery": "Volver a galería",
   "back-to-game-details": "Volver a detalles",
   "background-color": "Color de fondo",

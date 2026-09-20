@@ -15,6 +15,9 @@
 // and `null` when nothing on the server can run it.
 import { storeToRefs } from "pinia";
 import { computed, type ComputedRef } from "vue";
+import i18n from "@/locales";
+import { isAramEmulationSupported } from "@/players/aram/content";
+import { useAramStore } from "@/stores/aram";
 import storeConfig, { type Config } from "@/stores/config";
 import storeHeartbeat, { type Heartbeat } from "@/stores/heartbeat";
 import {
@@ -23,7 +26,8 @@ import {
   isRuffleEmulationSupported,
 } from "@/utils";
 
-export type PlatformEmulator = "emulatorjs" | "ruffle" | "dosbox" | null;
+export type PlatformEmulator =
+  "emulatorjs" | "ruffle" | "dosbox" | "aram" | null;
 
 /** Pure helper — picks the engine that would actually run a platform.
  * Shared between the reactive and the batch composables so both surface
@@ -32,8 +36,10 @@ function resolveEmulator(
   slug: string | null | undefined,
   heartbeat: Heartbeat,
   config: Config | undefined,
+  aramAvailable: boolean,
 ): PlatformEmulator {
   if (!slug) return null;
+  if (aramAvailable && isAramEmulationSupported(slug, config)) return "aram";
   if (isRuffleEmulationSupported(slug, heartbeat, config)) return "ruffle";
   if (!isEJSEmulationSupported(slug, heartbeat, config)) return null;
   const resolved = config?.PLATFORMS_VERSIONS[slug] || slug;
@@ -46,10 +52,12 @@ export function usePlatformPlayable(getSlug: () => string | null | undefined): {
   playable: ComputedRef<boolean>;
   playableEJS: ComputedRef<boolean>;
   playableRuffle: ComputedRef<boolean>;
+  playableAram: ComputedRef<boolean>;
   emulator: ComputedRef<PlatformEmulator>;
 } {
   const heartbeatStore = storeHeartbeat();
   const configStore = storeConfig();
+  const aramStore = useAramStore();
   const { value: heartbeat } = storeToRefs(heartbeatStore);
 
   const playableEJS = computed(() => {
@@ -68,13 +76,29 @@ export function usePlatformPlayable(getSlug: () => string | null | undefined): {
     );
   });
 
-  const playable = computed(() => playableEJS.value || playableRuffle.value);
+  const playableAram = computed(() => {
+    const slug = getSlug();
+    return Boolean(
+      slug &&
+      aramStore.available &&
+      isAramEmulationSupported(slug, configStore.config),
+    );
+  });
 
-  const emulator = computed<PlatformEmulator>(() =>
-    resolveEmulator(getSlug(), heartbeat.value, configStore.config),
+  const playable = computed(
+    () => playableEJS.value || playableRuffle.value || playableAram.value,
   );
 
-  return { playable, playableEJS, playableRuffle, emulator };
+  const emulator = computed<PlatformEmulator>(() =>
+    resolveEmulator(
+      getSlug(),
+      heartbeat.value,
+      configStore.config,
+      aramStore.available,
+    ),
+  );
+
+  return { playable, playableEJS, playableRuffle, playableAram, emulator };
 }
 
 export function usePlatformPlayableChecker(): {
@@ -85,6 +109,7 @@ export function usePlatformPlayableChecker(): {
 } {
   const heartbeatStore = storeHeartbeat();
   const configStore = storeConfig();
+  const aramStore = useAramStore();
   const { value: heartbeat } = storeToRefs(heartbeatStore);
 
   // Expose computed functions so callers that consume them inside another
@@ -93,11 +118,13 @@ export function usePlatformPlayableChecker(): {
   const isPlayable = computed(() => {
     const hb = heartbeat.value;
     const cfg = configStore.config;
+    const aramAvailable = aramStore.available;
     return (slug: string | null | undefined) => {
       if (!slug) return false;
       return (
         isEJSEmulationSupported(slug, hb, cfg) ||
-        isRuffleEmulationSupported(slug, hb, cfg)
+        isRuffleEmulationSupported(slug, hb, cfg) ||
+        (aramAvailable && isAramEmulationSupported(slug, cfg))
       );
     };
   });
@@ -105,8 +132,9 @@ export function usePlatformPlayableChecker(): {
   const getEmulator = computed(() => {
     const hb = heartbeat.value;
     const cfg = configStore.config;
+    const aramAvailable = aramStore.available;
     return (slug: string | null | undefined): PlatformEmulator =>
-      resolveEmulator(slug, hb, cfg);
+      resolveEmulator(slug, hb, cfg, aramAvailable);
   });
 
   return { isPlayable, getEmulator };
@@ -116,6 +144,8 @@ export function usePlatformPlayableChecker(): {
  * every surface so the wording stays in lock-step. */
 export function playableTooltip(emulator: PlatformEmulator): string {
   switch (emulator) {
+    case "aram":
+      return i18n.global.t("play.aram-playable");
     case "ruffle":
       return "Playable in browser through Ruffle";
     case "dosbox":

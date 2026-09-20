@@ -1,6 +1,13 @@
 {
   "all-saves": "Összes mentés",
   "all-states": "Összes állás",
+  "aram-error-format": "Használj .dat, .jar vagy .zip játékot egy ARAM-platformon.",
+  "aram-error-runtime": "Az ARAM nem indult el. Ellenőrizd a futtatókörnyezetet, a játékfájlt és a böngésző tárhelyengedélyeit.",
+  "aram-error-size": "Az ARAM legfeljebb 32 MiB méretű játékokat támogat.",
+  "aram-exit-warning": "Kilépés előtt állítsd le a játékot az ARAM-ban a mentések megőrzéséhez. A nem mentett haladás elveszhet. Kilépsz most?",
+  "aram-not-installed": "Az opcionális ARAM webes futtatókörnyezet nincs telepítve.",
+  "aram-playable": "Böngészőben játszható az ARAM segítségével",
+  "aram-save-notice": "A mentések ebben a böngészőben maradnak ennél a RomM-felhasználónál. Kilépés előtt állítsd le a játékot az ARAM-ban. A szerveres mentések és mentett állapotok nincsenek összekapcsolva.",
   "back-to-gallery": "Vissza a galériába",
   "back-to-game-details": "Vissza a játék részleteihez",
   "background-color": "Háttérszín",

@@ -45,6 +45,7 @@ mariadb
 # used to mock the library/config/mounts/etc while testing
 frontend/assets/romm
 frontend/assets/emulatorjs/cores
+frontend/public/assets/aram/
 romm_mock
 
 # virtualenv

@@ -1,6 +1,13 @@
 {
   "all-saves": "Toutes les sauvegardes",
   "all-states": "Tous les états",
+  "aram-error-format": "Utilisez un jeu .dat, .jar ou .zip sur une plateforme ARAM.",
+  "aram-error-runtime": "Impossible de démarrer ARAM. Vérifiez le moteur, le fichier du jeu et les autorisations de stockage du navigateur.",
+  "aram-error-size": "ARAM accepte les jeux de 32 MiB maximum.",
+  "aram-exit-warning": "Arrêtez le jeu dans ARAM avant de quitter pour conserver les sauvegardes. La progression non sauvegardée peut être perdue. Quitter maintenant ?",
+  "aram-not-installed": "Le moteur web optionnel ARAM n’est pas installé.",
+  "aram-playable": "Jouable dans le navigateur avec ARAM",
+  "aram-save-notice": "Les sauvegardes restent dans ce navigateur pour cet utilisateur RomM. Arrêtez le jeu dans ARAM avant de quitter. Les sauvegardes et les états du serveur ne sont pas connectés.",
   "back-to-gallery": "Retour à la galerie",
   "back-to-game-details": "Retour aux détails du jeu",
   "background-color": "Couleur d'arrière-plan",
