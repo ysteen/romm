@@ -3,7 +3,11 @@ const folderPath = (path) => {
     return path.substring(0, path.length - filename.length);
 };
 
-let scriptPath = (typeof window.EJS_pathtodata === "string") ? window.EJS_pathtodata : folderPath((new URL(document.currentScript.src)).pathname);
+const loaderUrl = new URL(document.currentScript.src, document.baseURI);
+const runtimeRevision = loaderUrl.searchParams.get("v");
+let scriptPath = (typeof window.EJS_pathtodata === "string")
+    ? window.EJS_pathtodata
+    : folderPath(loaderUrl.pathname);
 if (!scriptPath.endsWith("/")) {
     scriptPath += "/";
 }
@@ -24,7 +28,14 @@ function resolvePath(path) {
     } else {
         resolved = scriptPath + "src/" + path;
     }
-    return new URL(resolved, document.baseURI).href;
+    const url = new URL(resolved, document.baseURI);
+    const runtimeBaseUrl = new URL(scriptPath, document.baseURI);
+    if (runtimeRevision
+        && url.origin === runtimeBaseUrl.origin
+        && url.pathname.startsWith(runtimeBaseUrl.pathname)) {
+        url.searchParams.set("v", runtimeRevision);
+    }
+    return url.href;
 }
 
 async function loadScript(file) {

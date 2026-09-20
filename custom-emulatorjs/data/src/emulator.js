@@ -1,6 +1,8 @@
 import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js";
 import { EJS_COMPRESSION } from "./compression.js";
-import { EJS_GameManager } from "./GameManager.js";
+// Static module imports do not inherit the cache revision from emulator.js.
+// Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
+import { EJS_GameManager } from "./GameManager.js?v=20260921.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
 import { cyrb53 } from "./utils.js";
@@ -220,6 +222,30 @@ class EmulatorJS {
         this.ejs_version = CONSTS.version;
         this.extensions = [];
         this.allSettings = {};
+        this.inputTelemetry = {
+            total: 0,
+            keyboard: { keydown: 0, keyup: 0, other: 0 },
+            gamepad: { events: 0 },
+            retro: { events: 0, active: {} },
+            controllerDevices: {},
+            controllerPortInfo: null,
+            lastEvents: [],
+            lastPublish: 0
+        };
+        this.coreLogTelemetry = {
+            suppressed: 0,
+            categories: {},
+            lastMessage: null,
+            lastPublish: 0
+        };
+        this.longTaskTelemetry = {
+            count: 0,
+            totalMs: 0,
+            maxMs: 0,
+            lastStartMs: 0,
+            lastDurationMs: 0
+        };
+        this.longTaskObserver = null;
         this.initControlVars();
         this.debug = config.debug;
         if (this.debug || (window.location && ["localhost", "127.0.0.1"].includes(location.hostname))) {
@@ -318,6 +344,7 @@ class EmulatorJS {
         this.capture.video.videoBitrate = (typeof this.capture.video.videoBitrate === "number") ? this.capture.video.videoBitrate : 2.5 * 1024 * 1024;
         this.capture.video.audioBitrate = (typeof this.capture.video.audioBitrate === "number") ? this.capture.video.audioBitrate : 192 * 1024;
         this.bindListeners();
+        this.startLongTaskTelemetry();
         if (this.netplayEnabled) {
             this.netplay = new Netplay(this);
         }
@@ -1139,18 +1166,8 @@ class EmulatorJS {
             canvas: this.canvas,
             callbacks: {},
             parent: this.elements.parent,
-            print: (msg) => {
-                if (this.debug) {
-                    console.log(msg);
-                }
-                window.__reportBrowserLog?.("core-print", msg);
-            },
-            printErr: (msg) => {
-                if (this.debug) {
-                    console.log(msg);
-                }
-                window.__reportBrowserLog?.("core-error", msg);
-            },
+            print: (msg) => this.writeCoreLog(msg, false),
+            printErr: (msg) => this.writeCoreLog(msg, true),
             totalDependencies: 0,
             locateFile: function (fileName) {
                 if (this.debug) console.log(fileName);
@@ -1180,7 +1197,7 @@ class EmulatorJS {
     startGame() {
         try {
             const args = [];
-            if (this.debug) args.push("-v");
+            if (this.debug && this.getCore() !== "azahar") args.push("-v");
             args.push("/" + this.fileName);
             if (this.debug) console.log(args);
             this.Module.callMain(args);
@@ -1281,7 +1298,7 @@ class EmulatorJS {
             if (document.activeElement !== this.elements.parent && this.config.noAutoFocus !== true) this.elements.parent.focus();
         })
         this.addEventListener(window, "resize", this.handleResize.bind(this));
-        this.addEventListener(window, "blur", () => this.stopAllAutofire());
+        this.addEventListener(window, "blur", () => this.releaseAllInputs());
 
         let counter = 0;
         this.elements.statePopupPanel = this.createPopup("", {}, true);
@@ -2447,7 +2464,7 @@ class EmulatorJS {
 
         this.addEventListener(this.canvas, "click", (e) => {
             if (e.pointerType === "touch") return;
-            if (this.enableMouseLock && !this.paused) {
+            if (this.enableMouseLock && !this.touch && !this.hasTouchScreen && !this.paused) {
                 if (this.canvas.requestPointerLock) {
                     this.canvas.requestPointerLock();
                 } else if (this.canvas.mozRequestPointerLock) {
@@ -3586,6 +3603,129 @@ class EmulatorJS {
         popupMsg.appendChild(btn);
         this.controlMenu.appendChild(popup);
     }
+    recordInputTelemetry(kind, payload = {}) {
+        const telemetry = this.inputTelemetry;
+        if (!telemetry) return;
+        telemetry.total++;
+        if (kind === "keyboard") {
+            if (payload.type === "keydown") telemetry.keyboard.keydown++;
+            else if (payload.type === "keyup") telemetry.keyboard.keyup++;
+            else telemetry.keyboard.other++;
+        } else if (kind === "gamepad") {
+            telemetry.gamepad.events++;
+        } else if (kind === "retro-input") {
+            telemetry.retro.events++;
+            const key = `${payload.player}:${payload.index}`;
+            if (payload.value) telemetry.retro.active[key] = payload.value;
+            else delete telemetry.retro.active[key];
+        } else if (kind === "controller-port-device") {
+            telemetry.controllerDevices[String(payload.port)] = payload.device;
+        } else if (kind === "controller-port-info") {
+            telemetry.controllerPortInfo = payload.info;
+        }
+
+        telemetry.lastEvents.push({ at: Date.now(), kind, ...payload });
+        if (telemetry.lastEvents.length > 24) telemetry.lastEvents.shift();
+        this.publishInputTelemetry();
+    }
+    publishInputTelemetry(force = false) {
+        const telemetry = this.inputTelemetry;
+        if (!telemetry) return;
+        const now = Date.now();
+        if (!force && now - telemetry.lastPublish < 1000) return;
+        const snapshot = {
+            at: now,
+            total: telemetry.total,
+            keyboard: { ...telemetry.keyboard },
+            gamepad: { ...telemetry.gamepad },
+            retro: {
+                events: telemetry.retro.events,
+                active: { ...telemetry.retro.active }
+            },
+            controllerDevices: { ...telemetry.controllerDevices },
+            controllerPortInfo: telemetry.controllerPortInfo,
+            lastEvents: telemetry.lastEvents.slice(-12)
+        };
+        globalThis.__EJS_INPUT_STATS__ = snapshot;
+        if (typeof globalThis.__reportBrowserLog === "function")
+            globalThis.__reportBrowserLog("ejs-input", snapshot);
+        telemetry.lastPublish = now;
+    }
+    classifyNoisyCoreLog(message) {
+        if (this.getCore() !== "azahar") return null;
+        const text = String(message || "");
+        if (!text.trim()) return "blank";
+        if (text.includes("<Debug>")) return "debug";
+        if (text.includes("warning X3577")) return "shader-warning";
+        if (text.includes("D3D shader compilation failed")) return "shader-retry";
+        if (text.includes("Retrying with skip")) return "shader-retry";
+        if (text.includes("internal error: l-value expected")) return "shader-retry";
+        return null;
+    }
+    writeCoreLog(message, isError) {
+        const category = this.classifyNoisyCoreLog(message);
+        if (category) {
+            const telemetry = this.coreLogTelemetry;
+            telemetry.suppressed++;
+            telemetry.categories[category] = (telemetry.categories[category] || 0) + 1;
+            telemetry.lastMessage = String(message).slice(0, 240);
+            const now = Date.now();
+            if (now - telemetry.lastPublish >= 1000) {
+                globalThis.__EJS_CORE_LOG_STATS__ = {
+                    at: now,
+                    suppressed: telemetry.suppressed,
+                    categories: { ...telemetry.categories },
+                    lastMessage: telemetry.lastMessage
+                };
+                telemetry.lastPublish = now;
+            }
+            return;
+        }
+
+        if (this.debug) {
+            const logAsError = this.getCore() === "azahar" && isError;
+            console[logAsError ? "error" : "log"](message);
+        }
+        window.__reportBrowserLog?.(isError ? "core-error" : "core-print", message);
+    }
+    startLongTaskTelemetry() {
+        if (this.getCore() !== "azahar" || typeof PerformanceObserver !== "function") return;
+        if (!PerformanceObserver.supportedEntryTypes?.includes("longtask")) return;
+
+        this.longTaskObserver = new PerformanceObserver((list) => {
+            const telemetry = this.longTaskTelemetry;
+            for (const entry of list.getEntries()) {
+                telemetry.count++;
+                telemetry.totalMs += entry.duration;
+                telemetry.maxMs = Math.max(telemetry.maxMs, entry.duration);
+                telemetry.lastStartMs = entry.startTime;
+                telemetry.lastDurationMs = entry.duration;
+            }
+            globalThis.__EJS_LONG_TASK_STATS__ = {
+                at: Date.now(),
+                count: telemetry.count,
+                totalMs: telemetry.totalMs,
+                maxMs: telemetry.maxMs,
+                lastStartMs: telemetry.lastStartMs,
+                lastDurationMs: telemetry.lastDurationMs
+            };
+        });
+        this.longTaskObserver.observe({ type: "longtask", buffered: false });
+        this.on("exit", () => {
+            this.longTaskObserver?.disconnect();
+            this.longTaskObserver = null;
+        });
+    }
+    releaseAllInputs() {
+        this.stopAllAutofire();
+        if (!this.gameManager || !this.inputTelemetry) return;
+        const active = Object.keys(this.inputTelemetry.retro.active);
+        for (const key of active) {
+            const [player, index] = key.split(":").map(Number);
+            this.gameManager.simulateInput(player, index, 0);
+        }
+        this.publishInputTelemetry(true);
+    }
     initControlVars() {
         this.defaultControllers = {
             0: {
@@ -3876,6 +4016,12 @@ class EmulatorJS {
     }
     keyChange(e) {
         if (e.repeat) return;
+        this.recordInputTelemetry("keyboard", {
+            type: e.type,
+            code: e.code,
+            key: e.key,
+            keyCode: e.keyCode
+        });
         if (!this.started) return;
         if (this.controlPopup.parentElement.parentElement.getAttribute("hidden") === null) {
             const num = this.controlPopup.getAttribute("button-num");
@@ -3909,6 +4055,14 @@ class EmulatorJS {
         }
     }
     gamepadEvent(e) {
+        this.recordInputTelemetry("gamepad", {
+            type: e.type,
+            gamepadIndex: e.gamepadIndex,
+            label: e.label,
+            index: e.index,
+            axis: e.axis,
+            value: e.value
+        });
         if (!this.started) return;
         const gamepadSelection = this.getGamepadSelectionValue(e.gamepadIndex);
         if (!gamepadSelection) {
@@ -4904,7 +5058,7 @@ class EmulatorJS {
         } else if (option === "altKeyboardInput") {
             this.gameManager.setAltKeyEnabled(value === "enabled");
         } else if (option === "lockMouse") {
-            this.enableMouseLock = (value === "enabled");
+            this.enableMouseLock = value === "enabled" && !this.touch && !this.hasTouchScreen;
         } else if (option === "autofireInterval") {
             this.defaultAutoFireInterval = parseInt(value);
         } else if (option.startsWith("controller-port-device-p")) {

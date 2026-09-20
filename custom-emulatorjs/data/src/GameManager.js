@@ -320,6 +320,7 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         })();
     }
     simulateInput(player, index, value) {
+        this.EJS.recordInputTelemetry?.("retro-input", { player, index, value });
         if (this.EJS.isNetplay) {
             this.EJS.netplay.simulateInput(player, index, value);
             return;
@@ -556,10 +557,13 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         return this.isPpsspp() || !!this.functions.supportsStates();
     }
     setControllerPortDevice(port, device) {
+        this.EJS.recordInputTelemetry?.("controller-port-device", { port, device });
         this.functions.setControllerPortDevice(port, device);
     }
     getControllerPortInfo() {
-        return this.functions.getControllerPortInfo();
+        const info = this.functions.getControllerPortInfo();
+        this.EJS.recordInputTelemetry?.("controller-port-info", { info });
+        return info;
     }
     getSaveFile(save) {
         if (save !== false) {

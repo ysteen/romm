@@ -268,6 +268,7 @@ async function onPlay() {
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
+  const ROMM_RUNTIME_REVISION = "20260921.1";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 
@@ -304,7 +305,10 @@ async function onPlay() {
   }
 
   async function attemptLoad(path: string) {
-    const snapshot = path === LOCAL_PATH ? `?v=${EMULATORJS_SNAPSHOT}` : "";
+    const snapshot =
+      path === LOCAL_PATH
+        ? `?v=${EMULATORJS_SNAPSHOT}-${ROMM_RUNTIME_REVISION}`
+        : "";
     const loaderUrl = `${path}/loader.js${snapshot}`;
     if (!(await isJsResource(loaderUrl))) {
       throw new Error(`Loader at ${loaderUrl} did not return JavaScript`);

@@ -1,9 +1,9 @@
 # Custom DOSBox Pure and shared Windows 95
 
 This workspace pins EmulatorJS 4.3 nightly commit
-`cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` and its 2026-05-16 nightly core
-bundle on RomM 5.1.0. The locally built DOSBox Pure core replaces only the two
-DOSBox Pure binaries in that coherent snapshot. The core declares a minimum
+`cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` on RomM 5.2.0. Nightly core files are
+downloaded during the image build, then local DOSBox Pure, PPSSPP and Azahar
+binaries replace their corresponding cores. DOSBox Pure declares a minimum
 EmulatorJS version of 4.3.0, so RomM's bundled 4.2.3 frontend cannot run it. It
 also supports keeping one Windows 95 disk in RomM's DOS firmware and keeping
 each game as a separate ROM.
@@ -47,13 +47,55 @@ docker compose -f <your-compose.yml> -f compose.custom-dosbox-pure.yml build rom
 docker compose -f <your-compose.yml> -f compose.custom-dosbox-pure.yml up -d romm
 ```
 
-The image installs the pinned nightly frontend and all matching nightly cores,
-then overlays the RomM integration files and both custom threaded DOSBox Pure
-variants. The nightly core ZIP is verified by SHA-256 during the Docker build.
+The image installs the pinned nightly frontend and downloads the nightly core
+set from the EmulatorJS CDN, then overlays the RomM integration files and custom
+cores. The frontend revision is pinned, but the downloaded nightly cores can
+change between builds and require CDN availability.
 Netplay also uses this local snapshot instead of silently switching every game
 to the mutable CDN nightly. The included GameManager flushes IDBFS every five
 seconds only for DOSBox Pure; other cores retain upstream save timing and
 shutdown behavior.
+
+## RomM 5.2 upgrade and Azahar core
+
+This branch includes the official RomM `5.2.0` release and retains the custom
+DOSBox Pure, PPSSPP and Azahar save-bundle integration. At startup, an emulator
+state takes precedence over an ordinary SRAM save. Directory-backed save bundles
+are still extracted before the core starts and are not loaded a second time.
+
+The included Azahar core contains the WebAssembly interpreter, streaming-buffer
+and color-order fixes, plus signed GLSL jump dispatch for ANGLE/D3D11. In the
+tested Mario & Luigi: Dream Team gameplay scene, warmed hardware draws reached
+about 60 core FPS with no new audio underruns in two one-minute captures. Cold
+shader compilation can still cause long pauses. Hardware draws remain opt-in via
+`citra_use_webgl_hw_draw`; this release does not enable them for every game or GPU.
+The matching source patches, tests and measurement notes are in the
+[`ysteen/build` custom branch](https://github.com/ysteen/build/tree/custom/dosbox-pure-persistence).
+
+For an existing installation, back up the database and persistent directories
+before upgrading. Change `ROMM_IMAGE` in `deploy/.env` to
+`romm-custom-dosbox-pure:5.2.0` if it still names an older image, then run the
+deployment command above. The deployment script preserves existing credentials
+and configuration. Updating this Git checkout alone does not restart containers
+or migrate the running database.
+
+### Upgrade verification (2026-09-21)
+
+- Frontend typecheck passed with a 4 GiB Node heap; the default 2 GiB heap ran
+  out of memory in this environment.
+- All 762 frontend tests across 67 files passed with `--maxWorkers=1`.
+- Production frontend build, locale completeness/sorting, runtime JavaScript
+  syntax and Git whitespace checks passed.
+- The new regression tests execute the real startup save/state branch without
+  mounting a ROM. They also cover local module cache revisions and external URLs.
+- The touched-file ESLint run still reports two existing errors in the legacy
+  console player (unused `FirmwareSchema` and a non-focusable button role).
+  Both reproduce on the pre-upgrade commit; the new regression test is lint-clean.
+- Full Docker image verification remains incomplete: a nightly CDN core download
+  stalled after the frontend stage succeeded, so that build was stopped. No
+  running container, database or saved game was replaced for this upgrade.
+
+## Save bundle behavior
 
 DOSBox Pure does not store an installed operating system's disk changes in
 RetroArch's nominal `.srm` file. Depending on the boot mode it writes sibling

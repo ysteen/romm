@@ -721,6 +721,7 @@ async function boot() {
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
+  const ROMM_RUNTIME_REVISION = "20260921.1";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 
@@ -740,7 +741,10 @@ async function boot() {
     loaderStatus.value = label === "local" ? "loading-local" : "loading-cdn";
 
     window.EJS_pathtodata = path;
-    const snapshot = label === "local" ? `?v=${EMULATORJS_SNAPSHOT}` : "";
+    const snapshot =
+      label === "local"
+        ? `?v=${EMULATORJS_SNAPSHOT}-${ROMM_RUNTIME_REVISION}`
+        : "";
     await loadScript(`${path}/loader.js${snapshot}`);
   }
 

@@ -89,7 +89,22 @@ REGIONS = (
 )
 
 REGIONS_BY_SHORTCODE = {region[0]: region[1] for region in REGIONS}
-REGIONS_NAME_KEYS = frozenset(region[1].lower() for region in REGIONS)
+
+# Every accepted region spelling, lowercased, mapped to its canonical name.
+_REGION_BY_ALIAS = {
+    **{name.lower(): name for _, name in REGIONS},
+    **{code.lower(): name for code, name in REGIONS},
+}
+
+
+def normalize_region(tag: str) -> str | None:
+    """Resolve a filename region tag to its canonical REGIONS name.
+
+    Case-insensitive, so "usa", "USA" and "Usa" collapse to one facet value
+    instead of three. Returns None for tags that name no known region.
+    """
+    return _REGION_BY_ALIAS.get(tag.strip().lower())
+
 
 # Maps full REGIONS names to lowercase shortcodes used by metadata providers
 REGION_NAME_TO_PROVIDER_SHORTCODE: dict[str, str] = {
@@ -136,7 +151,21 @@ def region_name_to_provider_shortcode(region_name: str | None) -> str | None:
 
 
 LANGUAGES_BY_SHORTCODE = {lang[0]: lang[1] for lang in LANGUAGES}
-LANGUAGES_NAME_KEYS = frozenset(lang[1].lower() for lang in LANGUAGES)
+
+# Every accepted language spelling, lowercased, mapped to its canonical name.
+_LANGUAGE_BY_ALIAS = {
+    **{name.lower(): name for _, name in LANGUAGES},
+    **{code.lower(): name for code, name in LANGUAGES},
+}
+
+
+def normalize_language(tag: str) -> str | None:
+    """Resolve a filename language tag to its canonical LANGUAGES name.
+
+    Case-insensitive, so "english", "English" and "ENGLISH" collapse to one
+    facet value. Returns None for tags that name no known language.
+    """
+    return _LANGUAGE_BY_ALIAS.get(tag.strip().lower())
 
 
 class CoverSize(Enum):
@@ -248,7 +277,9 @@ class FSHandler:
             os.chmod(temp_path, 0o644)
             os.replace(str(temp_path), str(target_path))
 
-        except Exception:
+        # BaseException, not Exception: a cancelled scan raises CancelledError,
+        # which would otherwise skip cleanup and strand a temp file per cancel.
+        except BaseException:
             async_temp = AnyioPath(temp_path)
             if await async_temp.exists():
                 await async_temp.unlink()
@@ -271,24 +302,24 @@ class FSHandler:
         cnfg = cm.get_config()
         excluded_extensions = cnfg.EXCLUDED_SINGLE_EXT
         excluded_names = cnfg.EXCLUDED_SINGLE_FILES
-        excluded_files: list[str] = []
 
-        for file_name in files:
-            file_name_lower = file_name.lower()
+        # Built once rather than per file, and endswith takes the whole tuple.
+        excluded_suffixes = tuple(f".{ext}" for ext in excluded_extensions)
 
+        def is_excluded(file_name: str) -> bool:
             # Check whether the filename ends with any excluded extension entry.
-            if any(file_name_lower.endswith("." + ext) for ext in excluded_extensions):
-                excluded_files.append(file_name)
-                continue
+            if file_name.lower().endswith(excluded_suffixes):
+                return True
 
             # Check if the file name matches a pattern in the excluded list.
-            if file_name in excluded_names or any(
+            return file_name in excluded_names or any(
                 fnmatch.fnmatch(file_name, name) for name in excluded_names
-            ):
-                excluded_files.append(file_name)
+            )
 
-        # Return files that are not in the filtered list.
-        return [f for f in files if f not in excluded_files]
+        # Deciding per file keeps this linear. Collecting the exclusions first and
+        # then filtering against that list rescans it once per file, which gets
+        # expensive on platforms holding tens of thousands of files.
+        return [f for f in files if not is_excluded(f)]
 
     async def make_directory(self, path: str) -> None:
         """
@@ -414,15 +445,22 @@ class FSHandler:
                     else:
                         raise ValueError("Unsupported file type for writing")
 
+    @asynccontextmanager
     async def write_file_streamed(self, path: str, filename: str):
         """
         Write file to filesystem using a streamed approach.
+
+        The stream lands in a temporary file that is renamed over the target
+        once the caller's block completes, so a download killed mid-stream
+        leaves any existing file intact instead of truncating it in place. A
+        truncated file is the worst outcome, since it still satisfies the
+        `*_exists` checks and every later scan skips it.
 
         Args:
             path: Relative path within base directory
             filename: Name of the file to write
 
-        Returns:
+        Yields:
             File object for writing
 
         Raises:
@@ -443,8 +481,11 @@ class FSHandler:
             # Ensure target directory exists
             target_directory.mkdir(parents=True, exist_ok=True)
 
-            # Open file for writing
-            return await open_file(final_file_path, "wb")
+            # The handle closes before _atomic_write renames, so the target
+            # never receives a partially flushed file.
+            async with self._atomic_write(final_file_path) as temp_path:
+                async with await open_file(temp_path, "wb") as f:
+                    yield f
 
     async def read_file(self, file_path: str) -> bytes:
         """
@@ -650,6 +691,27 @@ class FSHandler:
         lock = await self._get_file_lock(str(full_path))
         async with lock:
             return full_path.is_file()
+
+    async def directory_exists(self, path: str) -> bool:
+        """
+        Check if a directory exists.
+
+        Args:
+            path: Relative path to the directory
+
+        Returns:
+            True if directory exists, False otherwise
+        """
+        if not path:
+            raise ValueError("Directory path cannot be empty")
+
+        # Validate and normalize path
+        full_path = self.validate_path(path)
+
+        # Async thread-safe existence check
+        lock = await self._get_file_lock(str(full_path))
+        async with lock:
+            return full_path.is_dir()
 
     async def get_file_size(self, file_path: str) -> int:
         """
