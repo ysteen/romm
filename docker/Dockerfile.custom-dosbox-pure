@@ -1,7 +1,8 @@
 ARG ROMM_BASE_IMAGE=ghcr.io/rommapp/romm:5.2.0
 FROM ${ROMM_BASE_IMAGE} AS romm-base
 
-FROM node:24-alpine AS frontend-build
+# Use glibc for native Vite dependencies and build static assets without emulation.
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS frontend-build
 WORKDIR /front
 COPY frontend/package*.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
