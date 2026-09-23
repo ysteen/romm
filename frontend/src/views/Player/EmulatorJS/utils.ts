@@ -4,6 +4,12 @@ import { type StateSchema } from "@/__generated__";
 import saveApi from "@/services/api/save";
 import stateApi from "@/services/api/state";
 import { type DetailedRom } from "@/stores/roms";
+import {
+  azaharStateFilename,
+  getAzaharStateRuntime,
+  MAX_AZAHAR_STATE_BYTES,
+  restoreAzaharState,
+} from "@/utils/azaharState";
 
 function buildStateName(rom: DetailedRom): string {
   const romName = rom.fs_name_no_ext.trim();
@@ -21,18 +27,25 @@ export async function saveState({
   screenshotFile,
 }: {
   rom: DetailedRom;
-  stateFile: ArrayBuffer;
-  screenshotFile?: ArrayBuffer;
+  stateFile: ArrayBuffer | Uint8Array<ArrayBuffer>;
+  screenshotFile?: ArrayBuffer | Uint8Array<ArrayBuffer>;
 }): Promise<StateSchema | null> {
   // A zero-length buffer means the core failed to serialize its state (a torn
   // read from a running threaded core). Refuse to upload it so a broken
   // capture can't overwrite the user's good states on the server.
-  if (stateFile.byteLength === 0) {
+  if (
+    !stateFile?.byteLength ||
+    (window.EJS_core === "azahar" &&
+      stateFile.byteLength > MAX_AZAHAR_STATE_BYTES)
+  ) {
     console.error("Refusing to upload empty state file");
     return null;
   }
 
-  const filename = buildStateName(rom);
+  const filename =
+    window.EJS_core === "azahar"
+      ? azaharStateFilename(rom.id).replace(/\.state$/, "")
+      : buildStateName(rom);
   try {
     const uploadedStates = await stateApi.uploadStates({
       rom: rom,
@@ -52,7 +65,7 @@ export async function saveState({
     });
 
     const uploadedState = uploadedStates[0];
-    if (uploadedState.status == "fulfilled") {
+    if (uploadedState?.status === "fulfilled") {
       if (rom) rom.user_states.unshift(uploadedState.value);
       return uploadedState.value;
     }
@@ -150,8 +163,24 @@ export function loadEmulatorJSSave(save: Uint8Array) {
   window.EJS_emulator.gameManager.loadSaveFiles();
 }
 
-export function loadEmulatorJSState(state: Uint8Array) {
-  window.EJS_emulator.gameManager.loadState(state);
+export async function loadEmulatorJSState(
+  state: Uint8Array,
+  signal = new AbortController().signal,
+) {
+  const emulator = window.EJS_emulator;
+  signal.throwIfAborted();
+  if (emulator.getCore() === "azahar") {
+    const runtime = getAzaharStateRuntime(emulator);
+    if (!runtime) throw new Error("Azahar states are unavailable");
+    await restoreAzaharState(
+      runtime,
+      state,
+      signal,
+      () => window.EJS_emulator === runtime,
+    );
+  } else {
+    await emulator.gameManager.loadState(state);
+  }
 }
 
 export function invalidateEmulatorJSRomCacheIfRenamed(rom: {
@@ -362,9 +391,6 @@ export function installIOSFullscreenShim() {
 export function createQuickLoadButton(): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  // The legacy quick-loader cannot confirm Azahar restores or report failures.
-  // Its v2 player provides managed, awaited state controls instead.
-  if (window.EJS_core === "azahar") return button;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("role", "presentation");
   svg.setAttribute("focusable", "false");

@@ -19,6 +19,12 @@ import storePlaying from "@/stores/playing";
 import storeRoms, { type DetailedRom } from "@/stores/roms";
 import type { Events } from "@/types/emitter";
 import {
+  captureAzaharState,
+  downloadAzaharState,
+  getAzaharStateRuntime,
+  MAX_AZAHAR_STATE_BYTES,
+} from "@/utils/azaharState";
+import {
   areThreadsRequiredForEJSCore,
   getSupportedEJSCores,
   getControlSchemeForPlatform,
@@ -60,6 +66,8 @@ const theme = useTheme();
 const emitter = inject<Emitter<Events>>("emitter");
 const { playing, fullScreen } = storeToRefs(playingStore);
 const { selectedLanguage } = storeToRefs(languageStore);
+const stateSession = new AbortController();
+let stateBusy = false;
 
 // Declare global variables for EmulatorJS
 declare global {
@@ -112,7 +120,7 @@ declare global {
     EJS_disableBatchBootup: boolean;
     EJS_onGameStart: () => void;
     EJS_onSaveState: (args: {
-      screenshot: ArrayBuffer;
+      screenshot?: ArrayBuffer;
       state: ArrayBuffer;
     }) => void;
     EJS_onLoadState: () => void;
@@ -245,6 +253,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(async () => {
+  stateSession.abort();
   emitter?.off("saveSelected", loadSave);
   emitter?.off("stateSelected", loadState);
   window.EJS_emulator?.callEvent("exit");
@@ -359,55 +368,111 @@ window.EJS_onSaveSave = async function ({
 
 // States management
 async function loadState(state: StateSchema) {
-  const { data } = await api.get(state.download_path.replace("/api", ""), {
-    responseType: "arraybuffer",
-  });
-  if (data) {
-    loadEmulatorJSState(new Uint8Array(data));
+  if (
+    stateBusy ||
+    window.EJS_emulator?.stateActionPending ||
+    stateSession.signal.aborted
+  )
+    return;
+  stateBusy = true;
+  const emulator = window.EJS_emulator;
+  emulator.stateActionPending = true;
+  try {
+    if (
+      state.rom_id !== romRef.value.id ||
+      state.missing_from_fs ||
+      (state.emulator && state.emulator !== window.EJS_core) ||
+      (isAzahar && state.file_size_bytes > MAX_AZAHAR_STATE_BYTES)
+    )
+      throw new Error("Incompatible state");
+    const data = isAzahar
+      ? await downloadAzaharState(state.download_path, stateSession.signal)
+      : new Uint8Array(
+          (
+            await api.get(state.download_path.replace("/api", ""), {
+              responseType: "arraybuffer",
+              signal: stateSession.signal,
+            })
+          ).data,
+        );
+    stateSession.signal.throwIfAborted();
+    if (window.EJS_emulator !== emulator) return;
+    await loadEmulatorJSState(data, stateSession.signal);
     displayMessage("State loaded from server", {
       duration: 3000,
       icon: "mdi-cloud-download-outline",
     });
-    return;
+  } catch (error) {
+    if (!stateSession.signal.aborted && window.EJS_emulator === emulator) {
+      console.error("State restore failed", error);
+      displayMessage(window.EJS_emulator.localization("FAILED TO LOAD STATE"), {
+        duration: 4000,
+        className: "msg-error",
+        icon: "mdi-sync-alert",
+      });
+    }
+  } finally {
+    emulator.stateActionPending = false;
+    stateBusy = false;
   }
-
-  const file = await window.EJS_emulator.selectFile();
-  loadEmulatorJSState(new Uint8Array(await file.arrayBuffer()));
 }
 
 window.EJS_onLoadState = async function () {
+  if (stateBusy || stateSession.signal.aborted) return;
   window.EJS_emulator.pause();
   window.EJS_emulator.toggleFullscreen(false);
-  emitter?.emit("selectStateDialog", romRef.value);
+  emitter?.emit("selectStateDialog", {
+    ...romRef.value,
+    user_states: romRef.value.user_states.filter(
+      (state) =>
+        !state.missing_from_fs &&
+        (!state.emulator || state.emulator === window.EJS_core),
+    ),
+  });
 };
 
 window.EJS_onSaveState = async function ({
   state: stateFile,
   screenshot: screenshotFile,
 }) {
-  const state = await saveState({
-    rom: romRef.value,
-    stateFile,
-    screenshotFile,
-  });
-  window.EJS_emulator.storage.states.put(
-    window.EJS_emulator.getBaseFileName() + ".state",
-    stateFile,
-  );
-
-  romsStore.update(romRef.value);
-
-  if (state) {
-    displayMessage("State synced with server", {
-      duration: 4000,
-      icon: "mdi-cloud-sync",
+  if (stateBusy || stateSession.signal.aborted) return;
+  stateBusy = true;
+  const emulator = window.EJS_emulator;
+  try {
+    const state = await saveState({
+      rom: romRef.value,
+      stateFile,
+      screenshotFile,
     });
-  } else {
-    displayMessage("Error syncing state with server", {
-      duration: 4000,
-      className: "msg-error",
-      icon: "mdi-sync-alert",
-    });
+    stateSession.signal.throwIfAborted();
+    if (window.EJS_emulator !== emulator) return;
+    if (state) {
+      try {
+        await emulator.storage.states.put(
+          emulator.getBaseFileName() + ".state",
+          stateFile,
+        );
+      } catch (error) {
+        console.error("Could not cache the server state locally", error);
+      }
+    }
+
+    romsStore.update(romRef.value);
+
+    if (state) {
+      displayMessage("State synced with server", {
+        duration: 4000,
+        icon: "mdi-cloud-sync",
+      });
+    } else {
+      displayMessage("Error syncing state with server", {
+        duration: 4000,
+        className: "msg-error",
+        icon: "mdi-sync-alert",
+      });
+    }
+  } finally {
+    stateBusy = false;
   }
 };
 
@@ -479,25 +544,60 @@ window.EJS_onGameStart = async () => {
   })();
 
   const quickLoad = createQuickLoadButton();
-  quickLoad.addEventListener("click", () => {
+  quickLoad.addEventListener("click", async () => {
+    if (
+      stateBusy ||
+      window.EJS_emulator?.stateActionPending ||
+      stateSession.signal.aborted
+    )
+      return;
+    if (isAzahar) {
+      const latest = romRef.value.user_states
+        .filter(
+          (state) => state.emulator === "azahar" && !state.missing_from_fs,
+        )
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      if (latest) return loadState(latest);
+    }
     if (
       window.EJS_emulator.settings["save-state-location"] === "browser" &&
       window.EJS_emulator.saveInBrowserSupported()
     ) {
-      window.EJS_emulator.storage.states
-        .get(window.EJS_emulator.getBaseFileName() + ".state")
-        .then((e: Uint8Array) => {
-          window.EJS_emulator.gameManager.loadState(e);
-          displayMessage("Quick load from server", {
+      stateBusy = true;
+      const emulator = window.EJS_emulator;
+      emulator.stateActionPending = true;
+      try {
+        const data = await emulator.storage.states.get(
+          emulator.getBaseFileName() + ".state",
+        );
+        stateSession.signal.throwIfAborted();
+        if (!data?.byteLength) throw new Error("No saved state");
+        await loadEmulatorJSState(data, stateSession.signal);
+        displayMessage(
+          window.EJS_emulator.localization("LOADED STATE FROM BROWSER"),
+          {
             duration: 3000,
             icon: "mdi-flash",
-          });
-        });
+          },
+        );
+      } catch (error) {
+        if (!stateSession.signal.aborted) {
+          console.error("Quick state restore failed", error);
+          displayMessage(
+            window.EJS_emulator.localization("FAILED TO LOAD STATE"),
+            { duration: 4000, className: "msg-error" },
+          );
+        }
+      } finally {
+        emulator.stateActionPending = false;
+        stateBusy = false;
+      }
     }
   });
 
   const exitEmulation = createExitEmulationButton();
   exitEmulation.addEventListener("click", async () => {
+    if (stateBusy || window.EJS_emulator?.stateActionPending) return;
     if (!romRef.value || !window.EJS_emulator) return immediateExit();
     romsStore.update(romRef.value);
     await flushDosBoxPureCacheOnQuit();
@@ -506,17 +606,28 @@ window.EJS_onGameStart = async () => {
 
   const saveAndQuit = createSaveQuitButton();
   saveAndQuit.addEventListener("click", async () => {
+    if (
+      stateBusy ||
+      window.EJS_emulator?.stateActionPending ||
+      stateSession.signal.aborted
+    )
+      return;
     if (!romRef.value || !window.EJS_emulator) return immediateExit();
 
+    stateBusy = true;
+    const emulator = window.EJS_emulator;
+    emulator.stateActionPending = true;
     try {
-      const gameManager = window.EJS_emulator.gameManager;
-      const supportsStates = !isAzahar && gameManager.supportsStates();
+      const gameManager = emulator.gameManager;
+      const supportsStates = gameManager.supportsStates();
 
       // EmulatorJS screenshots and 4.3 state serialization both require the
       // core's main loop to be running. Pausing here makes threaded cores such
       // as melonDS fail inside EmulatorJSGetState and may also trigger a
       // rejected browser wake-lock request.
-      const screenshotFile = await gameManager.screenshot();
+      const screenshotFile = isAzahar
+        ? undefined
+        : await gameManager.screenshot();
       let saveCompleted = false;
       const failures: unknown[] = [];
 
@@ -546,6 +657,7 @@ window.EJS_onGameStart = async () => {
               screenshotFile,
               deviceId: deviceIDRef.value,
             });
+            if (!saved) throw new Error("Save upload failed");
             saveCompleted = saved !== null;
           } else {
             gameManager.saveSaveFiles();
@@ -561,12 +673,25 @@ window.EJS_onGameStart = async () => {
       // state failure prevent an NDS/PSP memory-card save from being committed.
       if (supportsStates) {
         try {
-          const stateFile = await Promise.resolve(gameManager.getState());
+          const runtime = isAzahar
+            ? getAzaharStateRuntime(window.EJS_emulator)
+            : null;
+          const captured = runtime
+            ? await captureAzaharState(
+                runtime,
+                stateSession.signal,
+                () => window.EJS_emulator === runtime,
+              )
+            : null;
+          const stateFile =
+            captured?.data ?? (await Promise.resolve(gameManager.getState()));
+          stateSession.signal.throwIfAborted();
           const state = await saveState({
             rom: romRef.value,
             stateFile,
-            screenshotFile,
+            screenshotFile: captured?.screenshot ?? screenshotFile,
           });
+          if (!state) throw new Error("State upload failed");
           saveCompleted ||= state !== null;
         } catch (error) {
           failures.push(error);
@@ -574,19 +699,24 @@ window.EJS_onGameStart = async () => {
         }
       }
 
-      if (!saveCompleted) {
+      if (!saveCompleted || failures.length) {
         throw new AggregateError(failures, "No save data could be persisted");
       }
       romsStore.update(romRef.value);
+      stateSession.signal.throwIfAborted();
       await flushDosBoxPureCacheOnQuit();
       immediateExit();
     } catch (error) {
+      if (stateSession.signal.aborted) return;
       console.error("Save & Quit failed", error);
       displayMessage("Error saving game", {
         duration: 4000,
         className: "msg-error",
         icon: "mdi-sync-alert",
       });
+    } finally {
+      emulator.stateActionPending = false;
+      stateBusy = false;
     }
   });
 };

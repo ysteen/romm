@@ -7,7 +7,7 @@ import {
   MAX_AZAHAR_STATE_BYTES,
   restoreAzaharState,
   type AzaharStateRuntime,
-} from "@/v2/utils/azaharState";
+} from "@/utils/azaharState";
 
 function runtime(paused = false): AzaharStateRuntime {
   return {

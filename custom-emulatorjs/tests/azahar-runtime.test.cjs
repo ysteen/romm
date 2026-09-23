@@ -13,6 +13,108 @@ function loadClass(file, name, context = {}) {
     });
 }
 const Manager = loadClass("GameManager.js", "EJS_GameManager");
+const Emulator = loadClass("emulator.js", "EmulatorJS");
+
+function stateRuntime() {
+    const runtime = Object.create(Emulator.prototype);
+    const events = [];
+    Object.assign(runtime, {
+        started: true, paused: true, debug: false, functions: {},
+        getCore: () => "azahar", localization: value => value,
+        displayMessage: message => events.push(message),
+        play() { this.paused = false; }, pause() { this.paused = true; },
+        gameManager: {
+            getState: async () => new Uint8Array([1, 2]),
+            screenshot: async () => new Uint8Array([3]),
+            loadState: async () => {}
+        }
+    });
+    return { runtime, events };
+}
+
+test("toolbar saves await RomM upload, preserve pause and suppress overlapping captures", async () => {
+    const { runtime } = stateRuntime();
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const uploads = [];
+    const bytes = new Uint8Array([1, 2]);
+    runtime.gameManager.getState = () => bytes;
+    runtime.on("saveState", async data => { uploads.push(data); await pending; });
+    const saving = runtime.saveState();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    bytes[0] = 9;
+    assert.equal(runtime.paused, false);
+    assert.equal(runtime.stateActionPending, true);
+    await runtime.saveState();
+    await runtime.loadState();
+    assert.equal(uploads.length, 1);
+    assert.deepEqual(uploads[0].state, new Uint8Array([1, 2]));
+    release();
+    await saving;
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.stateActionPending, false);
+});
+
+test("a failed preview does not prevent the normal server save event", async () => {
+    const { runtime } = stateRuntime();
+    runtime.gameManager.screenshot = async () => { throw Error("no preview"); };
+    const uploads = [];
+    runtime.on("saveState", data => uploads.push(data));
+    await runtime.saveState();
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].screenshot, undefined);
+});
+
+test("empty captures and failed server uploads report failure and release the operation", async () => {
+    const { runtime, events } = stateRuntime();
+    let uploads = 0;
+    runtime.on("saveState", () => { uploads++; throw Error("server failure"); });
+    runtime.gameManager.getState = () => new Uint8Array();
+    await runtime.saveState();
+    assert.equal(uploads, 0);
+    runtime.gameManager.getState = () => new Uint8Array([1]);
+    await runtime.saveState();
+    assert.equal(uploads, 1);
+    assert.deepEqual(events, ["FAILED TO SAVE STATE", "FAILED TO SAVE STATE"]);
+    assert.equal(runtime.paused, true);
+    assert.equal(runtime.stateActionPending, false);
+});
+
+test("load toolbar delegates to RomM without falling back to browser storage", async () => {
+    const { runtime } = stateRuntime();
+    let opened = 0;
+    runtime.on("loadState", () => { opened++; });
+    await runtime.loadState();
+    assert.equal(opened, 1);
+});
+
+test("closing the player during capture never dispatches a server upload", async () => {
+    const { runtime } = stateRuntime();
+    runtime.gameManager.getState = () => { runtime.started = false; return new Uint8Array([1]); };
+    runtime.on("saveState", () => { throw Error("stale upload"); });
+    await runtime.saveState();
+    assert.equal(runtime.stateActionPending, false);
+});
+
+test("backend menu exposes all GPU options with supported values and actual core state", () => {
+    const { runtime } = stateRuntime();
+    runtime.gameManager.getCoreOptions = () => [
+        "citra_graphics_api|OpenGL; auto|Software|OpenGL|Vulkan",
+        "citra_use_hw_shaders|enabled; enabled|disabled",
+        "citra_use_webgl_hw_draw|disabled; disabled|enabled",
+        "citra_resolution_factor|2; 1|2|3", "", "malformed", "fixed|only; only"
+    ].join("\n");
+    const options = JSON.parse(JSON.stringify(runtime.getBackendCoreOptions()));
+    assert.deepEqual(options.slice(0, 3), [
+        { key: "citra_graphics_api", title: "Graphics API", values: ["auto", "OpenGL"], current: "OpenGL" },
+        { key: "citra_use_hw_shaders", title: "Hardware Shaders", values: ["enabled", "disabled"], current: "enabled" },
+        { key: "citra_use_webgl_hw_draw", title: "WebGL Hardware Draw", values: ["disabled", "enabled"], current: "disabled" }
+    ]);
+    assert.equal(options.length, 4);
+    assert.equal(options[3].current, "2");
+    runtime.getCore = () => "snes9x";
+    assert.equal(runtime.getBackendCoreOptions()[0].values.includes("Vulkan"), true);
+});
 
 function manager(core = "azahar", result = 1) {
     const files = new Map();
@@ -78,11 +180,17 @@ test("Azahar quick-load also uses the synchronous checked export", () => {
     assert.equal(gm.quickLoad(1), true);
     assert.equal(calls[0][0], "load_state_sync");
 });
-test("managed state hotkeys do not bypass the confirmation UI", () => {
+test("Azahar state hotkeys use the same RomM-aware actions as the toolbar", () => {
     const { gm } = manager();
-    gm.EJS.config.azaharManagedStates = true;
-    gm.quickLoad = gm.quickSave = () => { throw Error("unexpected quick-state action"); };
-    for (const index of [24, 25, 26]) gm.simulateInput(0, index, 1);
+    const actions = [];
+    gm.EJS.saveState = () => actions.push("save");
+    gm.EJS.loadState = () => actions.push("load");
+    gm.quickLoad = gm.quickSave = () => { throw Error("unexpected local quick-state action"); };
+    for (const index of [24, 25]) {
+        gm.simulateInput(0, index, 1);
+        gm.simulateInput(0, index, 0);
+    }
+    assert.deepEqual(actions, ["save", "load"]);
 });
 test("other cores keep upstream state support semantics", () => {
     const { gm } = manager("snes9x");

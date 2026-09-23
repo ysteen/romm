@@ -35,11 +35,14 @@ interface FixtureState {
   previewFails: boolean;
   importedSystemUrl: string | null;
   loadedBytes: number[];
+  options: Record<string, string>;
 }
 
 declare global {
   interface Window {
     __azaharFixture: FixtureState;
+    __fixtureEmulator: { prototype: object };
+    __fixtureManager: { prototype: object };
   }
 }
 
@@ -49,45 +52,114 @@ function installMockRuntime() {
   stylesheet.rel = "stylesheet";
   stylesheet.href = "/assets/emulatorjs/data/emulator.css";
   document.head.appendChild(stylesheet);
-  const runtime = {
-    started: false,
-    paused: false,
-    config: { defaultOptions: window.EJS_defaultOptions },
-    settings: {},
-    getCore: () => "azahar",
-    getLocalStorageKey: () => "azahar-browser-fixture-settings",
-    preGetSetting: (_setting: string): unknown => null,
-    play() {
-      this.paused = false;
-      fixture.resumes++;
-    },
-    pause() {
-      this.paused = true;
-      fixture.pauses++;
-    },
-    callEvent(_name: string) {},
-    gameManager: {
-      FS: {},
-      getSaveFilePath: () => "/synthetic.srm",
-      supportsStates: () => true,
-      async getState() {
-        fixture.captures++;
-        return fixture.emptyCapture
-          ? new Uint8Array()
-          : new Uint8Array([82, 65, 1, 2]);
+  const states = new Map<string, Uint8Array>();
+  const runtime = Object.assign(
+    Object.create(window.__fixtureEmulator.prototype),
+    {
+      started: false,
+      paused: false,
+      config: { defaultOptions: window.EJS_defaultOptions },
+      settings: {},
+      allSettings: {},
+      controls: {},
+      cheats: [],
+      volume: 1,
+      muted: false,
+      settingsLoaded: false,
+      functions: {},
+      listeners: [],
+      videoRotation: 0,
+      capture: {
+        photo: { source: "canvas", format: "png", upscale: 1 },
+        video: {
+          fps: 60,
+          format: "webm",
+          upscale: 1,
+          videoBitrate: 2621440,
+          audioBitrate: 196608,
+        },
       },
-      async loadState(data: Uint8Array) {
-        fixture.restores++;
-        if (fixture.failLoad) throw new Error("Synthetic incompatible state");
-        fixture.loadedBytes = Array.from(data);
+      getCore: () => "azahar",
+      getCores: () => ({ azahar: ["azahar"] }),
+      requiresThreads: () => true,
+      requiresWebGL2: () => true,
+      getLocalStorageKey: () => "azahar-browser-fixture-settings",
+      getBaseFileName: () => "synthetic",
+      saveInBrowserSupported: () => true,
+      storage: {
+        states: {
+          async put(key: string, data: Uint8Array) {
+            states.set(key, data);
+          },
+          async get(key: string) {
+            return states.get(key);
+          },
+        },
       },
-      async screenshot() {
-        if (fixture.previewFails)
-          throw new Error("Synthetic screenshot failure");
-        return new Uint8Array([137, 80, 78, 71]);
+      localization: (text: string) => text,
+      handleSpecialOptions() {},
+      toggleFullscreen() {},
+      displayMessage(text: string) {
+        const message = document.querySelector("#game .ejs_message");
+        if (message) message.textContent = text;
       },
+      play() {
+        this.paused = false;
+        fixture.resumes++;
+      },
+      pause() {
+        this.paused = true;
+        fixture.pauses++;
+      },
+      gameManager: Object.assign(
+        Object.create(window.__fixtureManager.prototype),
+        {
+          FS: {},
+          getSaveFilePath: () => "/synthetic.srm",
+          getSaveFile: () => new Uint8Array([80, 75, 1, 2]),
+          saveSaveFiles() {},
+          getCoreOptions: () =>
+            [
+              `citra_graphics_api|${fixture.options.citra_graphics_api}; auto|OpenGL|Software|Vulkan`,
+              `citra_use_hw_shaders|${fixture.options.citra_use_hw_shaders}; enabled|disabled`,
+              `citra_use_webgl_hw_draw|${fixture.options.citra_use_webgl_hw_draw}; disabled|enabled`,
+            ].join("\n"),
+          getControllerPortInfo: () => "",
+          setVariable(key: string, value: string) {
+            fixture.options[key] = value;
+          },
+          supportsStates: () => true,
+          async getState() {
+            fixture.captures++;
+            return fixture.emptyCapture
+              ? new Uint8Array()
+              : new Uint8Array([82, 65, 1, 2]);
+          },
+          async loadState(data: Uint8Array) {
+            fixture.restores++;
+            if (fixture.failLoad)
+              throw new Error("Synthetic incompatible state");
+            fixture.loadedBytes = Array.from(data);
+          },
+          async screenshot() {
+            if (fixture.previewFails)
+              throw new Error("Synthetic screenshot failure");
+            return new Uint8Array([137, 80, 78, 71]);
+          },
+        },
+      ),
     },
-  };
+  );
+  runtime.gameManager.EJS = runtime;
+  runtime.on(
+    "saveState",
+    (data: Parameters<typeof window.EJS_onSaveState>[0]) =>
+      window.EJS_onSaveState(data),
+  );
+  runtime.on("loadState", () => window.EJS_onLoadState());
+  runtime.on("exit", () => {
+    runtime.started = false;
+  });
   window.EJS_emulator = runtime;
   const ready = window.setInterval(() => {
     const host = document.getElementById("game");
@@ -108,6 +180,46 @@ function installMockRuntime() {
     canvasParent.className = "ejs_canvas_parent";
     canvasParent.appendChild(canvas);
     host.appendChild(canvasParent);
+    const message = document.createElement("div");
+    message.className = "ejs_message";
+    message.setAttribute("role", "status");
+    host.appendChild(message);
+    const toolbar = document.createElement("div");
+    toolbar.className = "ejs_menu_bar";
+    toolbar.style.opacity = "1";
+    toolbar.style.transform = "none";
+    host.appendChild(toolbar);
+    for (const [label, action] of [
+      ["Pause", () => runtime.pause()],
+      ["Play", () => runtime.play()],
+      ["Save State", () => runtime.saveState()],
+      ["Load State", () => runtime.loadState()],
+      [
+        "Settings",
+        () => {
+          runtime.settingsMenu.style.display =
+            runtime.settingsMenu.style.display === "none" ? "" : "none";
+        },
+      ],
+    ] as const) {
+      const button = document.createElement("button");
+      button.className = "ejs_menu_button";
+      button.type = "button";
+      button.setAttribute("aria-label", label);
+      button.textContent = label;
+      button.addEventListener("click", action);
+      toolbar.appendChild(button);
+    }
+    runtime.settingParent = document.createElement("div");
+    host.appendChild(runtime.settingParent);
+    runtime.elements = { parent: host };
+    runtime.setupSettingsMenu();
+    const saved = JSON.parse(
+      localStorage.getItem(runtime.getLocalStorageKey()) ?? "null",
+    );
+    for (const [key, value] of Object.entries(saved?.settings ?? {}))
+      runtime.changeSettingOption(key, value);
+    runtime.settingsLoaded = true;
     fixture.importedSystemUrl = window.EJS_biosUrl || null;
     runtime.started = true;
     void window.EJS_onGameStart();
@@ -219,6 +331,27 @@ const heartbeat = {
   TASKS: {},
 };
 
+function makeState(id: number, filename = `existing-${id}.state`) {
+  return {
+    id,
+    rom_id: romId,
+    user_id: romId,
+    emulator: "azahar",
+    file_name: filename,
+    file_name_no_tags: filename,
+    file_name_no_ext: filename.replace(/\.state$/, ""),
+    file_extension: "state",
+    file_path: `states/${filename}`,
+    full_path: `/states/${filename}`,
+    file_size_bytes: 4,
+    download_path: `/api/states/${id}/content`,
+    missing_from_fs: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    screenshot: null,
+  };
+}
+
 async function setup(
   page: Page,
   options: {
@@ -226,6 +359,10 @@ async function setup(
     uploadFailure?: boolean;
     noFirmware?: boolean;
     storedFirmwareId?: number;
+    existingState?: boolean;
+    restoreInitially?: boolean;
+    downloadFailure?: boolean;
+    saveFailure?: boolean;
   } = {},
 ) {
   if (endpoint)
@@ -237,9 +374,23 @@ async function setup(
     external: [] as string[],
     pageErrors: [] as string[],
   };
+  const serverStates = options.existingState ? [makeState(90)] : [];
+  const runtimeSources = await Promise.all(
+    ["emulator.js", "GameManager.js"].map(async (name) =>
+      (await readFile(resolve("../custom-emulatorjs/data/src", name), "utf8"))
+        .replace(/^import .*;\r?$/gm, "")
+        .replace(/^export default .*;\r?$/gm, "")
+        .replace(/export\s*\{[^}]*\}\s*;?/g, ""),
+    ),
+  );
+  const runtimeScript = `${runtimeSources.join("\n")}\nwindow.__fixtureEmulator = EmulatorJS; window.__fixtureManager = EJS_GameManager; (${installMockRuntime.toString()})();`;
   page.on("pageerror", (error) => evidence.pageErrors.push(error.message));
   await page.addInitScript(
     ({ theme, romId, storedFirmwareId }) => {
+      // Exercise player navigation without unrelated view-transition animations.
+      Object.defineProperty(document, "startViewTransition", {
+        value: undefined,
+      });
       localStorage.setItem("settings.uiVersion", "v2");
       localStorage.setItem("settings.locale", "en_US");
       localStorage.setItem("settings.theme", theme);
@@ -257,6 +408,11 @@ async function setup(
         previewFails: false,
         importedSystemUrl: null,
         loadedBytes: [],
+        options: {
+          citra_graphics_api: "auto",
+          citra_use_hw_shaders: "enabled",
+          citra_use_webgl_hw_draw: "disabled",
+        },
       };
     },
     {
@@ -281,7 +437,7 @@ async function setup(
     if (url.pathname === "/assets/emulatorjs/data/loader.js")
       return route.fulfill({
         contentType: "text/javascript",
-        body: `(${installMockRuntime.toString()})();`,
+        body: runtimeScript,
       });
     if (url.pathname === "/assets/emulatorjs/data/emulator.css")
       return route.fulfill({
@@ -305,33 +461,34 @@ async function setup(
               json: { detail: "Synthetic upload failure" },
             });
           const stateId = evidence.stateUploads.length;
+          const state = makeState(stateId, filename);
+          serverStates.unshift(state);
           return route.fulfill({
-            json: {
-              id: stateId,
-              rom_id: romId,
-              user_id: romId,
-              emulator: "azahar",
-              file_name: filename,
-              file_name_no_tags: filename,
-              file_name_no_ext: filename.replace(/\.state$/, ""),
-              file_extension: "state",
-              file_path: `states/${filename}`,
-              full_path: `/states/${filename}`,
-              file_size_bytes: 4,
-              download_path: `/api/states/${stateId}/content`,
-              missing_from_fs: false,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-              screenshot: null,
-            },
+            json: state,
           });
         }
+        if (request.method() === "POST" && url.pathname === "/api/saves")
+          return route.fulfill(
+            options.saveFailure
+              ? { status: 500, json: { detail: "Synthetic save failure" } }
+              : {
+                  json: {
+                    ...makeState(70, "synthetic.zip"),
+                    file_extension: "zip",
+                  },
+                },
+          );
         return route.fulfill({
           json: url.pathname.startsWith("/api/users") ? user : {},
         });
       }
       if (/^\/api\/states\/\d+\/content$/.test(url.pathname)) {
         evidence.stateDownloads.push(url.pathname);
+        if (options.downloadFailure)
+          return route.fulfill({
+            status: 500,
+            json: { detail: "Synthetic download failure" },
+          });
         return route.fulfill({
           contentType: "application/octet-stream",
           body: Buffer.from([82, 65, 1, 2]),
@@ -354,7 +511,7 @@ async function setup(
       if (url.pathname === "/api/streaming/config")
         return route.fulfill({ json: { enabled: false, containers: [] } });
       if (url.pathname === `/api/roms/${romId}`)
-        return route.fulfill({ json: rom });
+        return route.fulfill({ json: { ...rom, user_states: serverStates } });
       if (url.pathname === "/api/roms")
         return route.fulfill({
           json: { items: [rom], total: 1, limit: 72, offset: 0 },
@@ -394,48 +551,47 @@ async function setup(
   await page.goto(`/rom/${romId}/ejs`);
   await expect(page.getByRole("heading", { name: rom.name })).toBeVisible();
   await expect(
-    page.getByText("Mii system data", { exact: true }),
-  ).toBeVisible();
+    page.locator(".r-azahar-system, .r-v2-azahar-states"),
+  ).toHaveCount(0);
+  if (options.existingState && !options.restoreInitially)
+    await page.locator(".r-asset-preview__clear").click();
   return evidence;
 }
 
 async function launch(page: Page) {
   await page.getByRole("button", { name: "Play", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Save state", exact: true }),
-  ).toBeEnabled();
   await expect(page.getByLabel("Synthetic Azahar canvas")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Save State", exact: true }),
+  ).toBeVisible();
 }
 
-async function confirmLoad(page: Page) {
-  await page.getByRole("button", { name: "Load state", exact: true }).click();
+async function selectState(page: Page, keyboard = false) {
+  await page.getByRole("button", { name: "Load State", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "Load state", exact: true }).click();
+  const state = dialog.locator('[data-asset-type="state"]').first();
+  if (keyboard) {
+    await state.focus();
+    await page.keyboard.press("Enter");
+  } else {
+    await state.click();
+  }
+  await expect(dialog).toHaveCount(0);
 }
 
 for (const theme of ["dark", "light"] as const) {
-  test(`${theme}: server Mii firmware auto-selection, guidance and responsive layout`, async ({
+  test(`${theme}: ordinary player controls, automatic firmware and responsive layout`, async ({
     page,
   }, testInfo) => {
     const evidence = await setup(page, { theme });
     await expect(page.locator("html")).toHaveClass(new RegExp(`r-v2-${theme}`));
     await expect(
-      page.locator('.r-azahar-system input[type="file"]'),
+      page.getByText("Mii system data", { exact: true }),
     ).toHaveCount(0);
     await expect(
-      page.getByText(/Selected server firmware: azahar-mii-system-data.zip/),
-    ).toBeVisible();
-    await expect(
-      page.getByText("bios/3ds/azahar-mii-system-data.zip", { exact: true }),
-    ).toBeVisible();
-    await page.getByText("How to prepare Mii data", { exact: true }).click();
-    await expect(
-      page.getByText(/This does not generate Mii faces/),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: "Official GodMode9 guide" }),
-    ).toHaveAttribute("href", "https://github.com/d0k3/GodMode9#readme");
+      page.getByText("How to prepare Mii data", { exact: true }),
+    ).toHaveCount(0);
     for (const width of [320, 600, 960, 1440, 3840]) {
       await page.setViewportSize({ width, height: width > 1920 ? 2160 : 900 });
       expect(
@@ -445,48 +601,256 @@ for (const theme of ["dark", "light"] as const) {
       ).toBe(true);
     }
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.screenshot({
-      path: testInfo.outputPath(`${theme}-mii-configuration.png`),
-      fullPage: true,
-    });
-    expect(evidence.stateUploads).toEqual([]);
-    expect(evidence.external).toEqual([]);
-    expect(evidence.pageErrors).toEqual([]);
-    await page.reload();
-    await expect(
-      page.getByText(/Selected server firmware: azahar-mii-system-data.zip/),
-    ).toBeVisible();
     await launch(page);
     expect(
       await page.evaluate(() => window.__azaharFixture.importedSystemUrl),
     ).toMatch(/\/api\/firmware\/902\/content\/azahar-mii-system-data.zip$/);
+    await page.getByRole("button", { name: "Save State", exact: true }).click();
+    await expect(
+      page.getByText("State synced with server", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Load State", exact: true }).click();
+    await expect(
+      page.getByRole("dialog").locator('[data-asset-type="state"]'),
+    ).toHaveCount(1);
+    await page.screenshot({
+      path: testInfo.outputPath(`${theme}-romm-state-picker.png`),
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(evidence.stateUploads).toHaveLength(1);
+    expect(evidence.external).toEqual([]);
+    expect(evidence.pageErrors).toEqual([]);
   });
 }
 
-test("missing Mii firmware shows the server folder without requiring an upload", async ({
+test("Backend Core Options exposes all GPU controls and persists their values", async ({
   page,
-}) => {
-  const evidence = await setup(page, { noFirmware: true });
-  await expect(
-    page.getByText(/No system-data firmware selected/),
-  ).toBeVisible();
-  await expect(
-    page.getByText("bios/3ds/azahar-mii-system-data.zip", { exact: true }),
-  ).toBeVisible();
+}, testInfo) => {
+  const evidence = await setup(page);
+  await launch(page);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const backend = page.getByRole("button", {
+    name: "Backend Core Options",
+    exact: true,
+  });
+  await backend.focus();
+  await page.keyboard.press("Enter");
+  for (const [key, title, value] of [
+    ["citra_graphics_api", "Graphics API", "OpenGL"],
+    ["citra_use_hw_shaders", "Hardware Shaders", "enabled"],
+    ["citra_use_webgl_hw_draw", "WebGL Hardware Draw", "enabled"],
+  ]) {
+    const row = page.locator(`[data-ejs-option="${key}"]`);
+    await expect(row).toContainText(title);
+    await row.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      page.locator('.ejs_option_row[ejs_value="Vulkan"]'),
+    ).toHaveCount(0);
+    await page.locator(`.ejs_option_row[ejs_value="${value}"]:visible`).click();
+    await expect
+      .poll(() =>
+        page.evaluate((key) => window.__azaharFixture.options[key], key),
+      )
+      .toBe(value);
+  }
+  await page.screenshot({
+    path: testInfo.outputPath("backend-gpu-options.png"),
+  });
+  await page.reload();
   await launch(page);
   expect(
-    await page.evaluate(() => window.__azaharFixture.importedSystemUrl),
-  ).toBeNull();
+    await page.evaluate(
+      () => window.__azaharFixture.options.citra_graphics_api,
+    ),
+  ).toBe("OpenGL");
+  expect(
+    await page.evaluate(
+      () => window.__azaharFixture.options.citra_use_webgl_hw_draw,
+    ),
+  ).toBe("enabled");
   expect(evidence.pageErrors).toEqual([]);
 });
 
-test("an explicit firmware choice takes precedence over automatic Mii selection", async ({
+test("optional previews, unique uploads, native picker and latest server state", async ({
+  page,
+}) => {
+  const evidence = await setup(page);
+  await launch(page);
+  await page.evaluate(() => {
+    window.__azaharFixture.previewFails = true;
+    window.EJS_emulator.pause();
+  });
+  const save = page.getByRole("button", { name: "Save State", exact: true });
+  await save.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByText("State synced with server", { exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => window.EJS_emulator.paused)).toBe(true);
+  await save.click();
+  await expect.poll(() => evidence.stateUploads.length).toBe(2);
+  expect(new Set(evidence.stateUploads).size).toBe(2);
+  expect(evidence.stateUploads[0]).toMatch(/^azahar-2147483590-.+\.state$/);
+  await selectState(page, true);
+  await expect(
+    page.getByText("State loaded from server", { exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => window.__azaharFixture.loadedBytes)).toEqual(
+    [82, 65, 1, 2],
+  );
+  await page
+    .getByRole("button", { name: "Load Latest State", exact: true })
+    .click();
+  await expect.poll(() => evidence.stateDownloads.length).toBe(2);
+  expect(evidence.stateDownloads[1]).toBe("/api/states/2/content");
+  expect(await page.evaluate(() => window.EJS_emulator.rewindEnabled)).toBe(
+    false,
+  );
+  expect(evidence.pageErrors).toEqual([]);
+});
+
+test("failed restore and empty capture never report success or upload invalid state", async ({
+  page,
+}) => {
+  const evidence = await setup(page, { existingState: true });
+  await launch(page);
+  await page.evaluate(() => {
+    window.__azaharFixture.failLoad = true;
+  });
+  await selectState(page);
+  await expect(
+    page.getByText("FAILED TO LOAD STATE", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    window.__azaharFixture.emptyCapture = true;
+  });
+  await page.getByRole("button", { name: "Save State", exact: true }).click();
+  await expect(
+    page.getByText("FAILED TO SAVE STATE", { exact: true }),
+  ).toBeVisible();
+  expect(evidence.stateUploads).toHaveLength(0);
+  expect(evidence.pageErrors).toEqual([]);
+});
+
+test("failed download never passes bytes into the core", async ({ page }) => {
+  const evidence = await setup(page, {
+    existingState: true,
+    downloadFailure: true,
+  });
+  await launch(page);
+  await selectState(page);
+  await expect(
+    page.getByText("FAILED TO LOAD STATE", { exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => window.__azaharFixture.restores)).toBe(0);
+  expect(evidence.pageErrors).toEqual([]);
+});
+
+test("rejected upload leaves the RomM picker empty and allows retry", async ({
+  page,
+}) => {
+  const evidence = await setup(page, { uploadFailure: true });
+  await launch(page);
+  const save = page.getByRole("button", { name: "Save State", exact: true });
+  await save.click();
+  await expect(
+    page.getByText("Error syncing state with server", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Load State", exact: true }).click();
+  await expect(
+    page.getByRole("dialog").locator('[data-asset-type="state"]'),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await save.click();
+  await expect.poll(() => evidence.stateUploads.length).toBe(2);
+  expect(evidence.pageErrors).toEqual([]);
+});
+
+test("logical gamepad save and load actions use RomM controls", async ({
+  page,
+}) => {
+  const evidence = await setup(page);
+  await launch(page);
+  await page.evaluate(() => {
+    window.EJS_emulator.gameManager.simulateInput(0, 24, 1);
+    window.EJS_emulator.gameManager.simulateInput(0, 24, 0);
+  });
+  await expect(
+    page.getByText("State synced with server", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    window.EJS_emulator.gameManager.simulateInput(0, 25, 1);
+    window.EJS_emulator.gameManager.simulateInput(0, 25, 0);
+  });
+  await expect(
+    page.getByRole("dialog").locator('[data-asset-type="state"]'),
+  ).toHaveCount(1);
+  expect(evidence.stateUploads).toHaveLength(1);
+  expect(evidence.pageErrors).toEqual([]);
+});
+
+test("Save & Quit uploads the save bundle and state before exiting", async ({
+  page,
+}) => {
+  const evidence = await setup(page);
+  await launch(page);
+  await page.getByRole("button", { name: "Save & Quit", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/rom/${romId}$`));
+  expect(evidence.stateUploads).toHaveLength(1);
+  expect(evidence.writes).toContain("POST /api/saves");
+  expect(evidence.pageErrors).toEqual([]);
+});
+
+for (const failure of ["state", "save"] as const) {
+  test(`Save & Quit stays open if the ${failure} upload fails`, async ({
+    page,
+  }) => {
+    const evidence = await setup(page, {
+      uploadFailure: failure === "state",
+      saveFailure: failure === "save",
+    });
+    await launch(page);
+    await page
+      .getByRole("button", { name: "Save & Quit", exact: true })
+      .click();
+    await expect(
+      page.getByText("Error saving game", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Synthetic Azahar canvas")).toBeVisible();
+    expect(
+      await page.evaluate(() => window.EJS_emulator.stateActionPending),
+    ).toBe(false);
+    expect(evidence.stateUploads).toHaveLength(1);
+    expect(evidence.writes).toContain("POST /api/saves");
+    expect(evidence.pageErrors).toEqual([]);
+  });
+}
+
+test("a selected existing RomM state is restored once when launching", async ({
+  page,
+}) => {
+  const evidence = await setup(page, {
+    existingState: true,
+    restoreInitially: true,
+  });
+  await launch(page);
+  await expect(
+    page.getByText("State loaded from server", { exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => window.__azaharFixture.restores)).toBe(1);
+  expect(await page.evaluate(() => window.__azaharFixture.loadedBytes)).toEqual(
+    [82, 65, 1, 2],
+  );
+  expect(evidence.stateDownloads).toEqual(["/api/states/90/content"]);
+  expect(evidence.pageErrors).toEqual([]);
+});
+
+test("explicit firmware selection takes precedence over automatic selection", async ({
   page,
 }) => {
   const evidence = await setup(page, { storedFirmwareId: 901 });
-  await expect(
-    page.getByText(/Selected server firmware: other-system-data.zip/),
-  ).toBeVisible();
   await launch(page);
   expect(
     await page.evaluate(() => window.__azaharFixture.importedSystemUrl),
@@ -494,111 +858,7 @@ test("an explicit firmware choice takes precedence over automatic Mii selection"
   expect(evidence.pageErrors).toEqual([]);
 });
 
-test("manual state upload, independent preview failure, confirmation, restore and paused-session preservation", async ({
-  page,
-}, testInfo) => {
-  const evidence = await setup(page);
-  await launch(page);
-  await page.evaluate(() => {
-    window.__azaharFixture.previewFails = true;
-    window.EJS_emulator.paused = true;
-  });
-  const save = page.getByRole("button", { name: "Save state", exact: true });
-  await save.click();
-  await expect(
-    page.getByText("State saved to RomM.", { exact: true }),
-  ).toBeVisible();
-  expect(evidence.stateUploads[0]).toMatch(/^azahar-2147483590-.+\.state$/);
-  await save.click();
-  await expect.poll(() => evidence.stateUploads.length).toBe(2);
-  expect(new Set(evidence.stateUploads).size).toBe(2);
-  await page.getByRole("button", { name: "Load state", exact: true }).click();
-  await expect(
-    page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Cancel", exact: true }),
-  ).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  expect(evidence.stateDownloads).toHaveLength(0);
-  await confirmLoad(page);
-  await expect(page.getByText("State loaded.", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => window.__azaharFixture.loadedBytes)).toEqual(
-    [82, 65, 1, 2],
-  );
-  expect(await page.evaluate(() => window.EJS_emulator.paused)).toBe(true);
-  expect(await page.evaluate(() => window.EJS_emulator.rewindEnabled)).toBe(
-    false,
-  );
-  await save.focus();
-  await page.keyboard.press("ArrowRight");
-  await expect(
-    page.locator('.r-v2-azahar-states button[aria-haspopup="listbox"]'),
-  ).toBeFocused();
-  await page
-    .locator('.r-v2-azahar-states button[aria-haspopup="listbox"]')
-    .dispatchEvent("keydown", {
-      key: "ArrowRight",
-      bubbles: true,
-      cancelable: true,
-    });
-  await expect(
-    page.getByRole("button", { name: "Load state", exact: true }),
-  ).toBeFocused();
-  await page.screenshot({
-    path: testInfo.outputPath("manual-state-controls.png"),
-  });
-  expect(
-    evidence.writes.some((entry) => entry.startsWith("PUT /api/states")),
-  ).toBe(false);
-  expect(evidence.external).toEqual([]);
-  expect(evidence.pageErrors).toEqual([]);
-});
-
-test("failed core restore and empty capture never report success or upload another state", async ({
-  page,
-}) => {
-  const evidence = await setup(page);
-  await launch(page);
-  await page.getByRole("button", { name: "Save state", exact: true }).click();
-  await expect(
-    page.getByText("State saved to RomM.", { exact: true }),
-  ).toBeVisible();
-  await page.evaluate(() => {
-    window.__azaharFixture.failLoad = true;
-  });
-  await confirmLoad(page);
-  await expect(page.getByText(/Could not load the state/)).toBeVisible();
-  await expect(page.getByText("State loaded.", { exact: true })).toHaveCount(0);
-  await page.evaluate(() => {
-    window.__azaharFixture.emptyCapture = true;
-  });
-  await page.getByRole("button", { name: "Save state", exact: true }).click();
-  await expect(page.getByText(/Could not save the state/)).toBeVisible();
-  expect(evidence.stateUploads).toHaveLength(1);
-  expect(evidence.pageErrors).toEqual([]);
-});
-
-test("rejected state upload leaves the state picker empty and recovers controls", async ({
-  page,
-}) => {
-  const evidence = await setup(page, { uploadFailure: true });
-  await launch(page);
-  const save = page.getByRole("button", { name: "Save state", exact: true });
-  await save.click();
-  await expect(page.getByText(/Could not save the state/)).toBeVisible();
-  await expect(
-    page.getByText("State saved to RomM.", { exact: true }),
-  ).toHaveCount(0);
-  await expect(save).toBeEnabled();
-  await expect(
-    page.getByRole("button", { name: "Load state", exact: true }),
-  ).toBeDisabled();
-  expect(evidence.stateUploads).toHaveLength(1);
-  expect(evidence.pageErrors).toEqual([]);
-});
-
-test("touch automatically loads server system data and saves from a narrow viewport", async ({
+test("touch uses the standard toolbar on a narrow viewport without guidance panels", async ({
   browser,
 }, testInfo) => {
   const context = await browser.newContext({
@@ -610,29 +870,22 @@ test("touch automatically loads server system data and saves from a narrow viewp
   });
   try {
     const page = await context.newPage();
-    const evidence = await setup(page, { theme: "light" });
+    const evidence = await setup(page, { theme: "light", noFirmware: true });
     await page.getByRole("button", { name: "Play", exact: true }).tap();
-    const save = page.getByRole("button", { name: "Save state", exact: true });
-    await expect(save).toBeEnabled();
-    // A translucent light-theme panel over the black canvas hides its text.
-    await expect(page.locator(".r-v2-azahar-states")).toHaveCSS(
-      "background-color",
-      "rgb(245, 245, 250)",
-    );
+    await page.getByRole("button", { name: "Save State", exact: true }).tap();
+    await expect(
+      page.getByText("State synced with server", { exact: true }),
+    ).toBeVisible();
     expect(
       await page.evaluate(() => window.__azaharFixture.importedSystemUrl),
-    ).toMatch(/\/api\/firmware\/902\/content\/azahar-mii-system-data.zip$/);
-    await save.tap();
-    await expect(
-      page.getByText("State saved to RomM.", { exact: true }),
-    ).toBeVisible();
+    ).toBeNull();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
     await page.screenshot({
-      path: testInfo.outputPath("touch-state-controls.png"),
+      path: testInfo.outputPath("touch-player-toolbar.png"),
       fullPage: true,
     });
     expect(evidence.stateUploads).toHaveLength(1);

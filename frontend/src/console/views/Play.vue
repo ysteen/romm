@@ -558,17 +558,19 @@ async function boot() {
     screenshot: screenshotFile,
   }: {
     state: ArrayBuffer;
-    screenshot: ArrayBuffer;
+    screenshot?: ArrayBuffer;
   }) {
     try {
       const formData = buildFormInput<AddStateInput>([
         ["stateFile", new Blob([stateFile]), "state.save"],
-        [
+      ]);
+      if (screenshotFile) {
+        formData.append(
           "screenshotFile",
           new Blob([screenshotFile], { type: "image/png" }),
           "screenshot.png",
-        ],
-      ]);
+        );
+      }
 
       await api.post("/states", formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -721,7 +723,7 @@ async function boot() {
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
-  const ROMM_RUNTIME_REVISION = "20260921.2";
+  const ROMM_RUNTIME_REVISION = "20260922.1";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 

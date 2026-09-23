@@ -1,15 +1,32 @@
-# Azahar manual save states
+# Azahar save states in RomM
 
-The v2 EmulatorJS player exposes **Save state**, a saved-state selector, and
-**Load state** above an Azahar game. Leave emulator fullscreen (Esc) to access
-these controls. Existing in-game saving and Save & Quit continue to handle game
-save files separately; Save & Quit does not silently create a 3DS state.
+Azahar uses the standard EmulatorJS toolbar and RomM state storage. There is no
+separate Azahar save panel. The same controls are available in fullscreen.
 
-Each manual capture is uploaded to the current RomM user's state storage with
-`emulator=azahar` and a unique filename. Existing states are not overwritten. A
-preview is optional: screenshot failure does not discard a valid state. Load
-requires confirmation because it replaces the running game's progress. Selecting
-a state on the pre-launch page restores it once after the core starts.
+## Save and restore
+
+- **Save State** captures the running game and uploads it to the signed-in RomM
+  user's state library. A successful upload also updates the local latest-state
+  cache. Each capture has a unique filename; existing server states are retained.
+- **Load State** opens RomM's normal state picker. Choose a compatible state to
+  replace the running session. Missing files and states from other cores are not
+  offered. A failed download or rejected native restore shows a failure message.
+- **Load Latest State** restores the newest available Azahar state from the
+  current RomM game record, with the browser cache as a fallback when no server
+  state is available.
+- **Save & Quit** saves ordinary in-game data and captures a state when the core
+  supports it. An upload or capture failure leaves the player open so you can
+  retry. Successfully uploaded data remains on the server.
+- The player launch page's **States** tab restores the selected state once after
+  boot. States also remain available in the game's normal saved-data listing.
+- Azahar's configured save/load-state hotkeys and gamepad bindings use the same
+  toolbar actions, including the RomM upload and selection dialog.
+
+State capture and restore preserve a paused runtime where applicable. The state
+picker resumes play when it closes, following RomM's normal behavior. A missing
+preview never discards a valid capture. Concurrent toolbar captures are ignored
+until the current upload finishes, and leaving the player cancels pending state
+restoration.
 
 ## Experimental compatibility
 
@@ -36,16 +53,26 @@ a state on the pre-launch page restores it once after the core starts.
 
 ## Runtime deployment
 
+The September 22 native fix also handles drivers with zero program binary
+formats. The previous shader-cache query passed an empty buffer to Emscripten,
+leaving a pending GL error that caused the first state capture to report
+`WebGL depth/stencil readback failed` / `Error writing data`. In-game save
+uploads could still succeed while state capture failed. The rebuilt core fixes
+the invalid query; the frontend continues to report real capture failures and
+keep the player open. This fix does not remove shader-compilation stalls when
+entering a new map.
+
 Ship the rebuilt `azahar-thread-wasm.data`, matching core report, patched loader,
 `emulator.js`, `GameManager.js`, and `azahar-system-data.js` together. The Docker
-overlay copies the new system-data helper. The three frontend entries and static
-GameManager import share runtime revision `20260921.2` to invalidate old scripts.
+overlay copies the new system-data helper. The frontend entries and static
+GameManager import share runtime revision `20260922.1` to invalidate old scripts.
 
-The managed controls require the new `_load_state_sync` native export. They stay
+State controls require the `_load_state_sync` native export. They stay
 disabled with older cores. The runtime checks a completed 1/0 return instead of
 the upstream queued load API, which cannot report whether restoration succeeded.
 
-Related: [Mii system-data preparation and import](AZAHAR_SYSTEM_DATA.md).
+Related: [GPU settings and player guide](AZAHAR_PLAYER.md),
+[Mii system-data preparation and import](AZAHAR_SYSTEM_DATA.md).
 
 ## Checks
 

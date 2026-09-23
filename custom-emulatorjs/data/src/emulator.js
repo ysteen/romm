@@ -2,8 +2,8 @@ import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
-import { EJS_GameManager } from "./GameManager.js?v=20260921.2";
-import "./azahar-system-data.js?v=20260921.2";
+import { EJS_GameManager } from "./GameManager.js?v=20260922.1";
+import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
 import { cyrb53 } from "./utils.js";
@@ -541,6 +541,115 @@ class EmulatorJS {
         if (!Array.isArray(this.functions[event])) return 0;
         this.functions[event].forEach(e => e(data));
         return this.functions[event].length;
+    }
+    async callEventAsync(event, data) {
+        const handlers = this.functions?.[event] || [];
+        for (const handler of handlers) await handler(data);
+        return handlers.length;
+    }
+    async saveState() {
+        if (this.stateActionPending) return;
+        this.stateActionPending = true;
+        const manager = this.gameManager;
+        const resumeForCapture = this.getCore() === "azahar" && this.paused;
+        try {
+            if (resumeForCapture) this.play();
+            const captured = await manager.getState();
+            if (!(captured instanceof Uint8Array) || !captured.byteLength ||
+                (this.getCore() === "azahar" && captured.byteLength > 256 * 1024 * 1024)) {
+                throw new Error("Invalid state capture");
+            }
+            const state = new Uint8Array(captured);
+            let preview;
+            let timer;
+            try {
+                preview = await Promise.race([
+                    this.getCore() === "azahar"
+                        ? Promise.resolve(manager.screenshot()).then(screenshot => ({ screenshot, format: "png" }))
+                        : this.takeScreenshot(this.capture.photo.source, this.capture.photo.format, this.capture.photo.upscale),
+                    new Promise(resolve => { timer = setTimeout(resolve, 2000); })
+                ]);
+            } catch (error) {
+                // A missing preview must not discard a captured state.
+            } finally {
+                clearTimeout(timer);
+            }
+            if (!this.started || this.gameManager !== manager) return;
+            if (await this.callEventAsync("saveState", { ...preview, state })) return;
+            if (this.getSettingValue("save-state-location") === "browser" && this.saveInBrowserSupported()) {
+                await this.storage.states.put(this.getBaseFileName() + ".state", state);
+                this.displayMessage(this.localization("SAVED STATE TO BROWSER"));
+            } else {
+                const url = URL.createObjectURL(new Blob([state]));
+                const link = this.createElement("a");
+                link.href = url;
+                link.download = this.getBaseFileName() + ".state";
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
+        } catch (error) {
+            this.displayMessage(this.localization("FAILED TO SAVE STATE"));
+            if (this.debug) console.error("State save failed", error);
+        } finally {
+            if (resumeForCapture && this.started && this.gameManager === manager) this.pause();
+            this.stateActionPending = false;
+        }
+    }
+    async loadState() {
+        if (this.stateActionPending) return;
+        this.stateActionPending = true;
+        const manager = this.gameManager;
+        const wasPaused = this.paused;
+        let resumed = false;
+        try {
+            if (await this.callEventAsync("loadState")) return;
+            let state;
+            if (this.getSettingValue("save-state-location") === "browser" && this.saveInBrowserSupported()) {
+                state = await this.storage.states.get(this.getBaseFileName() + ".state");
+            } else {
+                const file = await this.selectFile();
+                state = new Uint8Array(await file.arrayBuffer());
+            }
+            if (!this.started || this.gameManager !== manager) return;
+            if (!state?.byteLength) throw new Error("No saved state");
+            if (this.getCore() === "azahar" && wasPaused) {
+                this.play();
+                resumed = true;
+            }
+            await manager.loadState(state);
+            this.displayMessage(this.localization("LOADED STATE FROM BROWSER"));
+        } catch (error) {
+            this.displayMessage(this.localization("FAILED TO LOAD STATE"));
+            if (this.debug) console.error("State load failed", error);
+        } finally {
+            if (resumed && this.started && this.gameManager === manager) this.pause();
+            this.stateActionPending = false;
+        }
+    }
+    getBackendCoreOptions() {
+        const labels = this.getCore() === "azahar" ? {
+            citra_graphics_api: "Graphics API",
+            citra_use_hw_shaders: "Hardware Shaders",
+            citra_use_webgl_hw_draw: "WebGL Hardware Draw"
+        } : {};
+        const options = [];
+        for (const line of this.gameManager.getCoreOptions().split("\n")) {
+            const separator = line.indexOf(";");
+            if (separator < 0) continue;
+            const [key, current] = line.slice(0, separator).trim().split("|");
+            let values = [...new Set(line.slice(separator + 1).trim().split("|").filter(Boolean))];
+            if (this.getCore() === "azahar" && key === "citra_graphics_api") {
+                values = values.filter(value => value === "auto" || value === "OpenGL");
+            }
+            if (!key || values.length < 2) continue;
+            options.push({
+                key,
+                title: labels[key] || key.replace(/_/g, " ").replace(/.+\-(.+)/, "$1"),
+                values,
+                current: values.includes(current) ? current : values[0]
+            });
+        }
+        return options;
     }
     setElements(element) {
         const game = this.createElement("div");
@@ -2292,49 +2401,8 @@ class EmulatorJS {
             if (!this.paused) this.togglePlaying(dontUpdate);
         }
 
-        let stateUrl;
-        const saveState = addButton(this.config.buttonOpts.saveState, async () => {
-            let state;
-            try {
-                state = this.gameManager.getState();
-            } catch(e) {
-                this.displayMessage(this.localization("FAILED TO SAVE STATE"));
-                return;
-            }
-            const { screenshot, format } = await this.takeScreenshot(this.capture.photo.source, this.capture.photo.format, this.capture.photo.upscale);
-            const called = this.callEvent("saveState", {
-                screenshot: screenshot,
-                format: format,
-                state: state
-            });
-            if (called > 0) return;
-            if (stateUrl) URL.revokeObjectURL(stateUrl);
-            if (this.getSettingValue("save-state-location") === "browser" && this.saveInBrowserSupported()) {
-                this.storage.states.put(this.getBaseFileName() + ".state", state);
-                this.displayMessage(this.localization("SAVED STATE TO BROWSER"));
-            } else {
-                const blob = new Blob([state]);
-                stateUrl = URL.createObjectURL(blob);
-                const a = this.createElement("a");
-                a.href = stateUrl;
-                a.download = this.getBaseFileName() + ".state";
-                a.click();
-            }
-        });
-        const loadState = addButton(this.config.buttonOpts.loadState, async () => {
-            const called = this.callEvent("loadState");
-            if (called > 0) return;
-            if (this.getSettingValue("save-state-location") === "browser" && this.saveInBrowserSupported()) {
-                this.storage.states.get(this.getBaseFileName() + ".state").then(e => {
-                    this.gameManager.loadState(e);
-                    this.displayMessage(this.localization("LOADED STATE FROM BROWSER"));
-                })
-            } else {
-                const file = await this.selectFile();
-                const state = new Uint8Array(await file.arrayBuffer());
-                this.gameManager.loadState(state);
-            }
-        });
+        const saveState = addButton(this.config.buttonOpts.saveState, () => this.saveState());
+        const loadState = addButton(this.config.buttonOpts.loadState, () => this.loadState());
         const controlMenu = addButton(this.config.buttonOpts.gamepad, () => {
             this.controlMenu.style.display = "";
         });
@@ -5365,6 +5433,14 @@ class EmulatorJS {
             if (child) {
                 const menuOption = this.createElement("div");
                 menuOption.classList.add("ejs_settings_main_bar");
+                menuOption.tabIndex = 0;
+                menuOption.setAttribute("role", "button");
+                this.addEventListener(menuOption, "keydown", event => {
+                    if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        menuOption.click();
+                    }
+                });
                 const span = this.createElement("span");
                 span.innerText = title;
 
@@ -5493,6 +5569,15 @@ class EmulatorJS {
             const transitionElement = useParentParent ? parentElement.parentElement.parentElement : parentElement;
             const menuOption = this.createElement("div");
             menuOption.classList.add("ejs_settings_main_bar");
+            menuOption.dataset.ejsOption = id;
+            menuOption.tabIndex = 0;
+            menuOption.setAttribute("role", "button");
+            this.addEventListener(menuOption, "keydown", event => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    menuOption.click();
+                }
+            });
             const span = this.createElement("span");
             span.innerText = title;
 
@@ -5895,29 +5980,19 @@ class EmulatorJS {
             checkForEmptyMenu(virtualGamepad);
         }
 
-        let coreOpts;
+        let coreOpts = [];
         try {
-            coreOpts = this.gameManager.getCoreOptions();
-        } catch(e) {}
-        if (coreOpts) {
+            coreOpts = this.getBackendCoreOptions();
+        } catch (error) {}
+        if (coreOpts.length) {
             const coreOptions = createSettingParent(true, "Backend Core Options", home);
-            coreOpts.split("\n").forEach((line, index) => {
-                let option = line.split("; ");
-                let name = option[0];
-                let options = option[1].split("|"),
-                    optionName = name.split("|")[0].replace(/_/g, " ").replace(/.+\-(.+)/, "$1");
-                options.slice(1, -1);
-                if (options.length === 1) return;
-                let availableOptions = {};
-                for (let i = 0; i < options.length; i++) {
-                    availableOptions[options[i]] = this.localization(options[i], this.config.settingsLanguage);
-                }
-                addToMenu(this.localization(optionName, this.config.settingsLanguage),
-                    name.split("|")[0], availableOptions,
-                    (name.split("|").length > 1) ? name.split("|")[1] : options[0].replace("(Default) ", ""),
-                    coreOptions,
-                    true);
-            })
+            for (const option of coreOpts) {
+                const values = Object.fromEntries(option.values.map(value => [
+                    value, this.localization(value, this.config.settingsLanguage)
+                ]));
+                addToMenu(this.localization(option.title, this.config.settingsLanguage),
+                    option.key, values, option.current, coreOptions, true);
+            }
             checkForEmptyMenu(coreOptions);
         }
 

@@ -394,9 +394,13 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         })();
     }
     simulateInput(player, index, value) {
-        // RomM's managed controls confirm restores and upload manual captures.
-        // Do not allow overlapping legacy quick-state keyboard/gamepad actions.
-        if (this.isAzahar() && this.EJS.config.azaharManagedStates && [24, 25, 26].includes(index)) return;
+        if (this.isAzahar() && [24, 25].includes(index)) {
+            if (value === 1) {
+                if (index === 24) void this.EJS.saveState();
+                else void this.EJS.loadState();
+            }
+            return;
+        }
         this.EJS.recordInputTelemetry?.("retro-input", { player, index, value });
         if (this.EJS.isNetplay) {
             this.EJS.netplay.simulateInput(player, index, value);
