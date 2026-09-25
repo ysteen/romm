@@ -353,6 +353,7 @@ window.EJS_onSaveSave = async function ({
   romsStore.update(romRef.value);
 
   if (save) {
+    saveRef.value = save;
     displayMessage("Save synced with server", {
       duration: 4000,
       icon: "mdi-cloud-sync",
@@ -658,6 +659,7 @@ window.EJS_onGameStart = async () => {
               deviceId: deviceIDRef.value,
             });
             if (!saved) throw new Error("Save upload failed");
+            saveRef.value = saved;
             saveCompleted = saved !== null;
           } else {
             gameManager.saveSaveFiles();

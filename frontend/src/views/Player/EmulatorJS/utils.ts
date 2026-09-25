@@ -85,16 +85,30 @@ export async function saveSave({
 }: {
   rom: DetailedRom;
   save: SaveSchema | null;
-  saveFile: ArrayBuffer;
+  saveFile: ArrayBuffer | Uint8Array<ArrayBuffer>;
   screenshotFile?: ArrayBuffer;
   deviceId?: string;
 }): Promise<SaveSchema | null> {
-  if (save) {
+  if (!saveFile?.byteLength) return null;
+  const bytes =
+    saveFile instanceof Uint8Array ? saveFile : new Uint8Array(saveFile);
+  const isZip =
+    ["ppsspp", "azahar", "dos", "dosbox_pure"].includes(window.EJS_core) &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    bytes[2] === 0x03 &&
+    bytes[3] === 0x04;
+  const extension = isZip ? "zip" : "srm";
+  const contentType = isZip ? "application/zip" : "application/octet-stream";
+
+  // PUT preserves the server filename. Keep legacy bundles as backups and
+  // create a ZIP save on the first write, then update that new save normally.
+  if (save && (!isZip || save.file_name.toLowerCase().endsWith(".zip"))) {
     try {
       const { data: updatedSave } = await saveApi.updateSave({
         save: save,
         saveFile: new File([saveFile], save.file_name, {
-          type: "application/octet-stream",
+          type: contentType,
         }),
         screenshotFile:
           screenshotFile && save.screenshot
@@ -124,8 +138,8 @@ export async function saveSave({
       deviceId,
       savesToUpload: [
         {
-          saveFile: new File([saveFile], `${filename}.srm`, {
-            type: "application/octet-stream",
+          saveFile: new File([saveFile], `${filename}.${extension}`, {
+            type: contentType,
           }),
           screenshotFile: screenshotFile
             ? new File([screenshotFile], `${filename}.png`, {

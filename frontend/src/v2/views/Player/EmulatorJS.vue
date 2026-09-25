@@ -270,7 +270,7 @@ async function onPlay() {
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
-  const ROMM_RUNTIME_REVISION = "20260922.1";
+  const ROMM_RUNTIME_REVISION = "20260926.1";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 

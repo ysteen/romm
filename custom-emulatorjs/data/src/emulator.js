@@ -2,7 +2,7 @@ import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
-import { EJS_GameManager } from "./GameManager.js?v=20260922.1";
+import { EJS_GameManager } from "./GameManager.js?v=20260926.1";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
@@ -1183,9 +1183,6 @@ class EmulatorJS {
         this.gameManager = new EJS_GameManager(this.Module, this);
         if (["dos", "dosbox_pure", "ppsspp", "azahar"].includes(this.getCore())) {
             await this.gameManager.mountFileSystems();
-            // External save bundles must be restored after IDBFS is mounted.
-            // Files written before the mount are hidden by the mount.
-            await this.gameManager.loadExternalFiles();
         } else {
             // Keep the upstream order for all other cores.
             await this.gameManager.loadExternalFiles();
@@ -1295,7 +1292,7 @@ class EmulatorJS {
     /**
      * Extract file names from downloaded ROM data and start game
      */
-    startGameFromDownload(romData) {
+    async startGameFromDownload(romData) {
         const fileNames = [];
         for (const file of romData.files) {
             if (file.filename.endsWith("/")) {
@@ -1304,6 +1301,11 @@ class EmulatorJS {
             fileNames.push(file.filename);
         }
         this.selectRomFile(fileNames, this.getCore());
+        if (this.gameManager.supportsDirectorySaveBundle()) {
+            // Portable 3DS archives need the ROM's title ID to locate data and
+            // extdata. Restore after ROM selection and before the core boots.
+            await this.gameManager.loadExternalFiles();
+        }
         this.startGame();
     }
 
@@ -1321,7 +1323,7 @@ class EmulatorJS {
             await this.download(this.config.gamePatchUrl, this.downloadType.patch);
 
             this.determineCueSettings();
-            this.startGameFromDownload(romData);
+            await this.startGameFromDownload(romData);
         })().catch(error => {
             console.error("EmulatorJS startup failed", error);
             this.startGameError(error instanceof Error ? error.message : this.localization("Failed to start game"));
@@ -2420,6 +2422,7 @@ class EmulatorJS {
 
         const saveSavFiles = addButton(this.config.buttonOpts.saveSavFiles, async () => {
             const file = await this.gameManager.getSaveFile();
+            if (!file?.byteLength) return;
             const { screenshot, format } = await this.takeScreenshot(this.capture.photo.source, this.capture.photo.format, this.capture.photo.upscale);
             const called = this.callEvent("saveSave", {
                 screenshot: screenshot,
@@ -2427,11 +2430,12 @@ class EmulatorJS {
                 save: file
             });
             if (called > 0) return;
-            const blob = new Blob([file]);
+            const filename = this.gameManager.getSaveFileName(file);
+            const blob = new Blob([file], { type: filename.endsWith(".zip") ? "application/zip" : "application/octet-stream" });
             savUrl = URL.createObjectURL(blob);
             const a = this.createElement("a");
             a.href = savUrl;
-            a.download = this.gameManager.getSaveFilePath().split("/").pop();
+            a.download = filename;
             a.click();
         });
         const loadSavFiles = addButton(this.config.buttonOpts.loadSavFiles, async () => {
@@ -2439,6 +2443,10 @@ class EmulatorJS {
             if (called > 0) return;
             const file = await this.selectFile();
             const sav = new Uint8Array(await file.arrayBuffer());
+            if (this.gameManager.supportsDirectorySaveBundle()) {
+                await this.gameManager.loadDirectorySaveBundle(sav);
+                return;
+            }
             const path = this.gameManager.getSaveFilePath();
             const paths = path.split("/");
             let cp = "";
