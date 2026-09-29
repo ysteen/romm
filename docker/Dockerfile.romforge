@@ -1,0 +1,28 @@
+ARG ROMM_WORKER_BASE_IMAGE=romm-custom-dosbox-pure:5.2.0
+FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS core
+RUN apk add --no-cache curl
+WORKDIR /build
+RUN curl -fL --retry 3 https://codeload.github.com/sinjunyoung/RomForge/tar.gz/refs/tags/v1.7.6 -o upstream.tar.gz \
+    && echo '27620b771affcb0fa87d430663cec089c0321a0e1fcd94add799c038ee9b2718  upstream.tar.gz' | sha256sum -c - \
+    && mkdir upstream && tar -xzf upstream.tar.gz -C upstream --strip-components=1
+COPY docker/romforge/ ./
+RUN sed -i 's|string baseDir = AppContext.BaseDirectory;|string baseDir = "/romm/config/romforge/keys";|' upstream/3DS.Core/Crypto/KeyStore.cs \
+    && sed -i 's|Path.Combine(AppContext.BaseDirectory, "certs.bin")|"/romm/config/romforge/keys/certs.bin"|' upstream/3DS.Core/Services/CiaBuilder.cs \
+    && sed -i 's/if (_header.FixedKey)/if (_header.NoCrypto || _header.FixedKey)/' upstream/3DS.Core/IO/NcchDecryptionStream.cs \
+    && dotnet publish RomForge.Cli.csproj -c Release --self-contained true -o /out
+
+FROM ${ROMM_WORKER_BASE_IMAGE}
+USER root
+RUN apk add --no-cache xdelta3 libstdc++ libgcc
+COPY --from=core /out/ /opt/romforge/
+# Preserve the exact corresponding source, license and adapter in the image.
+COPY --from=core /build/upstream.tar.gz /opt/romforge/source/upstream.tar.gz
+COPY --from=core /build/upstream/LICENSE /opt/romforge/source/LICENSE
+COPY docker/romforge/ /opt/romforge/source/adapter/
+COPY docker/Dockerfile.romforge /opt/romforge/source/Dockerfile.romforge
+COPY backend/ /backend/
+WORKDIR /backend
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+HEALTHCHECK NONE
+USER romm
+ENTRYPOINT ["python", "patch_worker.py"]

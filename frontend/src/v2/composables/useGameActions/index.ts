@@ -210,7 +210,10 @@ export function useGameActions(
 
   const canShareQR = computed(() => {
     const rom = getRom();
-    return rom ? isNintendoDSRom(rom) : false;
+    return rom
+      ? isNintendoDSRom(rom) ||
+          ["3ds", "new-nintendo-3ds"].includes(rom.platform_slug)
+      : false;
   });
 
   const canOpenInFlashpoint = computed(() => {

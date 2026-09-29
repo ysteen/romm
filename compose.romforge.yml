@@ -1,0 +1,55 @@
+# Overlay for compose.dosbox-pure.yml. The worker has no published ports.
+services:
+  romm:
+    environment:
+      ROMFORGE_ENABLED: ${ROMFORGE_ENABLED:-true}
+      ROMFORGE_NORMALIZE_3DS_ON_SCAN: ${ROMFORGE_NORMALIZE_3DS_ON_SCAN:-false}
+      ROMFORGE_MAX_3DS_SIZE: ${ROMFORGE_MAX_3DS_SIZE:-8589934592}
+      ROMFORGE_MAX_EXPANDED_SIZE: ${ROMFORGE_MAX_EXPANDED_SIZE:-2147483648}
+      ROMFORGE_INSTALL_TTL: ${ROMFORGE_INSTALL_TTL:-86400}
+      ROMFORGE_INSTALL_CACHE_SIZE: ${ROMFORGE_INSTALL_CACHE_SIZE:-17179869184}
+      ROMFORGE_TIMEOUT: ${ROMFORGE_TIMEOUT:-1800}
+      ROMFORGE_MAX_FILE_SIZE: ${ROMFORGE_MAX_FILE_SIZE:-536870912}
+      ROMFORGE_MAX_PATCH_SIZE: ${ROMFORGE_MAX_PATCH_SIZE:-134217728}
+      ROMFORGE_MAX_PENDING: ${ROMFORGE_MAX_PENDING:-16}
+
+  romforge:
+    profiles: [romforge]
+    image: romm-romforge:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.romforge
+      args:
+        ROMM_WORKER_BASE_IMAGE: ${ROMM_IMAGE:-romm-custom-dosbox-pure:5.2.0}
+    restart: unless-stopped
+    init: true
+    # RomM's embedded Redis listens on localhost.
+    network_mode: service:romm
+    depends_on: [romm]
+    environment:
+      DB_HOST: database
+      DB_NAME: romm
+      DB_USER: romm
+      DB_PASSWD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      ROMM_AUTH_SECRET_KEY: ${ROMM_AUTH_SECRET_KEY:?Set ROMM_AUTH_SECRET_KEY}
+      ROMFORGE_NORMALIZE_3DS_ON_SCAN: ${ROMFORGE_NORMALIZE_3DS_ON_SCAN:-false}
+      ROMFORGE_MAX_3DS_SIZE: ${ROMFORGE_MAX_3DS_SIZE:-8589934592}
+      ROMFORGE_MAX_EXPANDED_SIZE: ${ROMFORGE_MAX_EXPANDED_SIZE:-2147483648}
+      ROMFORGE_INSTALL_TTL: ${ROMFORGE_INSTALL_TTL:-86400}
+      ROMFORGE_INSTALL_CACHE_SIZE: ${ROMFORGE_INSTALL_CACHE_SIZE:-17179869184}
+      ROMFORGE_TIMEOUT: ${ROMFORGE_TIMEOUT:-1800}
+      ROMFORGE_MAX_FILE_SIZE: ${ROMFORGE_MAX_FILE_SIZE:-536870912}
+      ROMFORGE_MAX_PATCH_SIZE: ${ROMFORGE_MAX_PATCH_SIZE:-134217728}
+      ROMFORGE_MAX_PENDING: ${ROMFORGE_MAX_PENDING:-16}
+    volumes:
+      - ${ROMM_DATA_DIR:-./deploy-data}/library:/romm/library
+      - ${ROMM_DATA_DIR:-./deploy-data}/resources:/romm/resources
+      - ${ROMM_DATA_DIR:-./deploy-data}/config:/romm/config:ro
+    cpus: ${ROMFORGE_CPUS:-0.5}
+    mem_limit: ${ROMFORGE_MEMORY:-2g}
+    memswap_limit: ${ROMFORGE_MEMORY:-2g}
+    pids_limit: 128
+    user: ${ROMFORGE_UID:-1000}:${ROMFORGE_GID:-1000}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 35m

@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="upstream/Patch.Core/Formats/Ips.cs" />
+    <Compile Include="upstream/Patch.Core/Formats/Ips32.cs" />
+    <Compile Include="upstream/Patch.Core/Formats/Bps.cs" />
+    <Compile Include="upstream/Patch.Core/Formats/Ups.cs" />
+    <Compile Include="upstream/Patch.Core/Formats/Aps.cs" />
+    <Compile Include="upstream/Patch.Core/Formats/Ppf.cs" />
+    <Compile Include="upstream/Common/ProgressInfo.cs" />
+    <Compile Include="upstream/Common/ProgressReporter.cs" />
+    <Compile Include="upstream/Common/Utils.cs" />
+  </ItemGroup>
+  <PropertyGroup>
+    <EnableDefaultItems>false</EnableDefaultItems>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="*.cs" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="upstream/Common/LogLevel.cs" />
+    <Compile Include="upstream/3DS.Core/Crypto/KeyStore.cs" />
+    <Compile Include="upstream/3DS.Core/Crypto/KeySlot.cs" />
+    <Compile Include="upstream/3DS.Core/Crypto/KeyStoreProvider.cs" />
+    <Compile Include="upstream/3DS.Core/Models/*.cs" />
+    <Compile Include="upstream/3DS.Core/Enums/*.cs" />
+    <Compile Include="upstream/3DS.Core/IO/*.cs" Exclude="upstream/3DS.Core/IO/SdDecryptStream.cs" />
+    <Compile Include="upstream/3DS.Core/Interfaces/IInstallSource.cs" />
+    <Compile Include="upstream/3DS.Core/Interfaces/INcsdSource.cs" />
+    <Compile Include="upstream/3DS.Core/Interfaces/IRomFsFileSource.cs" />
+    <Compile Include="upstream/3DS.Core/FileSystem/SmdhParser.cs" />
+    <Compile Include="upstream/3DS.Core/FileSystem/SmdhWriter.cs" />
+    <Compile Include="upstream/3DS.Core/FileSystem/TmdParser.cs" />
+    <Compile Include="upstream/Patch.Core/Services/PatchFileIndex.cs" />
+    <Compile Include="upstream/Patch.Core/Services/PatchFileRef.cs" />
+    <Compile Include="upstream/Patch.Core/Services/IArchivePatchSource.cs" />
+    <Compile Include="upstream/3DS.Core/Services/CciSource.cs" />
+    <Compile Include="upstream/3DS.Core/Services/NcchUnpacker.cs" />
+    <Compile Include="upstream/3DS.Core/Services/ExeFsUnpacker.cs" />
+    <Compile Include="upstream/3DS.Core/Services/ExeFsPacker.cs" />
+    <Compile Include="upstream/3DS.Core/Services/BackwardLz77.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RomFsUnpacker.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RomFsPacker.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RomFsPatchSizeResolver.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RomFsFolderScanner.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RomFsLayoutCalculator.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RomFsMetadataBuilder.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RomFsFormat.cs" />
+    <Compile Include="upstream/3DS.Core/Services/FolderRomFsFileSource.cs" />
+    <Compile Include="upstream/3DS.Core/Services/RepackedNcsdSource.cs" />
+    <Compile Include="upstream/3DS.Core/Services/NcchBuilder.cs" />
+    <Compile Include="upstream/3DS.Core/Services/NcsdBuilder.cs" />
+    <Compile Include="upstream/3DS.Core/Services/StreamExtensions.cs" />
+    <Compile Include="upstream/3DS.Core/Services/Z3dsArchiveService.cs" />
+    <Compile Include="upstream/3DS.Core/Services/Z3dsFormat.cs" />
+    <Compile Include="upstream/3DS.Core/Services/Z3dsDecompressor.cs" />
+    <Compile Include="upstream/3DS.Core/Services/Z3dsCompressor.cs" />
+    <Compile Include="upstream/3DS.Core/Services/CiaReader.cs" />
+    <Compile Include="upstream/3DS.Core/Services/CiaSource.cs" />
+    <Compile Include="upstream/3DS.Core/Services/CciToCiaConverter.cs" />
+    <Compile Include="upstream/3DS.Core/Services/CiaBuilder.cs" />
+    <PackageReference Include="SharpCompress" Version="0.50.0" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+    <PackageReference Include="System.IO.Pipelines" Version="10.0.9" />
+  </ItemGroup>
+</Project>

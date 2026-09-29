@@ -61,6 +61,41 @@ ROM_PATCHER_MAX_CONCURRENCY: Final[int] = max(
     1, safe_int(_get_env("ROM_PATCHER_MAX_CONCURRENCY"), 2)
 )
 
+# OPTIONAL PATCH WORKER
+ROMFORGE_ENABLED: Final[bool] = _get_env("ROMFORGE_ENABLED", "false").lower() == "true"
+ROMFORGE_WORK_PATH: Final[Path] = Path(RESOURCES_BASE_PATH) / "romforge"
+ROMFORGE_TIMEOUT: Final[int] = max(60, safe_int(_get_env("ROMFORGE_TIMEOUT"), 1800))
+ROMFORGE_MAX_FILE_SIZE: Final[int] = max(
+    1, safe_int(_get_env("ROMFORGE_MAX_FILE_SIZE"), 512 * 1024 * 1024)
+)
+ROMFORGE_MAX_PATCH_SIZE: Final[int] = max(
+    1, safe_int(_get_env("ROMFORGE_MAX_PATCH_SIZE"), 128 * 1024 * 1024)
+)
+ROMFORGE_MAX_PENDING: Final[int] = max(
+    1, safe_int(_get_env("ROMFORGE_MAX_PENDING"), 16)
+)
+ROMFORGE_COMMAND: Final[str] = _get_env(
+    "ROMFORGE_COMMAND", "/opt/romforge/RomForge.Cli"
+)
+
+ROMFORGE_MAX_3DS_SIZE: Final[int] = max(
+    1, safe_int(_get_env("ROMFORGE_MAX_3DS_SIZE"), 8 * 1024**3)
+)
+ROMFORGE_MAX_EXPANDED_SIZE: Final[int] = max(
+    1, safe_int(_get_env("ROMFORGE_MAX_EXPANDED_SIZE"), 2 * 1024**3)
+)
+
+ROMFORGE_NORMALIZE_3DS_ON_SCAN: Final[bool] = (
+    _get_env("ROMFORGE_NORMALIZE_3DS_ON_SCAN", "false").lower() == "true"
+)
+ROMFORGE_INSTALL_TTL: Final[int] = max(
+    3600, safe_int(_get_env("ROMFORGE_INSTALL_TTL"), 86400)
+)
+
+ROMFORGE_INSTALL_CACHE_SIZE: Final[int] = max(
+    1, safe_int(_get_env("ROMFORGE_INSTALL_CACHE_SIZE"), 16 * 1024**3)
+)
+
 # DATABASE
 DB_HOST: Final[str | None] = _get_env("DB_HOST")
 DB_PORT: Final[int] = safe_int(_get_env("DB_PORT"), 3306)

@@ -15,6 +15,7 @@ export type { Body_add_smart_collection_api_collections_smart_post } from './mod
 export type { Body_add_state_api_states_post } from './models/Body_add_state_api_states_post';
 export type { Body_add_user_api_users_post } from './models/Body_add_user_api_users_post';
 export type { Body_confirm_download_api_saves__id__downloaded_post } from './models/Body_confirm_download_api_saves__id__downloaded_post';
+export type { Body_create_patch_job_api_roms__id__patch_jobs_post } from './models/Body_create_patch_job_api_roms__id__patch_jobs_post';
 export type { Body_create_user_from_invite_api_users_register_post } from './models/Body_create_user_from_invite_api_users_register_post';
 export type { Body_delete_firmware_api_firmware_delete_post } from './models/Body_delete_firmware_api_firmware_delete_post';
 export type { Body_delete_roms_api_roms_delete_post } from './models/Body_delete_roms_api_roms_delete_post';
@@ -116,6 +117,9 @@ export type { OIDCDict } from './models/OIDCDict';
 export type { OIDCLogoutResponse } from './models/OIDCLogoutResponse';
 export type { OrphanedResourcesCleanupStats } from './models/OrphanedResourcesCleanupStats';
 export type { OverrideSchemaIO } from './models/OverrideSchemaIO';
+export type { PatchDownloadLink } from './models/PatchDownloadLink';
+export type { PatchJobSchema } from './models/PatchJobSchema';
+export type { PatchWorkerCapabilities } from './models/PatchWorkerCapabilities';
 export type { PermAction } from './models/PermAction';
 export type { PermEntity } from './models/PermEntity';
 export type { PermissionCatalogSchema } from './models/PermissionCatalogSchema';

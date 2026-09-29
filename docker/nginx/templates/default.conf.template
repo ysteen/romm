@@ -69,6 +69,8 @@ server {
         try_files $uri $uri/ =404;
     }
 
+    location ^~ /assets/romm/resources/romforge/ { return 404; }
+
     # Freeze library resources carrying cache-busting query
     location /assets/romm/resources/ {
         add_header Cache-Control $resources_cache_control;

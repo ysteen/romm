@@ -27,6 +27,7 @@ RUN find /emulatorjs/data/cores -type f \( -name '*.data' -o -path '*/reports/*.
 
 FROM ${ROMM_BASE_IMAGE}
 
+COPY backend/ /backend/
 COPY --from=frontend-build /front/dist/ /var/www/html/
 COPY docker/nginx/templates/default.conf.template /etc/nginx/templates/default.conf.template
 

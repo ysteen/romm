@@ -29,6 +29,7 @@ import storeScanning from "@/stores/scanning";
 import storeUpload from "@/stores/upload";
 import { formatBytes } from "@/utils";
 import MissingFSBadge from "@/v2/components/shared/MissingFSBadge.vue";
+import RomForgePanel from "@/v2/components/GameDetails/RomForgePanel.vue";
 import PlatformSelect from "@/v2/components/shared/PlatformSelect.vue";
 import { useCan } from "@/v2/composables/useCan";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
@@ -86,6 +87,8 @@ const downloadLocally = ref(true);
 // download".
 const canUpload = useCan("rom.upload");
 const saveIntoRomM = ref(false);
+const engine = ref("rompatcher");
+const engines = ["RomPatcher.js", "RomForge"];
 // `selectedPlatformId` is the source of truth (matches PlatformSelect's
 // id-keyed v-model); `selectedPlatform` is a derived lookup that keeps
 // the rest of the file working against the full `Platform` object.
@@ -341,7 +344,22 @@ const applyLabel = computed(() => {
 </script>
 
 <template>
-  <div class="r-v2-section-stack r-v2-patch">
+  <RSelect
+    v-model="engine"
+    :items="
+      engines.map((name, i) => ({
+        title: name,
+        value: i === 0 ? 'rompatcher' : 'romforge',
+      }))
+    "
+    :label="t('patcher.engine')"
+    prefix-label="stacked"
+    :disabled="applying"
+    class="mb-4"
+    hide-details
+  />
+  <RomForgePanel v-if="engine === 'romforge'" :rom="rom" />
+  <div v-else class="r-v2-section-stack r-v2-patch">
     <p class="r-v2-patch__subtitle">
       {{ t("patcher.subtitle") }}
     </p>

@@ -1285,6 +1285,14 @@ async def scan_platforms(
                         )
             log.info("Pegasus metadata auto-export completed.")
 
+        from handler.romforge_scan import schedule_scan
+
+        try:
+            schedule_scan(
+                [p.id for p in db_platforms if p.fs_slug in platform_list], roms_ids
+            )
+        except Exception:
+            log.exception("Could not schedule 3DS normalization after scan")
         await socket_manager.emit("scan:done", scan_stats.to_dict())
     except ScanStoppedException:
         await stop_scan()
