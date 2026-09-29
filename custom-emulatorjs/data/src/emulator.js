@@ -2,7 +2,7 @@ import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
-import { EJS_GameManager } from "./GameManager.js?v=20260926.1";
+import { EJS_GameManager } from "./GameManager.js?v=20260930.1";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
@@ -746,6 +746,30 @@ class EmulatorJS {
         this.handleResize();
         this.failedToStart = true;
     }
+    parseCoreReport(response) {
+        // Downloads return a cache item, even for text responses. Decode the
+        // report instead of treating the cache item's metadata as the report.
+        try {
+            let report = response && response.data;
+            if (report && Array.isArray(report.files)) {
+                if (report.files.length !== 1) return {};
+                const bytes = report.files[0].bytes;
+                if (!(bytes instanceof Uint8Array) || bytes.byteLength > 65536) return {};
+                report = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            }
+            if (typeof report === "string") {
+                if (report.length > 65536) return {};
+                report = JSON.parse(report);
+            }
+            if (!report || typeof report !== "object" || Array.isArray(report) ||
+                typeof report.buildStart !== "string" || !report.buildStart.trim() ||
+                report.buildStart.length > 128 ||
+                (report.core !== undefined && report.core !== this.getCore())) return {};
+            return report;
+        } catch {
+            return {};
+        }
+    }
     downloadGameCore() {
         this.textElem.innerText = this.localization("Download Game Core");
         if (!this.config.threads && this.requiresThreads(this.getCore())) {
@@ -831,18 +855,12 @@ class EmulatorJS {
         }
 
         const report = "cores/reports/" + this.getCore() + ".json";
-        // Add cache-busting parameter periodically to ensure we get updated build versions
-        // This ensures that when cores are updated, we'll eventually get the new buildStart value
-        const cacheBustInterval = 1000 * 60 * 60; // 1 hour
-        const cacheBustParam = Math.floor(Date.now() / cacheBustInterval);
-        const reportUrl = `${report}?v=${cacheBustParam}`;
+        // Refresh the small report on launch; the large extracted core stays
+        // cached under its stable build timestamp until a new build is deployed.
+        const reportUrl = `${report}?v=${Date.now()}`;
 
         this.downloadFile(reportUrl, this.downloadType.reports.name, null, false, { responseType: "text", method: "GET" }, false, this.downloadType.reports.dontCache).then(async rep => {
-            if (rep === -1 || typeof rep === "string" || typeof rep.data === "string") {
-                rep = {};
-            } else {
-                rep = rep.data;
-            }
+            rep = this.parseCoreReport(rep);
             if (!rep.buildStart) {
                 console.warn("Could not fetch core report JSON at " + reportUrl + "! Core caching will be disabled!");
                 rep.buildStart = Math.random() * 100;

@@ -8,12 +8,58 @@ function loadClass(file, name, context = {}) {
         .replace(/^import .*;$/gm, "")
         .replace(/^export .*;$/gm, "");
     return runInNewContext(source + "\n" + name, {
-        Uint8Array, File, Error, Map, console, clearTimeout, setTimeout,
+        Uint8Array, TextDecoder, File, Error, Map, console, clearTimeout, setTimeout,
         ...context
     });
 }
 const Manager = loadClass("GameManager.js", "EJS_GameManager");
 const Emulator = loadClass("emulator.js", "EmulatorJS");
+
+test("core reports decode download cache items and reject unusable versions", () => {
+    const runtime = Object.create(Emulator.prototype);
+    runtime.getCore = () => "azahar";
+    const report = { core: "azahar", buildStart: "2026-09-30T00:00:00Z", options: { defaultWebGL2: true } };
+    const cached = data => ({ data: { files: [{ bytes: new TextEncoder().encode(data) }] } });
+    for (const response of [cached(JSON.stringify(report)), { data: JSON.stringify(report) }, { data: report }]) {
+        const parsed = runtime.parseCoreReport(response);
+        assert.equal(parsed.buildStart, report.buildStart);
+        assert.equal(parsed.options.defaultWebGL2, true);
+    }
+    for (const response of [-1, null, cached("not JSON"), cached("null"), cached("[]"),
+        cached(JSON.stringify({ buildStart: 123 })), cached(JSON.stringify({ buildStart: " " })),
+        cached(JSON.stringify({ ...report, core: "other" })), cached(" ".repeat(65537)),
+        { data: { files: [] } }, { data: { files: [{ bytes: new Uint8Array([255]) }] } },
+        { data: { files: [{ bytes: new Uint8Array() }, { bytes: new Uint8Array() }] } }]) {
+        assert.equal(Object.keys(runtime.parseCoreReport(response)).length, 0);
+    }
+});
+
+test("repeated core loads reuse the build cache key and a new report changes it", async () => {
+    const Runtime = loadClass("emulator.js", "EmulatorJS", { window: { SharedArrayBuffer } });
+    const paths = [];
+    for (const buildStart of ["build-1", "build-1", "build-2"]) {
+        const runtime = Object.create(Runtime.prototype);
+        Object.assign(runtime, {
+            config: { threads: true }, supportsWebgl2: true, webgl2Enabled: null,
+            textElem: {}, localization: value => value, getCore: () => "azahar",
+            requiresThreads: () => true, requiresWebGL2: () => true,
+            preGetSetting: () => null, startGameError: () => {},
+            downloadType: { reports: { name: "report", dontCache: true }, core: { name: "core", dontCache: false } },
+            downloadFile: async (path, type) => {
+                if (type === "report") return { data: { files: [{ bytes: new TextEncoder().encode(JSON.stringify({ buildStart })) }] } };
+                paths.push(path);
+                return -1;
+            }
+        });
+        runtime.downloadGameCore();
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    assert.deepEqual(paths, [
+        "cores/azahar-thread-wasm.data?v=build-1",
+        "cores/azahar-thread-wasm.data?v=build-1",
+        "cores/azahar-thread-wasm.data?v=build-2"
+    ]);
+});
 
 function stateRuntime() {
     const runtime = Object.create(Emulator.prototype);
