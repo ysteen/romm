@@ -41,6 +41,7 @@ const {
   // Home
   showRecentRoms,
   showContinuePlaying,
+  showRecommendations,
   showPlatforms,
   showCollections,
   showSmartCollections,
@@ -50,6 +51,7 @@ const {
   showHomeWidgets,
   widgetRandomPick,
   widgetLibraryStats,
+  widgetAnniversaries,
   libraryStatsMode,
   widgetOrder,
   // Gallery
@@ -190,6 +192,8 @@ const virtualCollectionTypeItems = computed(() => [
   { title: t("settings.vc-genre"), value: "genre" },
   { title: t("settings.vc-mode"), value: "mode" },
   { title: t("settings.vc-company"), value: "company" },
+  { title: t("settings.vc-publisher"), value: "publisher" },
+  { title: t("settings.vc-developer"), value: "developer" },
   { title: t("settings.vc-all"), value: "all" },
 ]);
 
@@ -262,6 +266,11 @@ function onVirtualCollectionTypeChange(value: unknown) {
             :description="t('settings.show-continue-playing-desc')"
           />
           <SettingsToggleRow
+            v-model="showRecommendations"
+            :title="t('settings.show-recommendations')"
+            :description="t('settings.show-recommendations-desc')"
+          />
+          <SettingsToggleRow
             v-model="showPlatforms"
             :title="t('settings.show-platforms')"
             :description="t('settings.show-platforms-desc')"
@@ -298,6 +307,12 @@ function onVirtualCollectionTypeChange(value: unknown) {
             v-model="widgetRandomPick"
             :title="t('settings.widget-random-pick')"
             :description="t('settings.widget-random-pick-desc')"
+            :disabled="!showHomeWidgets"
+          />
+          <SettingsToggleRow
+            v-model="widgetAnniversaries"
+            :title="t('settings.widget-anniversaries')"
+            :description="t('settings.widget-anniversaries-desc')"
             :disabled="!showHomeWidgets"
           />
           <SettingsToggleRow

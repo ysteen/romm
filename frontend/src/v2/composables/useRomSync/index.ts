@@ -8,9 +8,10 @@
 // mutate the ROM object in place and the gallery holds that same object
 // reference. Anything that replaces the object with a fresh one from the
 // API response (edit, match, asset upload) needs an explicit sync.
+import romApi from "@/services/api/rom";
 import storeCollections from "@/stores/collections";
 import storeGalleryFilter from "@/stores/galleryFilter";
-import storeRoms, { type SimpleRom } from "@/stores/roms";
+import storeRoms, { type DetailedRom, type SimpleRom } from "@/stores/roms";
 import storeGalleryRoms, {
   type GalleryOrderKey,
 } from "@/v2/stores/galleryRoms";
@@ -29,6 +30,7 @@ const SORT_VALUE: Record<GalleryOrderKey, (rom: SimpleRom) => unknown> = {
   updated_at: (rom) => rom.updated_at,
   first_release_date: (rom) => rom.metadatum?.first_release_date,
   average_rating: (rom) => rom.metadatum?.average_rating,
+  hltb_main_story: (rom) => rom.hltb_metadata?.main_story,
   last_played: (rom) => rom.rom_user?.last_played,
 };
 
@@ -56,6 +58,23 @@ export function useRomSync() {
     // (metadatum, screenshots, related games, ...) survive a SimpleRom write.
     if (romsStore.currentRom?.id === rom.id) {
       romsStore.currentRom = { ...romsStore.currentRom, ...rom };
+    }
+  }
+
+  /** Re-read a ROM from the API and apply it everywhere it is cached, for the
+   * surfaces that need the detailed record back rather than the row their
+   * write returned.
+   *
+   * `syncCachedRom` owns the `currentRom` write, so a response that lands
+   * after the user opened another game leaves the open ROM alone. */
+  async function refetchRom(romId: number): Promise<DetailedRom | null> {
+    try {
+      const { data } = await romApi.getRom({ romId });
+      syncCachedRom(data);
+      return data;
+    } catch (error) {
+      console.error(error);
+      return null;
     }
   }
 
@@ -103,6 +122,9 @@ export function useRomSync() {
     // Read the pre-write copy before `syncCachedRom` overwrites it.
     const previous = galleryRomsStore.getRomById(rom.id);
     syncCachedRom(rom);
+    // Only the server knows which virtual collections this write moved the ROM
+    // between.
+    void collectionsStore.refreshVirtualCollections();
     if (!galleryRomsStore.onGalleryView) return;
     if (!galleryFilter.isFiltered() && !sortValueChanged(previous, rom)) return;
     galleryRomsStore.invalidateWindows();
@@ -153,6 +175,7 @@ export function useRomSync() {
 
   return {
     syncCachedRom,
+    refetchRom,
     removeCachedRoms,
     applyRomWrite,
     refreshAfterUserStateChange,

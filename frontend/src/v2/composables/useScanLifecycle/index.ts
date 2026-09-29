@@ -32,6 +32,7 @@ import type { ScanStats, ScanTaskStatusResponse } from "@/__generated__";
 import platformApi from "@/services/api/platform";
 import taskApi from "@/services/api/task";
 import storeAuth from "@/stores/auth";
+import storeCollections from "@/stores/collections";
 import storePlatforms from "@/stores/platforms";
 import storeRoms, { type SimpleRom } from "@/stores/roms";
 import storeScanning, { type ScanningPlatform } from "@/stores/scanning";
@@ -42,6 +43,7 @@ import storeGalleryRoms from "@/v2/stores/galleryRoms";
 export function installScanLifecycle() {
   const scanningStore = storeScanning();
   const romsStore = storeRoms();
+  const collectionsStore = storeCollections();
   const platformsStore = storePlatforms();
   const galleryRomsStore = storeGalleryRoms();
   const authStore = storeAuth();
@@ -170,10 +172,10 @@ export function installScanLifecycle() {
   });
 
   // Stats are the only event a scan emits continuously: `scanning_platform`
-  // fires once per platform, and `scanning_rom` only for ROMs the scan
-  // actually adds, so an update scan over a settled library can go a long
-  // while emitting nothing else. Flipping `scanning` here is what lets a tab
-  // that missed the start of the scan catch up on the next tick.
+  // fires once per platform, and `scanning_rom` only for ROMs the scan adds or
+  // changes, so a scan over a settled library can go a long while emitting
+  // nothing else. Flipping `scanning` here is what lets a tab that missed the
+  // start of the scan catch up on the next tick.
   useSocketEvent<ScanStats>("scan:update_stats", (stats) => {
     scanningStore.setScanning(true);
     scanningStore.setScanStats(stats);
@@ -186,6 +188,7 @@ export function installScanLifecycle() {
     // Reconcile against the backend once the scan settles: pick up anything
     // the live updates missed and correct rom_counts that drifted.
     void platformsStore.fetchPlatforms();
+    void collectionsStore.refreshVirtualCollections();
     emitter?.emit("snackbarShow", {
       msg: "Scan completed successfully.",
       color: "success",

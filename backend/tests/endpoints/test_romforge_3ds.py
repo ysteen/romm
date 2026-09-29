@@ -9,6 +9,8 @@ import pytest
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from rq import SimpleWorker
 from rq.serializers import JSONSerializer
+from tests.endpoints.test_patch_jobs import auth
+from tests.endpoints.test_patch_jobs import inputs as patch_inputs
 
 from handler import patch_jobs as jobs
 from handler import romforge_install as install
@@ -16,8 +18,6 @@ from handler import romforge_scan as scan
 from handler.database import db_rom_handler
 from handler.database.base_handler import sync_session
 from models.rom import RomFile, RomFileCategory
-from tests.endpoints.test_patch_jobs import auth
-from tests.endpoints.test_patch_jobs import inputs as patch_inputs
 
 inputs = patch_inputs
 
@@ -264,7 +264,7 @@ def test_scan_pending_is_resumed_without_duplicate_job(
     monkeypatch.setattr(scan, "ROMFORGE_NORMALIZE_3DS_ON_SCAN", True)
     monkeypatch.setattr(scan, "redis_client", inputs["redis"])
     monkeypatch.setattr(scan, "keys_ready", lambda: True)
-    monkeypatch.setattr("endpoints.sockets.scan._get_running_scan_job", lambda: None)
+    monkeypatch.setattr(scan, "get_running_scan_job", lambda: None)
     source = set_source(inputs, rom)
     db_rom_handler.update_rom_file(inputs["files"][0].id, {"category": category})
     db_platform_handler.update_platform(platform.id, {"slug": "3ds"})
@@ -301,9 +301,7 @@ def test_new_scan_defers_normalization_without_replacing_source(
     monkeypatch.setattr(scan, "ROMFORGE_WORK_PATH", inputs["work"])
     monkeypatch.setattr(scan, "redis_client", inputs["redis"])
     states = iter([None, object()] if scan_starts_during_conversion else [object()])
-    monkeypatch.setattr(
-        "endpoints.sockets.scan._get_running_scan_job", lambda: next(states)
-    )
+    monkeypatch.setattr(scan, "get_running_scan_job", lambda: next(states))
     converted = []
 
     def convert(_source, _patch, output, *_args):

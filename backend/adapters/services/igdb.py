@@ -13,10 +13,10 @@ from unidecode import unidecode
 
 from adapters.services.igdb_types import Game
 from config import IGDB_CLIENT_ID
-from handler.metadata.base_handler import UniversalPlatformSlug as UPS
 from logger.logger import log
 from utils import get_version
 from utils.context import ctx_aiohttp_session
+from utils.platform_slugs import UniversalPlatformSlug as UPS
 from utils.rate_limiter import RateLimiter
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ async def auth_middleware(
     Reference: https://api-docs.igdb.com/#authentication
     """
     token = await twitch_auth.get_oauth_token()
-    if not token:
+    if not token or not IGDB_CLIENT_ID:
         raise IGDBInvalidCredentialsException()
     req.headers.update(
         {

@@ -47,8 +47,21 @@ import ScanInfoDialog from "@/v2/components/Scan/ScanInfoDialog.vue";
 import ScanPlatform from "@/v2/components/Scan/ScanPlatform.vue";
 import PlatformSelect from "@/v2/components/shared/PlatformSelect.vue";
 import { useScanProviders } from "@/v2/composables/useScanProviders";
+import { useScanTrigger } from "@/v2/composables/useScanTrigger";
+import { scanNeedsMetadataSource, type ScanType } from "@/v2/types/scan";
 
 const { t } = useI18n();
+
+// The tooltip's paragraph breaks arrive as `<br>` in every locale, and that is
+// the only markup in it, so split on them rather than render the string as
+// HTML.
+const hashesDisabledTooltip = computed(() =>
+  t("scan.hashes-disabled-tooltip")
+    .split(/(?:<br\s*\/?>\s*)+/i)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean),
+);
+const { startScan } = useScanTrigger();
 const scanningStore = storeScanning();
 const { scanning, scanningPlatforms, scanStats } = storeToRefs(scanningStore);
 const platformsStore = storePlatforms();
@@ -127,9 +140,6 @@ function onScroll(e: Event) {
   userScrolledDown = el.scrollTop > 1;
 }
 
-type ScanType =
-  "new_platforms" | "quick" | "unmatched" | "update" | "hashes" | "complete";
-
 const scanOptions: { title: string; subtitle: string; value: ScanType }[] = [
   {
     title: t("scan.new-platforms"),
@@ -164,10 +174,13 @@ const scanOptions: { title: string; subtitle: string; value: ScanType }[] = [
 ];
 const scanType = ref<ScanType>("quick");
 
-// The start button is disabled while a scan runs OR when there's no
-// metadata source picked (the scan wouldn't do anything useful).
+const needsMetadataSource = computed(() =>
+  scanNeedsMetadataSource(scanType.value),
+);
 const canStartScan = computed(
-  () => !scanning.value && effectiveMetadataSources.value.length > 0,
+  () =>
+    !scanning.value &&
+    (!needsMetadataSource.value || effectiveMetadataSources.value.length > 0),
 );
 
 // Live status header — pulled in from the (now retired) floating
@@ -191,6 +204,8 @@ const liveStats = computed(() => {
   );
   const firmwareScanned = scanStats.value.scanned_firmware ?? 0;
   const firmwareNew = scanStats.value.new_firmware ?? 0;
+  const romsUpdated = scanStats.value.updated_roms ?? 0;
+  const filesNew = scanStats.value.new_files ?? 0;
   return {
     platforms: {
       scanned: platformsScanned,
@@ -205,6 +220,7 @@ const liveStats = computed(() => {
       identified: romsIdentified,
     },
     firmware: { scanned: firmwareScanned, new: firmwareNew },
+    files: { new: filesNew, updatedRoms: romsUpdated },
   };
 });
 
@@ -236,19 +252,19 @@ function scan() {
   // bar start at 0 instead of inheriting the previous scan's final
   // counters.
   scanningStore.reset();
-  scanningStore.setScanning(true);
   scanningPlatforms.value = [];
   userScrolledDown = false;
 
-  if (!socket.connected) socket.connect();
+  const started = startScan([
+    {
+      platform_fs_slugs: platformsToScan.value,
+      type: scanType.value,
+      ...buildScanPayload(),
+    },
+  ]);
+  if (!started) return;
 
   persistSelection();
-
-  socket.emit("scan", {
-    platform_fs_slugs: platformsToScan.value,
-    type: scanType.value,
-    ...buildScanPayload(),
-  });
 }
 
 function stopScan() {
@@ -561,7 +577,7 @@ function stopScan() {
       <footer class="r-v2-scan-card__section r-v2-scan-card__cta">
         <div class="r-v2-scan-card__hints">
           <RAlert
-            v-if="effectiveMetadataSources.length === 0"
+            v-if="needsMetadataSource && effectiveMetadataSources.length === 0"
             type="warning"
             density="compact"
             :icon="false"
@@ -585,10 +601,13 @@ function stopScan() {
                     class="r-v2-scan-card__hash-info"
                   />
                 </template>
-                <span
-                  class="r-v2-scan-card__hash-info-text"
-                  v-html="t('scan.hashes-disabled-tooltip')"
-                />
+                <span class="r-v2-scan-card__hash-info-text">
+                  <span
+                    v-for="(paragraph, i) in hashesDisabledTooltip"
+                    :key="i"
+                    >{{ paragraph }}</span
+                  >
+                </span>
               </RTooltip>
             </span>
           </RAlert>
@@ -709,6 +728,28 @@ function stopScan() {
               </span>
             </template>
           </RTooltip>
+          <RTooltip
+            v-if="liveStats.files.new > 0 || liveStats.files.updatedRoms > 0"
+            :text="
+              t('scan.files-scanned-with-details', {
+                n_new_files: liveStats.files.new,
+                n_updated_roms: liveStats.files.updatedRoms,
+              })
+            "
+            location="bottom"
+          >
+            <template #activator="{ props: tipProps }">
+              <span
+                v-bind="tipProps"
+                class="r-v2-scan-live__chip r-v2-scan-live__chip--alt"
+              >
+                <RIcon icon="mdi-file-plus-outline" size="14" />
+                <span class="r-v2-scan-live__chip-num">
+                  {{ liveStats.files.new }}
+                </span>
+              </span>
+            </template>
+          </RTooltip>
         </div>
 
         <div v-if="scanning" class="r-v2-scan-live__actions">
@@ -801,7 +842,7 @@ function stopScan() {
   background: var(--r-color-bg-elevated);
   border: 1px solid var(--r-color-border);
   border-radius: var(--r-radius-lg);
-  transition: opacity var(--r-motion-mid) var(--r-motion-ease-out);
+  transition: opacity var(--r-motion-med) var(--r-motion-ease-out);
 }
 .r-v2-scan-card--locked {
   /* Slight dim + pointer hold so the running scan reads as "in-flight,
@@ -901,6 +942,12 @@ function stopScan() {
 }
 .r-v2-scan-card__hash-info:hover {
   opacity: 1;
+}
+/* One paragraph per line, the blank line the copy used to carry as `<br><br>`. */
+.r-v2-scan-card__hash-info-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--r-space-2);
 }
 
 /* Providers split into General / Specific groups. Each group has a
@@ -1169,8 +1216,8 @@ function stopScan() {
    are already on screen stay put; only new arrivals animate. */
 .r-v2-scan-panel-enter-active {
   transition:
-    opacity var(--r-motion-mid) var(--r-motion-ease-out),
-    transform var(--r-motion-mid) var(--r-motion-ease-back);
+    opacity var(--r-motion-med) var(--r-motion-ease-out),
+    transform var(--r-motion-med) var(--r-motion-ease-back);
 }
 .r-v2-scan-panel-enter-from {
   opacity: 0;

@@ -64,10 +64,11 @@ DB_PASSWORD=$DB_PASSWORD
 ROMM_AUTH_SECRET_KEY=$ROMM_AUTH_SECRET_KEY
 ROMM_PORT=8080
 ROMM_DATA_DIR=./deploy-data
-ROMM_IMAGE=romm-custom-dosbox-pure:5.2.0
+ROMM_IMAGE=romm-custom-dosbox-pure:5.3.1
 HASHEOUS_API_ENABLED=true
 TZ=Asia/Seoul
 ROMFORGE_ENABLED=false
+DISABLE_JSDOS=true
 EOF
   chmod 600 "$ENV_FILE"
   echo "Generated deploy/.env with random secrets."

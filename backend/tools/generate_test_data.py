@@ -2,8 +2,8 @@
 """Generate a large, prod-like RomM library for load and UI testing.
 
 Builds platforms, users, devices, firmware, roms (with per-provider fake
-metadata), rom files, saves, states, screenshots, notes, play stats,
-collections and sync data, then bulk-inserts everything.
+metadata), rom files, tagged soundtracks, saves, states, screenshots, notes,
+play stats, collections and sync data, then bulk-inserts everything.
 
 Run from the backend directory:
 
@@ -28,18 +28,9 @@ from typing import Any
 # Allow running as `python3 tools/generate_test_data.py` from backend/.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# isort: off
-# Import order matters here: the metadata package must load before
-# `adapters.services.igdb` so the base_handler <-> igdb import cycle resolves
-# (igdb must not be the entrypoint). Keep isort from reordering these.
-from handler.metadata.base_handler import (  # noqa: E402,F401
-    UniversalPlatformSlug as UPS,
-)
-from adapters.services.igdb import IGDB_PLATFORM_LIST  # noqa: E402
-
-# isort: on
 from PIL import Image  # noqa: E402
 
+from adapters.services.igdb import IGDB_PLATFORM_LIST  # noqa: E402
 from config import RESOURCES_BASE_PATH  # noqa: E402
 from handler.metadata.moby_handler import MOBYGAMES_PLATFORM_LIST  # noqa: E402
 from handler.metadata.ss_handler import SCREENSAVER_PLATFORM_LIST  # noqa: E402
@@ -68,6 +59,8 @@ from models.rom import (  # noqa: E402
     RomNote,
     RomUser,
     RomUserStatus,
+    TrackMeta,
+    compute_full_path_hash,
     compute_name_sort_key,
 )
 from models.sync_session import SyncSession, SyncSessionStatus  # noqa: E402
@@ -76,6 +69,54 @@ from models.user import Role, User  # noqa: E402
 # ---------------------------------------------------------------------------
 # Static data pools used to fabricate believable metadata.
 # ---------------------------------------------------------------------------
+
+# Soundtrack tags. Track titles are generic enough to sit under any game;
+# composers are fabricated so no real person is attributed to fake data.
+TRACK_TITLES = [
+    "Title Screen",
+    "Opening",
+    "Main Theme",
+    "Overworld",
+    "Field",
+    "Town",
+    "Cave",
+    "Underwater",
+    "Battle",
+    "Boss Battle",
+    "Final Boss",
+    "Victory",
+    "Game Over",
+    "Shop",
+    "Character Select",
+    "Stage 1",
+    "Stage 2",
+    "Stage 3",
+    "Credits",
+    "Ending",
+]
+
+COMPOSERS = [
+    "A. Brightwater",
+    "H. Vance",
+    "K. Solberg",
+    "M. Ferreira",
+    "N. Okabe",
+    "R. Lindqvist",
+    "S. Delacroix",
+    "T. Mbeki",
+    "V. Antonov",
+    "Y. Castellanos",
+]
+
+TRACK_GENRES = [
+    "Chiptune",
+    "Orchestral",
+    "Ambient",
+    "Rock",
+    "Jazz",
+    "Electronic",
+    "Synthwave",
+]
 
 TITLE_PREFIXES = [
     "Super",
@@ -665,12 +706,19 @@ def rand_past(rng: random.Random, now: datetime, max_days: int = 730) -> datetim
     return now - timedelta(days=rng.randint(0, max_days), seconds=rng.randint(0, 86400))
 
 
-def bulk_insert(conn, model, rows: list[dict[str, Any]], chunk: int = 5000) -> None:
+def bulk_insert(conn, model, rows: list[dict[str, Any]], chunk: int = 1000) -> None:
+    """Insert rows as multi-VALUES statements.
+
+    Not `executemany`: MariaDB Connector/Python's bulk path silently drops all
+    but the first row when a column mixes NULL and non-NULL across the batch,
+    which most of these tables do (optional provider ids, hashes, covers).
+    One statement per chunk keeps the speed without that failure mode.
+    """
     if not rows:
         return
     table = model.__table__
     for i in range(0, len(rows), chunk):
-        conn.execute(table.insert(), rows[i : i + chunk])
+        conn.execute(table.insert().values(rows[i : i + chunk]))
 
 
 def main() -> int:
@@ -697,6 +745,18 @@ def main() -> int:
         type=int,
         default=40,
         help="Number of user collections (default: 40)",
+    )
+    parser.add_argument(
+        "--soundtrack-share",
+        type=float,
+        default=0.08,
+        help="Fraction of roms that get a soundtrack (default: 0.08)",
+    )
+    parser.add_argument(
+        "--tracks-per-soundtrack",
+        type=int,
+        default=12,
+        help="Upper bound on tracks per soundtracked rom (default: 12)",
     )
     parser.add_argument(
         "--play-sessions",
@@ -807,10 +867,14 @@ def main() -> int:
     ids = Ids(starts)
 
     counts: dict[str, int] = {k: 0 for k in id_tables}
-    counts.update({"devices": 0, "collections_roms": 0, "device_save_sync": 0})
+    counts.update(
+        {"devices": 0, "collections_roms": 0, "device_save_sync": 0, "track_meta": 0}
+    )
     # Tracks the last standalone rom per platform so a fraction of later roms
     # can reuse its igdb_id, surfacing them as regional siblings via the view.
     sibling_seed: dict[int, dict[str, Any]] = {}
+    # Guards the unique (platform_id, fs_name) index across every batch.
+    fs_names_by_platform: dict[int, set[str]] = {}
 
     # ----------------------------- platforms -------------------------------
     platform_rows = []
@@ -970,6 +1034,7 @@ def main() -> int:
     for batch_start in range(0, args.roms, args.batch_size):
         batch_end = min(batch_start + args.batch_size, args.roms)
         rom_rows, file_rows, ru_rows = [], [], []
+        track_rows: list[dict[str, Any]] = []
         save_rows, state_rows, shot_rows, note_rows = [], [], [], []
         dss_rows: list[dict[str, Any]] = []
 
@@ -996,6 +1061,15 @@ def main() -> int:
             if f["revision"]:
                 tags += f" ({f['revision']})"
             fs_name = f"{f['title']}{tags}.{ext}"[:445]
+            # `roms` is uniquely indexed on (platform_id, fs_name) and the title
+            # pools are small enough to collide, so disambiguate repeats.
+            used_names = fs_names_by_platform.setdefault(platform["id"], set())
+            if fs_name in used_names:
+                dedupe = 2
+                while f"{f['title']}{tags} (v{dedupe}).{ext}"[:445] in used_names:
+                    dedupe += 1
+                fs_name = f"{f['title']}{tags} (v{dedupe}).{ext}"[:445]
+            used_names.add(fs_name)
             parts = compute_file_name_parts(fs_name)
             multi_disc = rng.random() < 0.08
             size = rng.randint(256 * 1024, 8 * 1024 * 1024 * 1024)
@@ -1031,6 +1105,7 @@ def main() -> int:
                 path_cover_s = path_cover_l = ""
                 path_screenshots = []
 
+            rom_folder = f"{platform['slug']}/roms"
             rom_rows.append(
                 {
                     "id": rid,
@@ -1051,7 +1126,8 @@ def main() -> int:
                     "fs_name_no_tags": parts.no_tags,
                     "fs_name_no_ext": parts.no_ext,
                     "fs_extension": parts.extension,
-                    "fs_path": f"{platform['slug']}/roms",
+                    "fs_path": rom_folder,
+                    "full_path_hash": compute_full_path_hash(rom_folder, fs_name),
                     "fs_size_bytes": size,
                     "name": f["title"],
                     "name_sort_key": compute_name_sort_key(f["title"]),
@@ -1130,6 +1206,58 @@ def main() -> int:
                         "updated_at": created,
                     }
                 )
+            # Soundtrack: a share of roms ship tagged audio next to the game,
+            # which is what the /api/music endpoints and the Jukebox read.
+            if rng.random() < args.soundtrack_share:
+                album = f"{f['title']} Original Soundtrack"
+                composer = rng.choice(COMPOSERS)
+                track_genre = rng.choice(TRACK_GENRES)
+                year = f.get("year")
+                n_tracks = rng.randint(3, max(3, args.tracks_per_soundtrack))
+                for number, title in enumerate(
+                    rng.sample(TRACK_TITLES, k=min(n_tracks, len(TRACK_TITLES))),
+                    start=1,
+                ):
+                    fid = ids.take("rom_files")
+                    file_rows.append(
+                        {
+                            "id": fid,
+                            "rom_id": rid,
+                            "file_name": f"{number:02d} - {title}.mp3",
+                            "file_path": f"{platform['slug']}/roms/{f['slug']}/soundtrack",
+                            "file_size_bytes": rng.randint(1_500_000, 9_000_000),
+                            "last_modified": created.timestamp(),
+                            "crc_hash": None,
+                            "md5_hash": None,
+                            "sha1_hash": None,
+                            "ra_hash": None,
+                            "chd_sha1_hash": None,
+                            "archive_members": None,
+                            "category": RomFileCategory.SOUNDTRACK,
+                            "missing_from_fs": False,
+                            "created_at": created,
+                            "updated_at": created,
+                        }
+                    )
+                    track_rows.append(
+                        {
+                            "rom_file_id": fid,
+                            "rom_id": rid,
+                            "title": title,
+                            "artist": composer,
+                            "album": album,
+                            "genre": track_genre,
+                            "year": year,
+                            "track": number,
+                            "disc": 1,
+                            "duration_seconds": float(rng.randint(45, 320)),
+                            "has_embedded_cover": rng.random() < 0.3,
+                            "cover_path": None,
+                            "created_at": created,
+                            "updated_at": created,
+                        }
+                    )
+
             if rng.random() < 0.15:
                 fid = ids.take("rom_files")
                 man_name = f"{f['title']} (Manual).pdf"
@@ -1303,6 +1431,7 @@ def main() -> int:
             with sync_engine.begin() as conn:
                 bulk_insert(conn, Rom, rom_rows)
                 bulk_insert(conn, RomFile, file_rows)
+                bulk_insert(conn, TrackMeta, track_rows)
                 bulk_insert(conn, RomUser, ru_rows)
                 bulk_insert(conn, Save, save_rows)
                 bulk_insert(conn, State, state_rows)
@@ -1312,6 +1441,7 @@ def main() -> int:
 
         counts["roms"] += len(rom_rows)
         counts["rom_files"] += len(file_rows)
+        counts["track_meta"] += len(track_rows)
         counts["rom_user"] += len(ru_rows)
         counts["saves"] += len(save_rows)
         counts["states"] += len(state_rows)
@@ -1479,6 +1609,7 @@ def _wipe(conn) -> None:
         "screenshots",
         "states",
         "saves",
+        "track_meta",
         "rom_files",
         "roms",
         "firmware",

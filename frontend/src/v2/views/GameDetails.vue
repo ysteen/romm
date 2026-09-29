@@ -6,14 +6,18 @@
 // orchestrator — data + tab state live here, every visual piece is a
 // sub-component under components/GameDetails/.
 import { RTabNav, type RTabNavItem } from "@v2/lib";
+import { formatReleaseDate } from "@v2/utils/time";
 import { storeToRefs } from "pinia";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { onBeforeRouteUpdate, useRoute, useRouter } from "vue-router";
-import type { IGDBRelatedGame } from "@/__generated__";
+import type { IGDBRelatedGame, SimilarRomSchema } from "@/__generated__";
+import { useUISettings } from "@/composables/useUISettings";
 import romApi from "@/services/api/rom";
+import { pendingAssetKinds } from "@/services/pending-asset";
 import storeAuth from "@/stores/auth";
 import storeRoms from "@/stores/roms";
+import { useStreamingStore } from "@/stores/streaming";
 import { toBrowserLocale } from "@/utils";
 import AchievementsTab from "@/v2/components/GameDetails/AchievementsTab.vue";
 import CoverColumn from "@/v2/components/GameDetails/CoverColumn.vue";
@@ -25,20 +29,29 @@ import MetadataTab from "@/v2/components/GameDetails/MetadataTab.vue";
 import NotesTab from "@/v2/components/GameDetails/NotesTab.vue";
 import OverviewTab from "@/v2/components/GameDetails/OverviewTab.vue";
 import PatcherTab from "@/v2/components/GameDetails/PatcherTab.vue";
+import PrevNextNav from "@/v2/components/GameDetails/PrevNextNav.vue";
 import SaveDataTab from "@/v2/components/GameDetails/SaveDataTab.vue";
 import { useBackgroundArt } from "@/v2/composables/useBackgroundArt";
+import { useBreakpoint } from "@/v2/composables/useBreakpoint";
+import { useIsAlive } from "@/v2/composables/useIsAlive";
 import { usePageTitle } from "@/v2/composables/usePageTitle";
 import { useRightStickScroll } from "@/v2/composables/useRightStickScroll";
+import { useRomScanRefresh } from "@/v2/composables/useRomScanRefresh";
+import { useSnackbar } from "@/v2/composables/useSnackbar";
 import { useWebpSupport } from "@/v2/composables/useWebpSupport";
 import { isRomVerified } from "@/v2/utils/romVerification";
+import { patchQuery } from "@/v2/utils/routeQuery";
 
 const route = useRoute();
 const router = useRouter();
 const romsStore = storeRoms();
 const authStore = storeAuth();
+const streamingStore = useStreamingStore();
 const { currentRom } = storeToRefs(romsStore);
 const { toWebp } = useWebpSupport();
+const { showRecommendations } = useUISettings();
 const { locale, t } = useI18n();
+const { smAndDown } = useBreakpoint();
 
 const setBgArt = useBackgroundArt();
 
@@ -55,6 +68,29 @@ const panelEl = ref<HTMLElement | null>(null);
 // action ribbon, right stick scrolls long tabs (Overview, Achievements)
 // without needing to leave the ribbon focus.
 useRightStickScroll(panelEl);
+
+// The files badge and every tab read `currentRom`, so the view owns the
+// post-scan refetch rather than the Files tab.
+useRomScanRefresh();
+
+// The player replaces the document on its way out, taking its toasts with it,
+// so progress the browser still holds is announced here.
+const snackbar = useSnackbar();
+const isAlive = useIsAlive();
+watch(
+  () => currentRom.value?.id ?? null,
+  async (romId, _previous, onCleanup) => {
+    if (!romId) return;
+    let stale = false;
+    onCleanup(() => (stale = true));
+    const held = await pendingAssetKinds(romId);
+    // The route moved on to another game while the lookup ran.
+    if (stale || !isAlive.value) return;
+    if (held.has("save")) snackbar.warning(t("play.save-not-synced"));
+    if (held.has("state")) snackbar.warning(t("play.state-not-synced"));
+  },
+  { immediate: true },
+);
 
 onBeforeRouteUpdate(async (to) => {
   const nextId = parseInt(to.params.rom as string);
@@ -78,10 +114,8 @@ onBeforeRouteUpdate(async (to) => {
 const tab = ref<string>((route.query.tab as string) || "overview");
 watch(tab, (value) => {
   if (route.query.tab !== value) {
-    router.replace({
-      path: route.path,
-      query: { ...route.query, tab: value },
-    });
+    // The subtab and note belong to the tab being left.
+    patchQuery(router, { tab: value, subtab: undefined, note: undefined });
   }
 });
 watch(
@@ -107,24 +141,24 @@ const platformLabel = computed(() => {
   return r.platform_custom_name || r.platform_display_name;
 });
 
-const releaseDate = computed(() => {
-  const ts = currentRom.value?.metadatum?.first_release_date;
-  if (!ts) return null;
-  return new Date(Number(ts)).toLocaleDateString(
+const releaseDate = computed(() =>
+  formatReleaseDate(
+    currentRom.value?.metadatum?.first_release_date,
     toBrowserLocale(locale.value),
-    {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    },
-  );
-});
+  ),
+);
 
 const genres = computed(() => currentRom.value?.metadatum?.genres ?? []);
 const franchises = computed(
   () => currentRom.value?.metadatum?.franchises ?? [],
 );
 const companies = computed(() => currentRom.value?.metadatum?.companies ?? []);
+const publishers = computed(
+  () => currentRom.value?.metadatum?.publishers ?? [],
+);
+const developers = computed(
+  () => currentRom.value?.metadatum?.developers ?? [],
+);
 const collections = computed(
   () => currentRom.value?.metadatum?.collections ?? [],
 );
@@ -155,20 +189,47 @@ watch(
   { immediate: true },
 );
 
+// Fills the store the Join action reads from. Done here rather than in the
+// action composable because that one is instantiated per button; navigating
+// between ROMs reuses this component, so it re-runs on the id. Forced, since
+// this is the page a user acts on: a session that ended in the meantime must
+// not still be offered.
+watch(
+  () => currentRom.value?.id ?? null,
+  (romId) => {
+    if (romId != null) void streamingStore.fetchJoinableSessions(true);
+  },
+  { immediate: true },
+);
+
 const lastPlayed = computed(() => {
   const ts = currentRom.value?.rom_user?.last_played;
   if (!ts) return null;
   return new Date(ts).toLocaleString();
 });
 
-// "Companies" (not "Developer") — the API field is a merged list of
-// developers + publishers + other company roles produced by the backend
-// (see flashpoint/gamelist/launchbox handlers); calling it Developer
-// would be a lie. "Franchises" mirrors the singular→plural consistency
-// of the surrounding rows.
+// Companies is a merged developers + publishers list, so show it only when
+// both split fields are empty (InfoGrid drops empty sections).
+const showMergedCompanies = computed(
+  () => publishers.value.length === 0 && developers.value.length === 0,
+);
 const overviewSections = computed<InfoGridSection[]>(() => [
   { label: t("rom.genres"), items: genres.value, filter: "genres" },
-  { label: t("rom.companies"), items: companies.value, filter: "companies" },
+  {
+    label: t("rom.developers"),
+    items: developers.value,
+    filter: "developers",
+  },
+  {
+    label: t("rom.publishers"),
+    items: publishers.value,
+    filter: "publishers",
+  },
+  {
+    label: t("rom.companies"),
+    items: showMergedCompanies.value ? companies.value : [],
+    filter: "companies",
+  },
   { label: t("rom.franchises"), items: franchises.value, filter: "franchises" },
   {
     label: t("rom.collections"),
@@ -205,12 +266,34 @@ const earnedAchievementIds = computed<ReadonlySet<string>>(() => {
 const achievementsEarned = computed(() => earnedAchievementIds.value.size);
 
 const igdb = computed(() => currentRom.value?.igdb_metadata ?? null);
-// IGDB ships up to ~10 similar games per title; rendering all of them
-// would dominate the overview and push HLTB/Achievements below the
-// fold. Cap to keep the section to ~2 rows of cards at typical widths.
-const SIMILAR_GAMES_MAX = 6;
-const similarGames = computed<IGDBRelatedGame[]>(() =>
-  (igdb.value?.similar_games ?? []).slice(0, SIMILAR_GAMES_MAX),
+
+// Similar games come from the server-side recommendations index rather than
+// `igdb_metadata.similar_games`, which is mostly titles the server doesn't
+// hold and absent entirely for anything IGDB never matched.
+const similarRoms = ref<SimilarRomSchema[]>([]);
+
+// Keyed on the id rather than the ROM: `currentRom` is reassigned wholesale
+// by every optimistic mutation, which would blank the grid mid-interaction.
+watch(
+  [() => currentRom.value?.id, showRecommendations],
+  ([romId, enabled], _previous, onCleanup) => {
+    similarRoms.value = [];
+    if (!romId || !enabled) return;
+
+    const controller = new AbortController();
+    onCleanup(() => controller.abort());
+
+    romApi
+      .getSimilarRoms({ romId, signal: controller.signal })
+      .then(({ data }) => {
+        similarRoms.value = data;
+      })
+      .catch(() => {
+        // An unbuilt index, or a library too small to relate anything, is a
+        // normal state rather than an error: the section stays hidden.
+      });
+  },
+  { immediate: true },
 );
 const remakes = computed<IGDBRelatedGame[]>(() => igdb.value?.remakes ?? []);
 const remasters = computed<IGDBRelatedGame[]>(
@@ -234,7 +317,6 @@ const filesCount = computed(() => currentRom.value?.files?.length ?? 0);
 const tabs = computed<RTabNavItem[]>(() => [
   { id: "overview", label: t("rom.tab-overview") },
   { id: "files", label: t("rom.tab-files"), badge: filesCount.value },
-  { id: "patcher", label: t("common.patcher") },
   { id: "media", label: t("rom.media") },
   { id: "notes", label: t("rom.tab-notes") },
   {
@@ -247,6 +329,7 @@ const tabs = computed<RTabNavItem[]>(() => [
     label: t("rom.save-data"),
     badge: saveDataCount.value,
   },
+  { id: "patcher", label: t("common.patcher") },
   { id: "metadata", label: t("rom.metadata") },
 ]);
 </script>
@@ -254,7 +337,12 @@ const tabs = computed<RTabNavItem[]>(() => [
 <template>
   <section v-if="currentRom" class="r-v2-det">
     <div class="r-v2-det__body">
-      <CoverColumn :rom="currentRom" :alt="title" />
+      <!-- Phones stack the cover above the header, so the prev / next arrows
+           flank the cover instead of the title. -->
+      <PrevNextNav v-if="smAndDown" :rom-id="currentRom.id">
+        <CoverColumn :rom="currentRom" :alt="title" />
+      </PrevNextNav>
+      <CoverColumn v-else :rom="currentRom" :alt="title" />
 
       <div class="r-v2-det__info">
         <GameHeader
@@ -287,10 +375,9 @@ const tabs = computed<RTabNavItem[]>(() => [
             :remakes="remakes"
             :remasters="remasters"
             :ports="ports"
-            :similar-games="similarGames"
+            :similar-roms="similarRoms"
           />
           <FilesTab v-if="tab === 'files'" :rom="currentRom" />
-          <PatcherTab v-if="tab === 'patcher'" :rom="currentRom" />
           <MediaTab v-if="tab === 'media'" :rom="currentRom" />
           <NotesTab v-if="tab === 'notes'" :rom="currentRom" />
           <AchievementsTab
@@ -299,6 +386,7 @@ const tabs = computed<RTabNavItem[]>(() => [
             :earned-achievement-ids="earnedAchievementIds"
           />
           <SaveDataTab v-if="tab === 'save-data'" :rom="currentRom" />
+          <PatcherTab v-if="tab === 'patcher'" :rom="currentRom" />
           <MetadataTab v-if="tab === 'metadata'" :rom="currentRom" />
         </div>
       </div>

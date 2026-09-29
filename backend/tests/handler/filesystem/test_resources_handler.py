@@ -3,11 +3,20 @@ import errno
 import os
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 import pytest
-from PIL import Image
+from PIL import Image, ImageSequence
+from PIL.PngImagePlugin import Blend
+from tests.utils.test_images import (
+    DURATIONS,
+    FRAME_SIZE,
+    animated_image_bytes,
+    encode_animation,
+    truncated_animation_bytes,
+)
 
 import adapters.services.screenscraper as ss_module
 from adapters.services.screenscraper import (
@@ -25,6 +34,7 @@ from handler.filesystem.resources_handler import (
 )
 from models.collection import Collection
 from models.rom import Rom
+from utils.images import frame_durations
 from utils.rate_limiter import ConcurrencyLimiter, RateLimiter
 
 
@@ -159,6 +169,10 @@ class TestCheckContentType:
         assert _check_content_type(resp, ("image/",), "cover") is True
 
 
+# Sub-1000px covers shrink by 0.4
+SMALL_FRAME_SIZE = (int(FRAME_SIZE[0] * 0.4), int(FRAME_SIZE[1] * 0.4))
+
+
 class TestFSResourcesHandler:
     """Test suite for FSResourcesHandler class"""
 
@@ -258,6 +272,87 @@ class TestFSResourcesHandler:
         expected_height = int(800 * 0.4)
         mock_image.resize.assert_called_once_with((expected_width, expected_height))
         mock_image.save.assert_called_once_with(save_path)
+
+    @pytest.mark.parametrize("fmt", ["GIF", "PNG", "WEBP"])
+    def test_resize_cover_to_small_keeps_animation(
+        self, handler: FSResourcesHandler, tmp_path: Path, fmt: str
+    ):
+        # Downloaded covers are stored as .png whatever the provider served
+        save_path = tmp_path / "small.png"
+
+        with Image.open(BytesIO(animated_image_bytes(fmt))) as img:
+            handler.resize_cover_to_small(img, save_path=str(save_path))
+
+        with Image.open(save_path) as small:
+            assert small.format == "WEBP"
+            assert small.size == SMALL_FRAME_SIZE
+            assert frame_durations(small) == DURATIONS
+
+    @pytest.mark.parametrize(
+        "fmt, source_params",
+        [
+            ("GIF", {"disposal": 2}),
+            ("PNG", {"blend": [Blend.OP_OVER, Blend.OP_SOURCE, Blend.OP_SOURCE]}),
+        ],
+    )
+    def test_resize_cover_to_small_clears_vacated_pixels(
+        self,
+        handler: FSResourcesHandler,
+        tmp_path: Path,
+        fmt: str,
+        source_params: dict[str, Any],
+    ):
+        # A sprite moving over a transparent background must not leave a trail
+        frames = []
+        for i in range(3):
+            frame = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+            frame.paste((255, 0, 0, 255), (i * 30, 0, i * 30 + 30, 30))
+            frames.append(frame)
+        source = encode_animation(frames, fmt, [100] * len(frames), **source_params)
+        save_path = tmp_path / "small.png"
+
+        with Image.open(BytesIO(source)) as img:
+            handler.resize_cover_to_small(img, save_path=str(save_path))
+
+        with Image.open(save_path) as small:
+            alphas = []
+            for frame in ImageSequence.Iterator(small):
+                pixel = frame.convert("RGBA").getpixel((2, 2))
+                assert isinstance(pixel, tuple)
+                alphas.append(pixel[3])
+        assert alphas == [255, 0, 0]
+
+    def test_resize_cover_to_small_damaged_animation(
+        self, handler: FSResourcesHandler, tmp_path: Path
+    ):
+        save_path = tmp_path / "small.gif"
+
+        with Image.open(BytesIO(truncated_animation_bytes("GIF"))) as img:
+            handler.resize_cover_to_small(img, save_path=str(save_path))
+
+        with Image.open(save_path) as small:
+            assert getattr(small, "n_frames", 1) == 1
+            assert small.size == SMALL_FRAME_SIZE
+
+    async def test_store_artwork_keeps_animation(
+        self, handler: FSResourcesHandler, rom: Rom, tmp_path: Path
+    ):
+        handler.base_path = tmp_path
+        data = animated_image_bytes("GIF")
+
+        with patch(
+            "handler.filesystem.resources_handler.ENABLE_SCHEDULED_CONVERT_IMAGES_TO_WEBP",
+            False,
+        ):
+            path_cover_l, path_cover_s = await handler.store_artwork(
+                rom, BytesIO(data), "gif"
+            )
+
+        assert path_cover_l is not None and path_cover_s is not None
+        assert (tmp_path / path_cover_l).read_bytes() == data
+        with Image.open(tmp_path / path_cover_s) as small:
+            assert small.format == "WEBP"
+            assert frame_durations(small) == DURATIONS
 
     def test_get_cover_path_no_cover(
         self, handler: FSResourcesHandler, rom: Rom, tmp_path
@@ -391,15 +486,26 @@ class TestFSResourcesHandler:
 
     @pytest.mark.asyncio
     async def test_get_rom_screenshots_with_urls(
-        self, handler: FSResourcesHandler, rom
+        self, handler: FSResourcesHandler, rom, tmp_path
     ):
         """Test get_rom_screenshots with URLs"""
+        handler.base_path = tmp_path
         urls = [
             "http://example.com/screenshot1.jpg",
             "http://example.com/screenshot2.jpg",
         ]
 
-        with patch.object(handler, "_store_screenshot") as mock_store:
+        # Only screenshots that reached the disk get a recorded path, so the
+        # stand-in has to write them.
+        async def store(_rom, _url, idx):
+            directory = tmp_path / f"{rom.fs_resources_path}/screenshots"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / f"{idx}.jpg").write_bytes(b"jpeg")
+            return True
+
+        with patch.object(
+            handler, "_store_screenshot", side_effect=store
+        ) as mock_store:
             result = await handler.get_rom_screenshots(rom, True, urls)
 
             # Should call _store_screenshot for each URL
@@ -423,7 +529,7 @@ class TestFSResourcesHandler:
         result = handler._get_manual_path(rom)
         assert result is None
 
-    @pytest.mark.parametrize("ext", [".pdf", ".md"])
+    @pytest.mark.parametrize("ext", [".pdf", ".md", ".txt"])
     def test_manual_exists_finds_extension(
         self, handler: FSResourcesHandler, rom: Rom, tmp_path, ext: str
     ):
@@ -435,7 +541,7 @@ class TestFSResourcesHandler:
 
         assert handler.manual_exists(rom)
 
-    @pytest.mark.parametrize("ext", [".pdf", ".md"])
+    @pytest.mark.parametrize("ext", [".pdf", ".md", ".txt"])
     def test_get_manual_path_finds_extension(
         self, handler: FSResourcesHandler, rom: Rom, tmp_path, ext: str
     ):
@@ -448,11 +554,11 @@ class TestFSResourcesHandler:
         result = handler._get_manual_path(rom)
         assert result == f"{rom.fs_resources_path}/manual/{rom.id}{ext}"
 
-    @pytest.mark.parametrize("ext", [".part", ".bak", ".tmp", ".txt"])
+    @pytest.mark.parametrize("ext", [".part", ".bak", ".tmp", ".exe"])
     def test_manual_exists_ignores_disallowed_extensions(
         self, handler: FSResourcesHandler, rom: Rom, tmp_path, ext: str
     ):
-        """Files that aren't PDF or Markdown must not be treated as manuals."""
+        """Files that aren't an allowed manual document must not count as manuals."""
         handler.base_path = tmp_path
         manual_dir = tmp_path / rom.fs_resources_path / "manual"
         manual_dir.mkdir(parents=True)
@@ -641,6 +747,85 @@ class TestFSResourcesHandler:
         assert isinstance(ra_badges, str)
         assert "retroachievements" in ra_base
         assert "badges" in ra_badges
+
+    @pytest.mark.asyncio
+    async def test_failed_screenshot_is_not_recorded(
+        self, handler: FSResourcesHandler, rom: Rom, tmp_path
+    ):
+        # Recording a path for a screenshot that never landed points the
+        # database at a missing file, and the gallery at a broken image.
+        handler.base_path = tmp_path
+
+        async def store_only_the_first(_rom, _url, idx):
+            if idx != 0:
+                return False
+            path = tmp_path / "roms/1/1/screenshots"
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "0.jpg").write_bytes(b"jpeg")
+            return True
+
+        with patch.object(
+            handler, "_store_screenshot", side_effect=store_only_the_first
+        ):
+            paths = await handler.get_rom_screenshots(
+                rom=rom,
+                overwrite=True,
+                url_screenshots=["http://x/a.jpg", "http://x/b.jpg"],
+            )
+
+        assert paths == ["roms/1/1/screenshots/0.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_only_the_missing_screenshot_is_fetched(
+        self, handler: FSResourcesHandler, rom: Rom, tmp_path
+    ):
+        # The url set is unchanged after a partial failure, so the gap is only
+        # visible on disk.
+        handler.base_path = tmp_path
+        rom.path_screenshots = ["roms/1/1/screenshots/0.jpg"]
+        screenshots = tmp_path / "roms/1/1/screenshots"
+        screenshots.mkdir(parents=True)
+        (screenshots / "0.jpg").write_bytes(b"jpeg")
+
+        attempted: list[int] = []
+
+        async def record(_rom, _url, idx):
+            attempted.append(idx)
+            (screenshots / f"{idx}.jpg").write_bytes(b"jpeg")
+            return True
+
+        with patch.object(handler, "_store_screenshot", side_effect=record):
+            paths = await handler.get_rom_screenshots(
+                rom=rom,
+                overwrite=False,
+                url_screenshots=["http://x/a.jpg", "http://x/b.jpg"],
+            )
+
+        assert attempted == [1]
+        assert paths == [
+            "roms/1/1/screenshots/0.jpg",
+            "roms/1/1/screenshots/1.jpg",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_cover_with_no_source_url_is_rederived_from_disk(
+        self, handler: FSResourcesHandler, rom: Rom, tmp_path
+    ):
+        # Second half of what keeps a locked cover alive through an unmatch,
+        # which clears the stored paths but never deletes the files.
+        handler.base_path = tmp_path
+        cover = tmp_path / "roms/1/1/cover"
+        cover.mkdir(parents=True)
+        (cover / "big.png").write_bytes(b"uploaded")
+        (cover / "small.png").write_bytes(b"uploaded")
+
+        path_s, path_l = await handler.get_cover(
+            entity=rom, overwrite=False, url_cover=""
+        )
+
+        assert path_s == "roms/1/1/cover/small.png"
+        assert path_l == "roms/1/1/cover/big.png"
+        assert (cover / "big.png").read_bytes() == b"uploaded"
 
 
 class TestChromaKeyDetection:

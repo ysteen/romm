@@ -1,4 +1,4 @@
-ARG ROMM_BASE_IMAGE=ghcr.io/rommapp/romm:5.2.0
+ARG ROMM_BASE_IMAGE=ghcr.io/rommapp/romm:5.3.1
 FROM ${ROMM_BASE_IMAGE} AS romm-base
 
 # Use glibc for native Vite dependencies and build static assets without emulation.
@@ -28,6 +28,7 @@ RUN find /emulatorjs/data/cores -type f \( -name '*.data' -o -path '*/reports/*.
 FROM ${ROMM_BASE_IMAGE}
 
 COPY backend/ /backend/
+COPY --from=romm-base /backend/__version__.py /backend/__version__.py
 COPY --from=frontend-build /front/dist/ /var/www/html/
 COPY docker/nginx/templates/default.conf.template /etc/nginx/templates/default.conf.template
 

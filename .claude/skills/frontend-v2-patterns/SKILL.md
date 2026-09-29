@@ -31,7 +31,7 @@ How v2 features behave. Each pattern has one canonical mechanism — don't inven
 ## C. Real-time updates (Socket.IO)
 
 - One instance: `src/services/socket.ts`. Never `new io()`.
-- New consumers go through (or build) a `useSocketEvent(event, handler)` composable for typed subscriptions with automatic mount/unmount cleanup (this composable is still debt — today consumers wire `socket.on/off` by hand).
+- Subscriptions go through `useSocketEvent(event, handler)` (`src/v2/composables/useSocketEvent/`): typed payload, auto-connect by default (`{ connect: false }` opts out), cleanup via `onScopeDispose` so it also works inside a store action or a manual `effectScope`. No v2 code wires `socket.on/off` by hand; don't start.
 - **Ownership rule:** state living only while a view is open → subscribe in the view; state that must outlive a view (e.g. scan badge in navbar) → a Pinia store subscribes globally and views just read.
 - Reconnection is socket.io's job — don't roll your own.
 
@@ -41,19 +41,31 @@ How v2 features behave. Each pattern has one canonical mechanism — don't inven
 2. **Bookmarkable session state** (active filters, search query, sort, current tab in detail views) → **URL query params**. Anyone copying the link reproduces what they see. **Active gallery filter must be in URL.**
 3. **Ephemeral session state** (open dialog, hover, expansion) → `ref` if local, Pinia store if cross-component within the session.
 
-Don't push state into `useUISettings` "so it persists" — follow the rule above.
+Don't push state into `useUISettings` "so it persists", follow the rule above. Layer 3 never touches `localStorage`: if a value has to survive a reload, it is layer 1 or the per-entity variant below, not ephemeral state.
+
+**Per-entity device preferences** (a bezel hidden for one game, the core picked for one game) are a narrow variant of layer 1: they persist per device but stay out of `useUISettings`, because they are keyed by entity rather than global and must not sync to `user.ui_settings`. Use `useLocalStorage` from VueUse with `writeDefaults: false` and a `serializer`, not a `ref` plus a `watch` plus `localStorage.setItem`. Key it off the route param so it binds before the entity resolves, and make the read fail safe to the default so a stale value can't wedge the view.
+
+## D2. Async and reactive lifecycle
+
+Three mistakes that keep reaching review:
+
+1. **Snapshot before the first `await`.** Any reactive value a decision depends on can move while requests are in flight. Read it into a local before the call, not between calls: `const wasAllFavorited = allFavorited.value` goes above `await ensureFavoriteCollection()`, because the response replaces the very `rom_ids` that `allFavorited` derives from.
+2. **Watch the narrowest source.** `watch(() => authStore.user, ...)` refires on every unrelated profile update, which then needs a manual "already ran for this id" flag. Watch a derived primitive instead so the watch is self-guarding: `() => user?.oauth_scopes.includes("tasks.run") ? user.id : null`.
+3. **Guard late resolutions with `useIsAlive()`** (`src/v2/composables/useIsAlive/`), not a local `unmounted` flag plus `onBeforeUnmount`. It uses `onScopeDispose`, so it also works inside another composable. VueUse's `useMounted` is not a substitute.
+
+Name a helper for what it touches: `syncCachedRom`, not `syncRom`, when it updates the cache and does not fetch.
 
 ## E. Pagination & infinite scroll
 
 - `LoadMore` (`RBtn` + `RSpinner` + IntersectionObserver) is the canonical fallback when virtualization stalls.
-- `RVirtualScroller` (`src/v2/lib/structural/`, wrapping `v-virtual-scroll`) is the substrate for large lists/grids.
+- `RVirtualScroller` (`src/v2/lib/structural/`) is the substrate for large lists/grids: a custom windowed list that owns its offset math, not a wrapper around anything.
 - Page size lives in the store (`fetchLimit`); not user-configurable for now.
-- **Scroll restoration** on back-nav: Vue Router `scrollBehavior` + Pinia in-session offset. URL holds filters/sort/search but **not** scroll offset.
+- **Scroll restoration** on back-nav: the `scrollRestoration` Pinia store keyed by `route.fullPath`. Vue Router's `scrollBehavior` only restores `window` scroll, and galleries scroll `RVirtualScroller`'s container, so `GalleryShell` owns persistence: it saves the outgoing route's offset in both its `onBeforeRouteUpdate` and `onBeforeRouteLeave` guards. Views don't repeat that (their own `onBeforeRouteUpdate` just triggers the new context's load); they call the exposed `applyRestoredScroll()` at the end of their load flow. URL holds filters/sort/search but **not** scroll offset.
 
 ## F. Forms & validation
 
-- Use the **`RForm` primitive** (wraps `v-form`: Enter-to-submit when valid, scroll-to-first-error after a failed `validate()`). **Never use `v-form` directly.**
-- **Native Vuetify rules** — no Zod/Yup. Rules are arrays of `(v) => true | string`.
+- Use the **`RForm` primitive** (a native `<form>` providing a registration context that descendant fields auto-enroll into: Enter-to-submit when valid, scroll-to-first-error after a failed `validate()`). **Never hand-roll a `<form>`.**
+- **Plain function rules**, no Zod/Yup and no validation library. Rules are arrays of `(v) => true | string`, run by the field primitives themselves.
 - **Reusable rules** in `src/v2/utils/validation.ts` (`required(msg?)`, `email`, `asciiOnly`, `lengthBetween`, `usernameLength/Chars`, `passwordLength`). Utility code _may_ call `i18n.global.t(...)` (the no-i18n rule covers lib primitives, not utils).
 - **Submit pattern:** `await formRef.value?.validate()` before the API call; submit button uses `:loading="submitting"`; errors → snackbar; field errors stay in-place via `:error-messages`.
 

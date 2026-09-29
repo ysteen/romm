@@ -2,11 +2,18 @@ from typing import Annotated
 
 from fastapi import HTTPException, Query, Request, status
 from fastapi_pagination import resolve_params
-from fastapi_pagination.limit_offset import LimitOffsetPage, LimitOffsetParams
+from fastapi_pagination.limit_offset import LimitOffsetParams
 from pydantic import BaseModel
 
 from decorators.auth import protected_route
-from endpoints.responses.music import FacetValueSchema, MusicTrackSchema
+from endpoints.responses.base import TypedLimitOffsetPage
+from endpoints.responses.music import (
+    FacetValueSchema,
+    MusicGameFacetSchema,
+    MusicPlatformFacetSchema,
+    MusicStatsSchema,
+    MusicTrackSchema,
+)
 from handler.auth.constants import Scope
 from handler.auth.dependencies import get_permissions
 from handler.auth.permissions import ResolvedPermissions
@@ -17,11 +24,12 @@ router = APIRouter(prefix="/music", tags=["music"])
 
 
 class MusicLimitOffsetParams(LimitOffsetParams):
-    limit: int = Query(50, ge=1, le=10_000, description="Page size limit")
+    # Sized to the largest page the jukebox requests (a whole soundtrack).
+    limit: int = Query(50, ge=1, le=1_000, description="Page size limit")
     offset: int = Query(0, ge=0, description="Page offset")
 
 
-class MusicPage[T: BaseModel](LimitOffsetPage[T]):
+class MusicPage[T: BaseModel](TypedLimitOffsetPage[T]):
     __params_type__ = MusicLimitOffsetParams
 
 
@@ -67,6 +75,9 @@ def get_music_tracks(
     artist: Annotated[str | None, Query(description="Exact artist.")] = None,
     album: Annotated[str | None, Query(description="Exact album.")] = None,
     genre: Annotated[str | None, Query(description="Exact genre.")] = None,
+    game_genre: Annotated[
+        str | None, Query(description="Exact genre of the owning game.")
+    ] = None,
     platform_ids: Annotated[
         list[int] | None, Query(description="Restrict to these platform ids.")
     ] = None,
@@ -74,6 +85,12 @@ def get_music_tracks(
         int | None, Query(description="Restrict to one rom's tracks.")
     ] = None,
     year: Annotated[int | None, Query(description="Exact release year.")] = None,
+    min_year: Annotated[
+        int | None, Query(description="Earliest release year, inclusive.")
+    ] = None,
+    max_year: Annotated[
+        int | None, Query(description="Latest release year, inclusive.")
+    ] = None,
     min_duration: Annotated[
         float | None, Query(description="Minimum duration in seconds.")
     ] = None,
@@ -88,7 +105,7 @@ def get_music_tracks(
 ) -> MusicPage[MusicTrackSchema]:
     """Flat, filterable, paginated list of soundtrack tracks."""
     perms = get_permissions(request)
-    params = resolve_params()
+    params: MusicLimitOffsetParams = resolve_params()
     rows, total = db_rom_handler.get_music_tracks(
         hidden_platform_ids=perms.hidden_platform_ids,
         hidden_rom_ids=perms.hidden_rom_ids,
@@ -96,9 +113,12 @@ def get_music_tracks(
         artist=artist,
         album=album,
         genre=genre,
+        game_genre=game_genre,
         platform_ids=platform_ids,
         rom_id=rom_id,
         year=year,
+        min_year=min_year,
+        max_year=max_year,
         min_duration=min_duration,
         max_duration=max_duration,
         order_by=order_by.lower(),
@@ -121,10 +141,19 @@ def get_music_favorites(
     artist: Annotated[str | None, Query(description="Exact artist.")] = None,
     album: Annotated[str | None, Query(description="Exact album.")] = None,
     genre: Annotated[str | None, Query(description="Exact genre.")] = None,
+    game_genre: Annotated[
+        str | None, Query(description="Exact genre of the owning game.")
+    ] = None,
     platform_ids: Annotated[
         list[int] | None, Query(description="Restrict to these platform ids.")
     ] = None,
     year: Annotated[int | None, Query(description="Exact release year.")] = None,
+    min_year: Annotated[
+        int | None, Query(description="Earliest release year, inclusive.")
+    ] = None,
+    max_year: Annotated[
+        int | None, Query(description="Latest release year, inclusive.")
+    ] = None,
     min_duration: Annotated[
         float | None, Query(description="Minimum duration in seconds.")
     ] = None,
@@ -139,7 +168,7 @@ def get_music_favorites(
 ) -> MusicPage[MusicTrackSchema]:
     """The requesting user's favorite tracks; same shape and filters as /tracks."""
     perms = get_permissions(request)
-    params = resolve_params()
+    params: MusicLimitOffsetParams = resolve_params()
     rows, total = db_rom_handler.get_music_tracks(
         hidden_platform_ids=perms.hidden_platform_ids,
         hidden_rom_ids=perms.hidden_rom_ids,
@@ -147,8 +176,11 @@ def get_music_favorites(
         artist=artist,
         album=album,
         genre=genre,
+        game_genre=game_genre,
         platform_ids=platform_ids,
         year=year,
+        min_year=min_year,
+        max_year=max_year,
         min_duration=min_duration,
         max_duration=max_duration,
         order_by=order_by.lower(),
@@ -199,7 +231,7 @@ def _facet_page(
     order_dir: str,
 ) -> MusicPage[FacetValueSchema]:
     perms = get_permissions(request)
-    params = resolve_params()
+    params: MusicLimitOffsetParams = resolve_params()
     rows, total = db_rom_handler.get_music_facet(
         field=field,
         hidden_platform_ids=perms.hidden_platform_ids,
@@ -339,3 +371,146 @@ def get_music_years(
         order_by=order_by,
         order_dir=order_dir,
     )
+
+
+@protected_route(router.get, "/game-genres", [Scope.ROMS_READ])
+def get_music_game_genres(
+    request: Request,
+    search: Annotated[
+        str | None, Query(description="Typeahead on the game's genre.")
+    ] = None,
+    artist: Annotated[str | None, Query()] = None,
+    album: Annotated[str | None, Query()] = None,
+    genre: Annotated[str | None, Query()] = None,
+    platform_ids: Annotated[list[int] | None, Query()] = None,
+    year: Annotated[int | None, Query()] = None,
+    min_year: Annotated[int | None, Query()] = None,
+    max_year: Annotated[int | None, Query()] = None,
+    min_duration: Annotated[float | None, Query()] = None,
+    max_duration: Annotated[float | None, Query()] = None,
+    order_by: Annotated[str, Query(description="count or value.")] = "count",
+    order_dir: Annotated[str, Query()] = "desc",
+) -> MusicPage[FacetValueSchema]:
+    """Distinct genres of the *games* the tracks belong to, with counts.
+
+    Distinct from `/genres`, which facets the tag written on the audio file.
+    """
+    perms = get_permissions(request)
+    params: MusicLimitOffsetParams = resolve_params()
+    rows, total = db_rom_handler.get_music_game_genre_facet(
+        hidden_platform_ids=perms.hidden_platform_ids,
+        hidden_rom_ids=perms.hidden_rom_ids,
+        search=search,
+        artist=artist,
+        album=album,
+        genre=genre,
+        platform_ids=platform_ids,
+        year=year,
+        min_year=min_year,
+        max_year=max_year,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        order_by=order_by.lower(),
+        order_dir=order_dir.lower(),
+        limit=params.limit,
+        offset=params.offset,
+    )
+    items = [FacetValueSchema(value=r.value, count=r.count) for r in rows]
+    return MusicPage.create(items, params, total=total)
+
+
+@protected_route(router.get, "/platforms", [Scope.ROMS_READ])
+def get_music_platforms(
+    request: Request,
+    search: Annotated[str | None, Query(description="Typeahead on platform.")] = None,
+    artist: Annotated[str | None, Query()] = None,
+    album: Annotated[str | None, Query()] = None,
+    genre: Annotated[str | None, Query()] = None,
+    game_genre: Annotated[str | None, Query()] = None,
+    year: Annotated[int | None, Query()] = None,
+    min_year: Annotated[int | None, Query()] = None,
+    max_year: Annotated[int | None, Query()] = None,
+    min_duration: Annotated[float | None, Query()] = None,
+    max_duration: Annotated[float | None, Query()] = None,
+    order_by: Annotated[str, Query(description="count or value.")] = "value",
+    order_dir: Annotated[str, Query()] = "asc",
+) -> MusicPage[MusicPlatformFacetSchema]:
+    """Platforms that have soundtrack tracks, with per-platform counts."""
+    perms = get_permissions(request)
+    params: MusicLimitOffsetParams = resolve_params()
+    rows, total = db_rom_handler.get_music_platform_facet(
+        hidden_platform_ids=perms.hidden_platform_ids,
+        hidden_rom_ids=perms.hidden_rom_ids,
+        search=search,
+        artist=artist,
+        album=album,
+        genre=genre,
+        game_genre=game_genre,
+        year=year,
+        min_year=min_year,
+        max_year=max_year,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        order_by=order_by.lower(),
+        order_dir=order_dir.lower(),
+        limit=params.limit,
+        offset=params.offset,
+    )
+    items = [MusicPlatformFacetSchema.from_row(r) for r in rows]
+    return MusicPage.create(items, params, total=total)
+
+
+@protected_route(router.get, "/games", [Scope.ROMS_READ])
+def get_music_games(
+    request: Request,
+    search: Annotated[
+        str | None, Query(description="Substring match on game/title/artist/album.")
+    ] = None,
+    artist: Annotated[str | None, Query()] = None,
+    album: Annotated[str | None, Query()] = None,
+    genre: Annotated[str | None, Query()] = None,
+    game_genre: Annotated[str | None, Query()] = None,
+    platform_ids: Annotated[list[int] | None, Query()] = None,
+    year: Annotated[int | None, Query()] = None,
+    min_year: Annotated[int | None, Query()] = None,
+    max_year: Annotated[int | None, Query()] = None,
+    min_duration: Annotated[float | None, Query()] = None,
+    max_duration: Annotated[float | None, Query()] = None,
+    order_by: Annotated[str, Query(description="count or value.")] = "value",
+    order_dir: Annotated[str, Query()] = "asc",
+) -> MusicPage[MusicGameFacetSchema]:
+    """Games that have soundtrack tracks -- the jukebox's album list."""
+    perms = get_permissions(request)
+    params: MusicLimitOffsetParams = resolve_params()
+    rows, total = db_rom_handler.get_music_game_facet(
+        hidden_platform_ids=perms.hidden_platform_ids,
+        hidden_rom_ids=perms.hidden_rom_ids,
+        search=search,
+        artist=artist,
+        album=album,
+        genre=genre,
+        game_genre=game_genre,
+        platform_ids=platform_ids,
+        year=year,
+        min_year=min_year,
+        max_year=max_year,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        order_by=order_by.lower(),
+        order_dir=order_dir.lower(),
+        limit=params.limit,
+        offset=params.offset,
+    )
+    items = [MusicGameFacetSchema.from_row(r) for r in rows]
+    return MusicPage.create(items, params, total=total)
+
+
+@protected_route(router.get, "/stats", [Scope.ROMS_READ])
+def get_music_stats(request: Request) -> MusicStatsSchema:
+    """Library-wide track count and total duration."""
+    perms = get_permissions(request)
+    total, duration = db_rom_handler.get_music_stats(
+        hidden_platform_ids=perms.hidden_platform_ids,
+        hidden_rom_ids=perms.hidden_rom_ids,
+    )
+    return MusicStatsSchema(total_tracks=total, total_duration_seconds=duration)

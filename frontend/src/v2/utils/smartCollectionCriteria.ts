@@ -15,6 +15,7 @@
 // smart collections continue to load.
 import type { Composer } from "vue-i18n";
 import type { Platform } from "@/stores/platforms";
+import { formatPlaytimeBound, playtimeHoursToSeconds } from "@/v2/utils/time";
 
 export type FilterLogic = "any" | "all" | "none";
 
@@ -36,6 +37,7 @@ export interface SmartFilterCriteria {
   has_states?: boolean;
   has_soundtrack?: boolean;
   missing?: boolean;
+  physical?: boolean;
   verified?: boolean;
   genres?: string[];
   genres_logic?: FilterLogic;
@@ -45,6 +47,10 @@ export interface SmartFilterCriteria {
   collections_logic?: FilterLogic;
   companies?: string[];
   companies_logic?: FilterLogic;
+  publishers?: string[];
+  publishers_logic?: FilterLogic;
+  developers?: string[];
+  developers_logic?: FilterLogic;
   age_ratings?: string[];
   age_ratings_logic?: FilterLogic;
   regions?: string[];
@@ -59,6 +65,9 @@ export interface SmartFilterCriteria {
   tags_logic?: FilterLogic;
   selected_status?: string[];
   statuses_logic?: FilterLogic;
+  /** HowLongToBeat main-story bounds in seconds, the unit `filter_roms` takes. */
+  hltb_main_story_min?: number;
+  hltb_main_story_max?: number;
 }
 
 // Subset of `storeGalleryFilter`'s state shape that we read from.
@@ -75,6 +84,7 @@ export interface GalleryFilterSnapshot {
   filterStates: boolean | null;
   filterSoundtrack: boolean | null;
   filterMissing: boolean | null;
+  filterPhysical: boolean | null;
   filterVerified: boolean | null;
   selectedPlatforms: Platform[];
   selectedGenres: string[];
@@ -85,6 +95,10 @@ export interface GalleryFilterSnapshot {
   collectionsLogic: FilterLogic;
   selectedCompanies: string[];
   companiesLogic: FilterLogic;
+  selectedPublishers: string[];
+  publishersLogic: FilterLogic;
+  selectedDevelopers: string[];
+  developersLogic: FilterLogic;
   selectedAgeRatings: string[];
   ageRatingsLogic: FilterLogic;
   selectedRegions: string[];
@@ -99,6 +113,8 @@ export interface GalleryFilterSnapshot {
   tagsLogic: FilterLogic;
   selectedStatuses: string[];
   statusesLogic: FilterLogic;
+  selectedLengthMinHours: number | null;
+  selectedLengthMaxHours: number | null;
 }
 
 /**
@@ -158,6 +174,7 @@ export function buildSmartFilterCriteria(
   if (snap.filterSoundtrack !== null)
     out.has_soundtrack = snap.filterSoundtrack;
   if (snap.filterMissing !== null) out.missing = snap.filterMissing;
+  if (snap.filterPhysical !== null) out.physical = snap.filterPhysical;
   if (snap.filterVerified !== null) out.verified = snap.filterVerified;
 
   if (snap.selectedGenres.length > 0) {
@@ -175,6 +192,14 @@ export function buildSmartFilterCriteria(
   if (snap.selectedCompanies.length > 0) {
     out.companies = snap.selectedCompanies;
     out.companies_logic = snap.companiesLogic;
+  }
+  if (snap.selectedPublishers.length > 0) {
+    out.publishers = snap.selectedPublishers;
+    out.publishers_logic = snap.publishersLogic;
+  }
+  if (snap.selectedDevelopers.length > 0) {
+    out.developers = snap.selectedDevelopers;
+    out.developers_logic = snap.developersLogic;
   }
   if (snap.selectedAgeRatings.length > 0) {
     out.age_ratings = snap.selectedAgeRatings;
@@ -204,6 +229,11 @@ export function buildSmartFilterCriteria(
     out.selected_status = snap.selectedStatuses;
     out.statuses_logic = snap.statusesLogic;
   }
+
+  const lengthMin = playtimeHoursToSeconds(snap.selectedLengthMinHours);
+  if (lengthMin !== null) out.hltb_main_story_min = lengthMin;
+  const lengthMax = playtimeHoursToSeconds(snap.selectedLengthMaxHours);
+  if (lengthMax !== null) out.hltb_main_story_max = lengthMax;
 
   return out;
 }
@@ -238,7 +268,8 @@ type FieldKind =
   | "platforms"
   | "collection"
   | "virtual-collection"
-  | "smart-collection";
+  | "smart-collection"
+  | "playtime";
 interface FieldSpec {
   storage: keyof SmartFilterCriteria;
   logicStorage?: keyof SmartFilterCriteria;
@@ -370,6 +401,15 @@ const FIELDS: FieldSpec[] = [
     kind: "bool",
   },
   {
+    storage: "physical",
+    icon: "mdi-cube-outline",
+    labelKey: "platform.show-physical",
+    defaultLabel: "Physical game",
+    negLabelKey: "platform.show-not-physical-only",
+    negDefaultLabel: "Show ROMs with a file only",
+    kind: "bool",
+  },
+  {
     storage: "verified",
     icon: "mdi-shield-check-outline",
     labelKey: "platform.show-verified",
@@ -408,6 +448,22 @@ const FIELDS: FieldSpec[] = [
     icon: "mdi-domain",
     labelKey: "platform.company",
     defaultLabel: "Companies",
+    kind: "list",
+  },
+  {
+    storage: "publishers",
+    logicStorage: "publishers_logic",
+    icon: "mdi-bank-outline",
+    labelKey: "platform.publisher",
+    defaultLabel: "Publishers",
+    kind: "list",
+  },
+  {
+    storage: "developers",
+    logicStorage: "developers_logic",
+    icon: "mdi-code-tags",
+    labelKey: "platform.developer",
+    defaultLabel: "Developers",
     kind: "list",
   },
   {
@@ -466,6 +522,20 @@ const FIELDS: FieldSpec[] = [
     defaultLabel: "Statuses",
     kind: "list",
   },
+  {
+    storage: "hltb_main_story_min",
+    icon: "mdi-timer-outline",
+    labelKey: "platform.length-at-least",
+    defaultLabel: "Length at least",
+    kind: "playtime",
+  },
+  {
+    storage: "hltb_main_story_max",
+    icon: "mdi-timer-outline",
+    labelKey: "platform.length-at-most",
+    defaultLabel: "Length at most",
+    kind: "playtime",
+  },
 ];
 
 export interface SummaryLookups {
@@ -493,6 +563,7 @@ export function summarizeSmartFilterCriteria(
   criteria: SmartFilterCriteria,
   t: Composer["t"],
   lookups?: SummaryLookups | ((id: number) => string | null),
+  locale?: string,
 ): SmartCriteriaSummaryItem[] {
   const resolved: SummaryLookups =
     typeof lookups === "function" ? { platform: lookups } : (lookups ?? {});
@@ -550,6 +621,15 @@ export function summarizeSmartFilterCriteria(
           icon: f.icon,
           label,
           values: [resolved.smartCollection?.(raw) ?? `#${raw}`],
+        });
+      }
+    } else if (f.kind === "playtime") {
+      if (typeof raw === "number") {
+        out.push({
+          key: f.storage,
+          icon: f.icon,
+          label,
+          values: [formatPlaytimeBound(raw, locale)],
         });
       }
     } else if (f.kind === "list") {

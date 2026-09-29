@@ -94,7 +94,6 @@ class SyncRetroAchievementsProgressTask(PeriodicTask):
             enabled=ENABLE_SCHEDULED_RETROACHIEVEMENTS_PROGRESS_SYNC,
             cron_string=SCHEDULED_RETROACHIEVEMENTS_PROGRESS_SYNC_CRON,
             manual_run=False,
-            func="tasks.scheduled.sync_retroachievements_progress.sync_retroachievements_progress_task.run",
         )
 
     @initialize_context()
@@ -117,7 +116,7 @@ class SyncRetroAchievementsProgressTask(PeriodicTask):
         for user in users:
             try:
                 user_progression = await meta_ra_handler.get_user_progression(
-                    user.ra_username,  # type: ignore[union-attr]
+                    user.ra_username,
                     current_progression=cast(
                         RAUserProgression | None, user.ra_progression
                     ),

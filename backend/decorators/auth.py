@@ -36,11 +36,16 @@ from handler.auth.constants import (
 oauth2_password_bearer = OAuth2PasswordBearer(
     tokenUrl="/token",
     auto_error=False,
+    # The maps are keyed by Scope, which is a StrEnum; FastAPI wants plain str.
     scopes={
-        **READ_SCOPES_MAP,
-        **WRITE_SCOPES_MAP,
-        **EDIT_SCOPES_MAP,
-        **FULL_SCOPES_MAP,
+        str(scope): description
+        for scope_map in (
+            READ_SCOPES_MAP,
+            WRITE_SCOPES_MAP,
+            EDIT_SCOPES_MAP,
+            FULL_SCOPES_MAP,
+        )
+        for scope, description in scope_map.items()
     },
 )
 
@@ -65,6 +70,9 @@ oauth.register(
     client_kwargs={
         "scope": f"openid profile email {OIDC_CLAIM_ROLES}".strip(),
         "verify": OIDC_TLS_CACERTFILE,
+        # Authlib only derives a code_verifier when code_challenge_method is set,
+        # so providers that mandate PKCE refuse the code without it.
+        "code_challenge_method": "S256",
     },
 )
 

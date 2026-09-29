@@ -15,6 +15,7 @@
 //   ?filterDuplicates=true|false
 //   ?filterPlayables=true|false
 //   ?filterMissing=true|false
+//   ?filterPhysical=true|false
 //   ?filterVerified=true|false
 //   ?filterRA=true|false
 //   ?filterSaves=true|false
@@ -25,6 +26,8 @@
 //   ?franchises=…&franchisesLogic=…
 //   ?collections=…&collectionsLogic=…
 //   ?companies=…&companiesLogic=…
+//   ?publishers=…&publishersLogic=…
+//   ?developers=…&developersLogic=…
 //   ?ageRatings=…&ageRatingsLogic=…
 //   ?regions=…&regionsLogic=…
 //   ?languages=…&languagesLogic=…
@@ -32,6 +35,7 @@
 //   ?playerCounts=…&playerCountsLogic=…
 //   ?metadataProviders=…&metadataProvidersLogic=…
 //   ?tags=…&tagsLogic=…
+//   ?lengthMin=…&lengthMax=…   (HowLongToBeat main story, in hours)
 //
 // Direction notes:
 //   * URL → store fires on every `route.query` change (browser back /
@@ -85,6 +89,13 @@ function qLogic(
   return null;
 }
 
+function qHours(v: LocationQueryValue | LocationQueryValue[]): number | null {
+  const s = qStr(v);
+  if (s === null) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function eqStrArr(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
@@ -104,6 +115,7 @@ export function useGalleryFilterUrl() {
     filterDuplicates,
     filterPlayables,
     filterMissing,
+    filterPhysical,
     filterVerified,
     filterRA,
     filterSaves,
@@ -114,6 +126,8 @@ export function useGalleryFilterUrl() {
     selectedFranchises,
     selectedCollections,
     selectedCompanies,
+    selectedPublishers,
+    selectedDevelopers,
     selectedAgeRatings,
     selectedRegions,
     selectedLanguages,
@@ -121,10 +135,14 @@ export function useGalleryFilterUrl() {
     selectedMetadataProviders,
     selectedTags,
     selectedStatuses,
+    selectedLengthMinHours,
+    selectedLengthMaxHours,
     genresLogic,
     franchisesLogic,
     collectionsLogic,
     companiesLogic,
+    publishersLogic,
+    developersLogic,
     ageRatingsLogic,
     regionsLogic,
     languagesLogic,
@@ -148,6 +166,7 @@ export function useGalleryFilterUrl() {
       filterDuplicates: qBool(q.filterDuplicates),
       filterPlayables: qBool(q.filterPlayables),
       filterMissing: qBool(q.filterMissing),
+      filterPhysical: qBool(q.filterPhysical),
       filterVerified: qBool(q.filterVerified),
       filterRA: qBool(q.filterRA),
       filterSaves: qBool(q.filterSaves),
@@ -164,6 +183,10 @@ export function useGalleryFilterUrl() {
       collectionsLogic: qLogic(q.collectionsLogic),
       companies: qList(q.companies),
       companiesLogic: qLogic(q.companiesLogic),
+      publishers: qList(q.publishers),
+      publishersLogic: qLogic(q.publishersLogic),
+      developers: qList(q.developers),
+      developersLogic: qLogic(q.developersLogic),
       ageRatings: qList(q.ageRatings),
       ageRatingsLogic: qLogic(q.ageRatingsLogic),
       regions: qList(q.regions),
@@ -178,6 +201,8 @@ export function useGalleryFilterUrl() {
       tagsLogic: qLogic(q.tagsLogic),
       statuses: qList(q.statuses),
       statusesLogic: qLogic(q.statusesLogic),
+      lengthMin: qHours(q.lengthMin),
+      lengthMax: qHours(q.lengthMax),
     };
 
     if (url.search !== searchTerm.value) searchTerm.value = url.search;
@@ -191,6 +216,8 @@ export function useGalleryFilterUrl() {
       filterPlayables.value = url.filterPlayables;
     if (url.filterMissing !== filterMissing.value)
       filterMissing.value = url.filterMissing;
+    if (url.filterPhysical !== filterPhysical.value)
+      filterPhysical.value = url.filterPhysical;
     if (url.filterVerified !== filterVerified.value)
       filterVerified.value = url.filterVerified;
     if (url.filterRA !== filterRA.value) filterRA.value = url.filterRA;
@@ -240,6 +267,16 @@ export function useGalleryFilterUrl() {
     if (url.companiesLogic && url.companiesLogic !== companiesLogic.value)
       filter.setCompaniesLogic(url.companiesLogic);
 
+    if (!eqStrArr(url.publishers, selectedPublishers.value))
+      filter.setSelectedFilterPublishers(url.publishers);
+    if (url.publishersLogic && url.publishersLogic !== publishersLogic.value)
+      filter.setPublishersLogic(url.publishersLogic);
+
+    if (!eqStrArr(url.developers, selectedDevelopers.value))
+      filter.setSelectedFilterDevelopers(url.developers);
+    if (url.developersLogic && url.developersLogic !== developersLogic.value)
+      filter.setDevelopersLogic(url.developersLogic);
+
     if (!eqStrArr(url.ageRatings, selectedAgeRatings.value))
       filter.setSelectedFilterAgeRatings(url.ageRatings);
     if (url.ageRatingsLogic && url.ageRatingsLogic !== ageRatingsLogic.value)
@@ -280,6 +317,13 @@ export function useGalleryFilterUrl() {
       filter.setSelectedFilterStatuses(url.statuses);
     if (url.statusesLogic && url.statusesLogic !== statusesLogic.value)
       filter.setStatusesLogic(url.statusesLogic);
+
+    if (
+      url.lengthMin !== selectedLengthMinHours.value ||
+      url.lengthMax !== selectedLengthMaxHours.value
+    ) {
+      filter.setSelectedFilterLengthHours(url.lengthMin, url.lengthMax);
+    }
   }
 
   // Apply once before the view's setup reads any of the refs.
@@ -329,6 +373,7 @@ export function useGalleryFilterUrl() {
     setBool("filterDuplicates", filterDuplicates.value);
     setBool("filterPlayables", filterPlayables.value);
     setBool("filterMissing", filterMissing.value);
+    setBool("filterPhysical", filterPhysical.value);
     setBool("filterVerified", filterVerified.value);
     setBool("filterRA", filterRA.value);
     setBool("filterSaves", filterSaves.value);
@@ -359,6 +404,16 @@ export function useGalleryFilterUrl() {
     setOrDelete(
       "companiesLogic",
       selectedCompanies.value.length > 0 ? companiesLogic.value : null,
+    );
+    setList("publishers", selectedPublishers.value);
+    setOrDelete(
+      "publishersLogic",
+      selectedPublishers.value.length > 0 ? publishersLogic.value : null,
+    );
+    setList("developers", selectedDevelopers.value);
+    setOrDelete(
+      "developersLogic",
+      selectedDevelopers.value.length > 0 ? developersLogic.value : null,
     );
     setList("ageRatings", selectedAgeRatings.value);
     setOrDelete(
@@ -397,6 +452,18 @@ export function useGalleryFilterUrl() {
       "statusesLogic",
       selectedStatuses.value.length > 0 ? statusesLogic.value : null,
     );
+    setOrDelete(
+      "lengthMin",
+      selectedLengthMinHours.value === null
+        ? null
+        : String(selectedLengthMinHours.value),
+    );
+    setOrDelete(
+      "lengthMax",
+      selectedLengthMaxHours.value === null
+        ? null
+        : String(selectedLengthMaxHours.value),
+    );
 
     // Skip the push if nothing actually changed — keeps router from
     // emitting a route-update for an identical URL.
@@ -426,6 +493,7 @@ export function useGalleryFilterUrl() {
       filterDuplicates,
       filterPlayables,
       filterMissing,
+      filterPhysical,
       filterVerified,
       filterRA,
       filterSaves,
@@ -440,6 +508,10 @@ export function useGalleryFilterUrl() {
       collectionsLogic,
       selectedCompanies,
       companiesLogic,
+      selectedPublishers,
+      publishersLogic,
+      selectedDevelopers,
+      developersLogic,
       selectedAgeRatings,
       ageRatingsLogic,
       selectedRegions,
@@ -454,6 +526,8 @@ export function useGalleryFilterUrl() {
       tagsLogic,
       selectedStatuses,
       statusesLogic,
+      selectedLengthMinHours,
+      selectedLengthMaxHours,
     ],
     () => pushDebounced(),
     { deep: true },

@@ -38,6 +38,7 @@ import storeCollections from "@/stores/collections";
 import storeGalleryFilter from "@/stores/galleryFilter";
 import storePlatforms from "@/stores/platforms";
 import type { Events } from "@/types/emitter";
+import { toBrowserLocale } from "@/utils";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import storeGalleryRoms from "@/v2/stores/galleryRoms";
@@ -51,7 +52,7 @@ import { required } from "@/v2/utils/validation";
 
 defineOptions({ inheritAttrs: false });
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const { mdAndUp } = useBreakpoint();
 const router = useRouter();
 const snackbar = useSnackbar();
@@ -93,6 +94,7 @@ const openHandler = () => {
       filterStates: galleryFilter.filterStates,
       filterSoundtrack: galleryFilter.filterSoundtrack,
       filterMissing: galleryFilter.filterMissing,
+      filterPhysical: galleryFilter.filterPhysical,
       filterVerified: galleryFilter.filterVerified,
       selectedPlatforms: galleryFilter.selectedPlatforms,
       selectedGenres: galleryFilter.selectedGenres,
@@ -103,6 +105,10 @@ const openHandler = () => {
       collectionsLogic: galleryFilter.collectionsLogic,
       selectedCompanies: galleryFilter.selectedCompanies,
       companiesLogic: galleryFilter.companiesLogic,
+      selectedPublishers: galleryFilter.selectedPublishers,
+      publishersLogic: galleryFilter.publishersLogic,
+      selectedDevelopers: galleryFilter.selectedDevelopers,
+      developersLogic: galleryFilter.developersLogic,
       selectedAgeRatings: galleryFilter.selectedAgeRatings,
       ageRatingsLogic: galleryFilter.ageRatingsLogic,
       selectedRegions: galleryFilter.selectedRegions,
@@ -113,6 +119,8 @@ const openHandler = () => {
       playerCountsLogic: galleryFilter.playerCountsLogic,
       selectedMetadataProviders: galleryFilter.selectedMetadataProviders,
       metadataProvidersLogic: galleryFilter.metadataProvidersLogic,
+      selectedLengthMinHours: galleryFilter.selectedLengthMinHours,
+      selectedLengthMaxHours: galleryFilter.selectedLengthMaxHours,
       selectedTags: galleryFilter.selectedTags,
       tagsLogic: galleryFilter.tagsLogic,
       selectedStatuses: galleryFilter.selectedStatuses,
@@ -162,12 +170,17 @@ function smartCollectionLookup(id: number): string | null {
 }
 
 const summary = computed(() =>
-  summarizeSmartFilterCriteria(snapshot.value, t, {
-    platform: platformLookup,
-    collection: collectionLookup,
-    virtualCollection: virtualCollectionLookup,
-    smartCollection: smartCollectionLookup,
-  }),
+  summarizeSmartFilterCriteria(
+    snapshot.value,
+    t,
+    {
+      platform: platformLookup,
+      collection: collectionLookup,
+      virtualCollection: virtualCollectionLookup,
+      smartCollection: smartCollectionLookup,
+    },
+    toBrowserLocale(locale.value),
+  ),
 );
 
 function close() {
@@ -225,6 +238,8 @@ async function submit() {
     v-model="show"
     icon="mdi-playlist-plus"
     :width="mdAndUp ? 640 : '95vw'"
+    cancelable
+    :cancel-disabled="submitting"
     @close="close"
   >
     <template #header>
@@ -314,9 +329,6 @@ async function submit() {
     </template>
 
     <template #footer>
-      <RBtn variant="text" :disabled="submitting" @click="close">
-        {{ t("common.cancel") }}
-      </RBtn>
       <RBtn
         variant="flat"
         color="primary"

@@ -10,7 +10,7 @@
 //   actions.isFavorite     // reactive Ref<boolean>
 //   actions.canManageCollections  // reactive Ref<boolean>
 import type { Emitter } from "mitt";
-import { computed, inject, type InjectionKey } from "vue";
+import { computed, inject, type InjectionKey, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import type { RomUserData, RomUserStatus } from "@/__generated__";
@@ -28,7 +28,9 @@ import { useCan } from "@/v2/composables/useCan";
 import { useCanPlay } from "@/v2/composables/useCanPlay";
 import { useClipboard } from "@/v2/composables/useClipboard";
 import { useConfirm } from "@/v2/composables/useConfirm";
+import { confirmJoinStream } from "@/v2/composables/useJoinStreamConfirm";
 import { useRomSync } from "@/v2/composables/useRomSync";
+import { useScanTrigger } from "@/v2/composables/useScanTrigger";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import { useViewTransition } from "@/v2/composables/useViewTransition";
 
@@ -41,6 +43,11 @@ export interface GameActionsOptions {
    *  the cover into /ejs the same way clicking the card morphs into details. */
   coverEl?: () => HTMLElement | null;
 }
+
+/** Which player a launch is asking for. "auto" lets availability decide. */
+export type PlayTarget = "auto" | "local" | "stream";
+
+type PlayerSlug = "stream" | "jsdos" | "ejs" | "pico8" | "ruffle";
 
 // Validate flashpoint game IDs are UUIDs
 const FLASHPOINT_ID_RE =
@@ -77,18 +84,80 @@ export function useGameActions(
   // delete that 403s.
   const canDelete = computed(() => hasDeleteGrant.value && canEdit.value);
   const { isFavorite, toggleFavorite } = useFavoriteToggle(emitter);
-  const { canPlayEJS, canPlayRuffle } = useCanPlay(getRom);
+  const { startScan } = useScanTrigger();
+  const {
+    canPlay,
+    canPlayEJS,
+    canPlayJsDos,
+    canPlayPico8,
+    canPlayRuffle,
+    canPlayStream,
+  } = useCanPlay(getRom);
   const streamingStore = useStreamingStore();
 
-  // Streaming is the preferred way to play where a container is
-  // configured for the platform — the native emulator runs in a
-  // separate container and RomM streams it back. Wins over in-browser
-  // EJS/Ruffle when both are available.
-  const canPlayStream = computed(() =>
-    Boolean(streamingStore.containerForPlatform(getRom()?.platform_slug)),
+  // Streaming is offered as its own action rather than as the winner of a
+  // precedence rule, so each player needs a gate of its own.
+  const canPlayInBrowser = computed(
+    () =>
+      canPlayEJS.value ||
+      canPlayJsDos.value ||
+      canPlayPico8.value ||
+      canPlayRuffle.value,
   );
-  const canPlay = computed(
-    () => canPlayStream.value || canPlayEJS.value || canPlayRuffle.value,
+
+  // Download, the copied link and the QR code all resolve to the download
+  // endpoint, which has nothing to serve without a file behind the rom.
+  const canDownload = computed(() => Boolean(getRom()?.has_file_on_disk));
+
+  // Names the box the session runs on, so a library served by more than one
+  // container says which the button reaches.
+  const streamLabel = computed(
+    () =>
+      streamingStore.containerLabelForPlatform(getRom()?.platform_slug) ?? "",
+  );
+
+  // Asked for here so every surface offering Join has the list, not just the
+  // game details page. The store collapses concurrent callers into one request
+  // and holds the answer for a freshness window, so a gallery of cards costs
+  // what a single card costs.
+  watch(
+    canPlayStream,
+    (can) => {
+      if (can) void streamingStore.fetchJoinableSessions();
+    },
+    { immediate: true },
+  );
+
+  // A session someone else opened to other players on this exact ROM. Read
+  // from the store, never fetched here: this composable is instantiated once
+  // per GameActionBtn, and a fetch per instance would be a request storm.
+  const joinableSession = computed(() => {
+    const rom = getRom();
+    if (!rom) return null;
+    return streamingStore.joinableForRom(rom.id);
+  });
+
+  const canJoinStream = computed(
+    () => canPlayStream.value && joinableSession.value !== null,
+  );
+
+  const joinHostLabel = computed(
+    () => joinableSession.value?.host_username ?? "",
+  );
+
+  // The wording every surface offering these actions uses. Held here so the
+  // action button and the overflow menu cannot name the same action
+  // differently.
+  const streamActionLabel = computed(() =>
+    streamLabel.value
+      ? t("rom.stream-on", { container: streamLabel.value })
+      : t("rom.stream"),
+  );
+
+  const joinActionLabel = computed(() =>
+    joinHostLabel.value
+      ? t("rom.join-session-of", { user: joinHostLabel.value })
+      : t("rom.join-session"),
   );
 
   const isFavorited = computed(() => {
@@ -211,8 +280,9 @@ export function useGameActions(
   const canShareQR = computed(() => {
     const rom = getRom();
     return rom
-      ? isNintendoDSRom(rom) ||
-          ["3ds", "new-nintendo-3ds"].includes(rom.platform_slug)
+      ? rom.has_file_on_disk &&
+          (isNintendoDSRom(rom) ||
+            ["3ds", "new-nintendo-3ds"].includes(rom.platform_slug))
       : false;
   });
 
@@ -223,18 +293,23 @@ export function useGameActions(
     );
   });
 
-  async function play() {
+  // Launching a game the user deliberately shelved asks first. `retired` /
+  // `never_playing` encode an opt-in "don't play" intent; the prompt is
+  // gated by a per-user preference (on by default).
+  const needsLaunchConfirm = computed(() => {
+    const status = getRom()?.rom_user?.status;
+    return (
+      confirmProtectedLaunch.value &&
+      (status === "retired" || status === "never_playing")
+    );
+  });
+
+  async function play(player: PlayTarget = "auto") {
     const rom = getRom();
     if (!rom) return;
 
-    // Guard launching a game the user deliberately shelved. `retired` /
-    // `never_playing` encode an opt-in "don't play" intent, so confirm
-    // before booting one. Gated by a per-user preference (on by default).
     const status = rom.rom_user?.status;
-    if (
-      confirmProtectedLaunch.value &&
-      (status === "retired" || status === "never_playing")
-    ) {
+    if (needsLaunchConfirm.value) {
       const ok = await confirm({
         title: t("rom.confirm-launch-protected-title"),
         body: t("rom.confirm-launch-protected-body", {
@@ -251,37 +326,62 @@ export function useGameActions(
       if (!ok) return;
     }
 
-    // EmulatorJS cores can require SharedArrayBuffer. Nginx only attaches the
-    // necessary COOP/COEP headers to the player document, so an SPA navigation
-    // cannot enable cross-origin isolation. Load the document directly instead.
-    if (!canPlayStream.value && canPlayEJS.value) {
-      window.location.assign(`/rom/${rom.id}/ejs`);
-      return;
-    }
+    const target = playPath(player);
+    if (!target) return;
 
     // The launch "load" flourish (disc/cartridge insert) lives on the
-    // player view itself — see EmulatorJS's onPlay — so navigation is
-    // immediate here.
-    let path: string | null = null;
-    if (canPlayStream.value) path = `/rom/${rom.id}/stream`;
-    else if (canPlayRuffle.value) path = `/rom/${rom.id}/ruffle`;
-    if (!path) return;
-    const target = path;
-    // When the caller supplies a cover element (the gallery card / detail
-    // hero), morph it into the player's hero cover — same `rom-cover-<id>`
-    // tag the player paints statically. Degrades to a plain push where view
-    // transitions aren't available.
+    // player view itself (see EmulatorJS's onPlay), so navigation is
+    // immediate here. When the caller supplies a cover element (the gallery
+    // card / detail hero), morph it into the player's hero cover: the same
+    // `rom-cover-<id>` tag the player paints statically. Degrades to a plain
+    // push where view transitions aren't available.
     const el = options.coverEl?.();
     if (el) {
       // Await the push inside the transition so the browser snapshots the
       // player view *after* it has rendered its hero cover (which carries the
-      // same `rom-cover-<id>` tag) — otherwise there's no element to morph to.
+      // same `rom-cover-<id>` tag); otherwise there's no element to morph to.
       morphTransition({ el, name: `rom-cover-${rom.id}` }, async () => {
         await router.push(target);
       });
     } else {
       router.push(target);
     }
+  }
+
+  // A platform can be served by both an in-browser core and a streaming
+  // container, and they are different products (local latency versus the
+  // container's own emulator and save library). The caller says which it
+  // wants; "auto" keeps the single-button surfaces working by preferring
+  // the stream, as they did before either could be asked for by name.
+  /** Path `play(player)` opens; surfaces rendering the launch as a link point at it too. */
+  function playPath(player: PlayTarget = "auto"): string | null {
+    const rom = getRom();
+    if (!rom) return null;
+    let slug: PlayerSlug | null = null;
+    if (player === "stream") slug = canPlayStream.value ? "stream" : null;
+    else if (player === "auto" && canPlayStream.value) slug = "stream";
+    else if (canPlayJsDos.value) slug = "jsdos";
+    else if (canPlayEJS.value) slug = "ejs";
+    else if (canPlayPico8.value) slug = "pico8";
+    else if (canPlayRuffle.value) slug = "ruffle";
+    return slug ? `/rom/${rom.id}/${slug}` : null;
+  }
+
+  // Joining is its own navigation: the stream view claims a container when it
+  // opens normally, so the join intent has to reach it in the URL. Confirming
+  // first is what stands in for the start page, which a joiner never sees:
+  // they land in someone else's running game with no settings of their own.
+  async function joinStream() {
+    const rom = getRom();
+    if (!rom || !canJoinStream.value) return;
+    await confirmJoinStream(
+      { t, router, confirm },
+      {
+        romId: rom.id,
+        romName: rom.name ?? rom.fs_name_no_ext ?? "",
+        hostUsername: joinHostLabel.value || null,
+      },
+    );
   }
 
   const platformPath = computed(() => {
@@ -389,6 +489,28 @@ export function useGameActions(
     emitter?.emit("showRefreshMetadataDialog", rom);
   }
 
+  // Reconciling one rom's files contacts no provider, so it needs no dialog: it goes
+  // straight to the socket with an empty source list.
+  function refreshFiles() {
+    const rom = getRom();
+    if (!rom) return;
+    const started = startScan([
+      {
+        platforms: [rom.platform_id],
+        roms_ids: [rom.id],
+        type: "quick",
+        apis: [],
+      },
+    ]);
+    if (!started) return;
+    snackbar.info(
+      t("rom.refreshing-files", { name: rom.name ?? rom.fs_name }),
+      {
+        icon: "mdi-loading mdi-spin",
+      },
+    );
+  }
+
   function edit() {
     const rom = getRom();
     if (!rom) return;
@@ -450,8 +572,16 @@ export function useGameActions(
     canManageCollections,
     canShareQR,
     canOpenInFlashpoint,
+    canDownload,
     canPlay,
     canPlayStream,
+    canPlayInBrowser,
+    streamLabel,
+    streamActionLabel,
+    canJoinStream,
+    joinHostLabel,
+    joinActionLabel,
+    joinStream,
     canRemoveFromContinuePlaying,
     canEdit,
     canDelete,
@@ -461,7 +591,9 @@ export function useGameActions(
     setStatus,
     setStatusEnum,
     setScore,
+    needsLaunchConfirm,
     play,
+    playPath,
     goToPlatform,
     platformPath,
     download,
@@ -472,6 +604,7 @@ export function useGameActions(
     copyDownloadLink,
     manageCollections,
     refreshMetadata,
+    refreshFiles,
     edit,
     match,
     remove,

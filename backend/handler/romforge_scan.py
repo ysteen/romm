@@ -14,6 +14,7 @@ from handler import patch_jobs
 from handler.database import db_rom_handler
 from handler.filesystem import fs_rom_handler
 from handler.redis_handler import redis_client
+from handler.scan_jobs import get_running_scan_job
 from logger.logger import log
 from models.platform import Platform
 from models.rom import Rom, RomFile, RomFileCategory
@@ -81,9 +82,7 @@ def pump_pending() -> None:
     if not ROMFORGE_NORMALIZE_3DS_ON_SCAN or not keys_ready():
         return
     # Wait for metadata reconciliation before changing filenames.
-    from endpoints.sockets.scan import _get_running_scan_job
-
-    if _get_running_scan_job():
+    if get_running_scan_job():
         return
     if patch_jobs.patch_queue.count >= patch_jobs.ROMFORGE_MAX_PENDING:
         return
@@ -208,9 +207,7 @@ def normalize(payload: dict) -> dict:
 
 
 def _defer_during_scan(file_id: int) -> None:
-    from endpoints.sockets.scan import _get_running_scan_job
-
-    if _get_running_scan_job():
+    if get_running_scan_job():
         redis_client.sadd(PENDING_KEY, file_id)
         raise patch_jobs.PatchJobError(
             "Normalization deferred until the active library scan finishes"

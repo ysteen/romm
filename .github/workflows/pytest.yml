@@ -4,27 +4,37 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - ".github/workflows/pytest.yml"
+      - pyproject.toml
+      - uv.lock
+      - .python-version
+      - Dockerfile
+      - docker/Dockerfile
   push:
     branches:
       - "master"
     paths:
       - "backend/**"
+      - ".github/workflows/pytest.yml"
+      - pyproject.toml
+      - uv.lock
+      - .python-version
+      - Dockerfile
+      - docker/Dockerfile
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   pytest:
     runs-on: ubuntu-latest
-    permissions:
-      checks: write
-      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
         db: [mariadb, postgresql]
     services:
       mariadb:
-        image: mariadb:10.11
+        image: mariadb:12.3.3
         ports:
           - 3306
         env:
@@ -32,9 +42,9 @@ jobs:
           MYSQL_PASSWORD: passwd
           MYSQL_DATABASE: romm_test
           MYSQL_ROOT_PASSWORD: passwd
-        options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=2s --health-retries=3
+        options: --health-cmd="healthcheck.sh --connect --innodb_initialized" --health-interval=5s --health-timeout=2s --health-retries=3 --health-start-period=30s
       postgresql:
-        image: postgres:16
+        image: postgres:18
         ports:
           - 5432
         env:
@@ -43,39 +53,43 @@ jobs:
           POSTGRES_DB: romm_test
         options: --health-cmd="pg_isready" --health-interval=5s --health-timeout=2s --health-retries=3
       valkey:
-        image: valkey/valkey:7.2
+        image: valkey/valkey:9.0.6
         ports:
           - 6379
         options: >-
           --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=2s --health-retries=3
     steps:
       - name: Checkout repository
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install mariadb connectors
         run: |
           sudo apt-get update
-          sudo apt-get install -y libmariadb3 libmariadb-dev
+          sudo apt-get install -y libmariadb3 libmariadb-dev 7zip
 
       - name: Install uv
-        uses: astral-sh/setup-uv@b75a909f75acd358c2196fb9a5f1299a9a8868a4 # v6.7.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install python
         run: |
-          uv python install 3.13
+          uv python install
 
       - name: Install dependencies
         run: |
-          uv sync --extra test
+          uv sync --frozen --extra test
 
       - name: Initiate MariaDB database
         if: matrix.db == 'mariadb'
+        env:
+          MARIADB_PORT: ${{ job.services.mariadb.ports['3306'] }}
         run: |
           # Grant on the `romm_test%` namespace so the test user can create the
           # per-worker databases (romm_test_gw0, ...) used under pytest-xdist,
           # without granting it global privileges. The backticks are escaped so
           # the shell doesn't treat them as command substitution.
-          mysql --host 127.0.0.1 --port ${{ job.services.mariadb.ports['3306'] }} -uroot -ppasswd -e "GRANT ALL PRIVILEGES ON \`romm\_test%\`.* TO 'romm_test'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;"
+          mysql --host 127.0.0.1 --port "$MARIADB_PORT" -uroot -ppasswd -e "GRANT ALL PRIVILEGES ON \`romm\_test%\`.* TO 'romm_test'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;"
 
       - name: Run python tests
         env:

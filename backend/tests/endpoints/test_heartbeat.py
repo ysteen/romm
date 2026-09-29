@@ -1,11 +1,16 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import status
+from main import app
 
+from endpoints.heartbeat import METADATA_HEARTBEAT_RATE_LIMIT
 from exceptions.fs_exceptions import PlatformAlreadyExistsException
 from handler.metadata.launchbox_handler.handler import LaunchboxHandler
-from utils import get_version
+from handler.redis_handler import sync_cache
+from utils import get_git_branch, get_version
 
 
 def test_heartbeat(client):
@@ -17,6 +22,9 @@ def test_heartbeat(client):
     assert "SYSTEM" in heartbeat
     system = heartbeat["SYSTEM"]
     assert system["VERSION"] == get_version()
+    assert system["GIT_BRANCH"] == (
+        get_git_branch() if system["VERSION"] == "development" else None
+    )
     assert isinstance(system["SHOW_SETUP_WIZARD"], bool)
 
     assert "METADATA_SOURCES" in heartbeat
@@ -42,6 +50,8 @@ def test_heartbeat(client):
     emulation = heartbeat["EMULATION"]
     assert isinstance(emulation["DISABLE_EMULATOR_JS"], bool)
     assert isinstance(emulation["DISABLE_RUFFLE_RS"], bool)
+    assert isinstance(emulation["DISABLE_JSDOS"], bool)
+    assert isinstance(emulation["DISABLE_PICO8"], bool)
 
     assert "FRONTEND" in heartbeat
     frontend = heartbeat["FRONTEND"]
@@ -70,6 +80,9 @@ def test_heartbeat_metadata(client):
     assert response.status_code == status.HTTP_200_OK
     assert response.json() is False
 
+    # That first answer is cached, so drop it before probing for the other state.
+    sync_cache.flushall()
+
     with patch.object(
         LaunchboxHandler, "is_remote_store_populated", new_callable=AsyncMock
     ) as mock_populated:
@@ -80,17 +93,79 @@ def test_heartbeat_metadata(client):
     assert response.json() is True
 
 
+def test_heartbeat_metadata_probes_the_provider_once_per_window(client):
+    """A flood of callers must not become a flood of outbound provider probes."""
+    with patch.object(
+        LaunchboxHandler, "is_remote_store_populated", new_callable=AsyncMock
+    ) as mock_populated:
+        mock_populated.return_value = True
+
+        for _ in range(METADATA_HEARTBEAT_RATE_LIMIT):
+            response = client.get("/api/heartbeat/metadata/launchbox")
+            assert response.status_code == status.HTTP_200_OK
+            assert response.json() is True
+
+    assert mock_populated.call_count == 1
+
+
+async def test_heartbeat_metadata_concurrent_misses_probe_once(client):
+    """Requests racing an in-flight probe must wait for it, not launch their own."""
+
+    async def slow_probe() -> bool:
+        await asyncio.sleep(0.05)
+        return True
+
+    with patch.object(
+        LaunchboxHandler,
+        "is_remote_store_populated",
+        new_callable=AsyncMock,
+        side_effect=slow_probe,
+    ) as mock_populated:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as async_client:
+            responses = await asyncio.gather(
+                *(
+                    async_client.get("/api/heartbeat/metadata/launchbox")
+                    for _ in range(5)
+                )
+            )
+
+    assert [r.json() for r in responses] == [True] * 5
+    assert mock_populated.call_count == 1
+
+
 def test_heartbeat_metadata_unknown_source(client):
     response = client.get("/api/heartbeat/metadata/unknown")
     assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 
-def test_get_setup_library_info_structure_a_detected(client, access_token):
-    """Test get_setup_library_info with Structure A detected"""
+def test_heartbeat_metadata_rate_limit(client):
+    for _ in range(METADATA_HEARTBEAT_RATE_LIMIT):
+        response = client.get("/api/heartbeat/metadata/launchbox")
+        assert response.status_code == status.HTTP_200_OK
+
+    response = client.get("/api/heartbeat/metadata/launchbox")
+    assert response.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+
+    # The window is per source, so another source is untouched by the flood.
+    response = client.get("/api/heartbeat/metadata/gamelist")
+    assert response.status_code == status.HTTP_200_OK
+
+
+def test_heartbeat_metadata_unknown_source_is_not_rate_limited(client):
+    """An unparseable source is rejected before the limiter, so it burns no window."""
+    for _ in range(METADATA_HEARTBEAT_RATE_LIMIT + 1):
+        response = client.get("/api/heartbeat/metadata/unknown")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+def test_get_setup_library_info_reports_a_ready_library(client, access_token):
+    """Test get_setup_library_info with the platforms folder present"""
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
-        mock_detect.return_value = "struct_a"
+        mock_detect.return_value = True
 
         with patch(
             "endpoints.heartbeat.fs_platform_handler.get_platforms"
@@ -136,7 +211,7 @@ def test_get_setup_library_info_structure_a_detected(client, access_token):
                 assert response.status_code == status.HTTP_200_OK
                 data = response.json()
 
-                assert data["detected_structure"] == "struct_a"
+                assert data["library_ready"] is True
                 assert len(data["existing_platforms"]) == 2
                 assert data["existing_platforms"][0]["fs_slug"] == "n64"
                 assert data["existing_platforms"][0]["rom_count"] == 2
@@ -145,12 +220,12 @@ def test_get_setup_library_info_structure_a_detected(client, access_token):
                 assert "supported_platforms" in data
 
 
-def test_get_setup_library_info_structure_b_detected(client, admin_user, access_token):
-    """Test get_setup_library_info with Structure B detected"""
+def test_get_setup_library_info_counts_one_platform(client, admin_user, access_token):
+    """Test get_setup_library_info reports a single platform's rom count"""
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
-        mock_detect.return_value = "B"
+        mock_detect.return_value = True
 
         with patch(
             "endpoints.heartbeat.fs_platform_handler.get_platforms"
@@ -184,18 +259,18 @@ def test_get_setup_library_info_structure_b_detected(client, admin_user, access_
                 assert response.status_code == status.HTTP_200_OK
                 data = response.json()
 
-                assert data["detected_structure"] == "B"
+                assert data["library_ready"] is True
                 assert len(data["existing_platforms"]) == 1
                 assert data["existing_platforms"][0]["fs_slug"] == "gba"
                 assert data["existing_platforms"][0]["rom_count"] == 3
 
 
-def test_get_setup_library_info_no_structure_detected(client, admin_user, access_token):
-    """Test get_setup_library_info when no structure is detected"""
+def test_get_setup_library_info_no_library_yet(client, admin_user, access_token):
+    """Test get_setup_library_info when the platforms folder is absent"""
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
-        mock_detect.return_value = None
+        mock_detect.return_value = False
 
         with patch(
             "endpoints.heartbeat.fs_platform_handler.get_platforms"
@@ -210,7 +285,7 @@ def test_get_setup_library_info_no_structure_detected(client, admin_user, access
             assert response.status_code == status.HTTP_200_OK
             data = response.json()
 
-            assert data["detected_structure"] is None
+            assert data["library_ready"] is False
             assert data["existing_platforms"] == []
             assert "supported_platforms" in data
 
@@ -218,9 +293,9 @@ def test_get_setup_library_info_no_structure_detected(client, admin_user, access
 def test_get_setup_library_info_handles_errors(client, admin_user, access_token):
     """Test get_setup_library_info handles filesystem errors gracefully"""
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
-        mock_detect.return_value = "struct_a"
+        mock_detect.return_value = True
 
         with patch(
             "endpoints.heartbeat.fs_platform_handler.get_platforms"
@@ -246,13 +321,13 @@ def test_get_setup_library_info_skips_filesystem_walk_when_roms_exist(
     """A library with scanned ROMs never needs the on-disk hint, so skip the walk."""
     with (
         patch(
-            "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+            "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
         ) as mock_detect,
         patch(
             "endpoints.heartbeat.fs_platform_handler.get_platforms"
         ) as mock_get_platforms,
     ):
-        mock_detect.return_value = "struct_a"
+        mock_detect.return_value = True
         mock_get_platforms.return_value = ["n64"]
 
         response = client.get(
@@ -263,7 +338,7 @@ def test_get_setup_library_info_skips_filesystem_walk_when_roms_exist(
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
 
-    assert data["detected_structure"] == "struct_a"
+    assert data["library_ready"] is True
     assert data["existing_platforms"] == []
     assert len(data["supported_platforms"]) > 0
     mock_get_platforms.assert_not_called()
@@ -275,14 +350,14 @@ def test_get_setup_library_info_walks_when_platforms_have_no_roms(
     """Platform rows without ROMs still need the hint: that is the case it exists for."""
     with (
         patch(
-            "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+            "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
         ) as mock_detect,
         patch(
             "endpoints.heartbeat.fs_platform_handler.get_platforms"
         ) as mock_get_platforms,
         patch("endpoints.heartbeat.AnyioPath") as mock_anyio_path,
     ):
-        mock_detect.return_value = "struct_a"
+        mock_detect.return_value = True
         mock_get_platforms.return_value = ["n64"]
 
         async def mock_iterdir():
@@ -311,9 +386,9 @@ def test_create_setup_platforms_success(client, admin_user, access_token):
     platform_slugs = ["n64", "psx", "gba"]
 
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
-        mock_detect.return_value = "struct_a"
+        mock_detect.return_value = True
 
         with patch(
             "endpoints.heartbeat.fs_platform_handler.add_platform"
@@ -351,14 +426,14 @@ def test_create_setup_platforms_empty_list(client, admin_user, access_token):
     assert data["message"] == "No platforms selected"
 
 
-def test_create_setup_platforms_creates_structure_a_when_none_exists(
+def test_create_setup_platforms_creates_the_library_when_absent(
     client, admin_user, access_token
 ):
-    """Test create_setup_platforms creates Structure A when no structure detected"""
+    """Test create_setup_platforms creates the platforms folder when absent"""
     platform_slugs = ["n64"]
 
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
         mock_detect.return_value = None  # No structure detected
 
@@ -371,9 +446,9 @@ def test_create_setup_platforms_creates_structure_a_when_none_exists(
                 )
 
                 assert response.status_code == status.HTTP_201_CREATED
-                # Should create roms folder first
+                # The test config puts platform folders at the library root.
                 mock_makedirs.assert_called_once()
-                assert "roms" in str(mock_makedirs.call_args[0][0])
+                assert str(mock_makedirs.call_args[0][0]).endswith("library/")
 
 
 def test_create_setup_platforms_skips_existing_platforms(
@@ -383,9 +458,9 @@ def test_create_setup_platforms_skips_existing_platforms(
     platform_slugs = ["n64", "psx", "gba"]
 
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
-        mock_detect.return_value = "struct_a"
+        mock_detect.return_value = True
 
         with patch(
             "endpoints.heartbeat.fs_platform_handler.add_platform"
@@ -418,9 +493,9 @@ def test_create_setup_platforms_handles_permission_errors(
     platform_slugs = ["n64"]
 
     with patch(
-        "endpoints.heartbeat.fs_platform_handler.detect_library_structure"
+        "endpoints.heartbeat.fs_platform_handler.library_structure_exists"
     ) as mock_detect:
-        mock_detect.return_value = "struct_a"
+        mock_detect.return_value = True
 
         with patch(
             "endpoints.heartbeat.fs_platform_handler.add_platform"

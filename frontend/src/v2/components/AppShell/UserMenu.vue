@@ -7,7 +7,7 @@
 //   • Library  — Library management, Scan settings, Metadata sources,
 //                Client API tokens
 //   • System   — Administration, Server stats
-//   • Tools    — Controller debug
+//   • Tools    — Jukebox, Controller debug
 //   • Actions  — Scan, Upload (librarian actions, not settings)
 //   • About / Changelog — kept as dialogs (no dedicated views)
 //   • Log out
@@ -102,7 +102,7 @@ async function onLogout() {
       return;
     }
     await refetchCSRFToken();
-    snackbar.success("Logged out", { icon: "mdi-check-bold" });
+    snackbar.success(t("common.logout-success"), { icon: "mdi-check-bold" });
     await router.push({ name: ROUTES.LOGIN });
     const pinia = getActivePinia() as
       { _s?: Map<string, { reset?: () => void } & StateTree> } | undefined;
@@ -110,7 +110,7 @@ async function onLogout() {
       store.reset?.();
     });
   } catch (error) {
-    snackbar.error("Could not log out. Please try again.", {
+    snackbar.error(t("common.logout-error"), {
       icon: "mdi-close-circle",
     });
     console.error("Logout error:", error);
@@ -273,6 +273,18 @@ async function onLogout() {
         {{ t("settings.group-tools") }}
       </div>
       <RMenuItem
+        :to="{ name: ROUTES.MUSIC }"
+        icon="mdi-music-box-multiple-outline"
+        :label="t('common.jukebox')"
+        @click="open = false"
+      >
+        <template #append>
+          <RChip size="x-small" color="primary">
+            {{ t("common.beta") }}
+          </RChip>
+        </template>
+      </RMenuItem>
+      <RMenuItem
         :to="{ name: ROUTES.CONTROLLER_DEBUG }"
         icon="mdi-controller"
         :label="t('settings.controller-debug')"
@@ -321,7 +333,7 @@ async function onLogout() {
   border-radius: var(--r-radius-pill) !important;
   padding: 3px 12px 3px 3px !important;
   color: var(--r-color-fg) !important;
-  height: auto !important;
+  height: var(--r-nav-pill-h) !important;
   min-width: 0 !important;
   opacity: 1;
   transition: background var(--r-motion-fast) var(--r-motion-ease-out);
@@ -338,6 +350,16 @@ async function onLogout() {
 .r-v2-user__name {
   font-size: 13px;
   font-weight: var(--r-font-weight-medium);
+}
+
+/* Phones keep the trigger to the avatar so the top bar always has the same
+   room for the scan indicator and the mini player. */
+html[data-bp~="xs"] .r-v2-user {
+  padding: 3px !important;
+}
+html[data-bp~="xs"] .r-v2-user__name,
+html[data-bp~="xs"] .r-v2-user__chevron {
+  display: none;
 }
 
 /* Group section inside the dropdown — small uppercase label above each

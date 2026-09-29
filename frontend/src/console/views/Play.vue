@@ -12,10 +12,6 @@ import {
 } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
-import type {
-  Body_add_state_api_states_post as AddStateInput,
-  FirmwareSchema,
-} from "@/__generated__";
 import NavigationText from "@/console/components/NavigationText.vue";
 import { useInputScope } from "@/console/composables/useInputScope";
 import { useThemeAssets } from "@/console/composables/useThemeAssets";
@@ -35,8 +31,9 @@ import {
   areThreadsRequiredForEJSCore,
   getDownloadPath,
 } from "@/utils";
-import { buildFormInput } from "@/utils/formData";
 import {
+  buildStateFormData,
+  resolveScreenshot,
   installEJSDefaultOptionsTrap,
   invalidateEmulatorJSRomCacheIfRenamed,
 } from "@/views/Player/EmulatorJS/utils";
@@ -555,22 +552,14 @@ async function boot() {
   // Set up EmulatorJS callbacks
   window.EJS_onSaveState = async function ({
     state: stateFile,
-    screenshot: screenshotFile,
+    screenshot: emulatorScreenshot,
   }: {
     state: ArrayBuffer;
     screenshot?: ArrayBuffer;
   }) {
+    const screenshotFile = await resolveScreenshot(emulatorScreenshot);
     try {
-      const formData = buildFormInput<AddStateInput>([
-        ["stateFile", new Blob([stateFile]), "state.save"],
-      ]);
-      if (screenshotFile) {
-        formData.append(
-          "screenshotFile",
-          new Blob([screenshotFile], { type: "image/png" }),
-          "screenshot.png",
-        );
-      }
+      const formData = buildStateFormData(stateFile, screenshotFile);
 
       await api.post("/states", formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -825,11 +814,11 @@ onUnmounted(() => {
     >
       <img
         :src="bezelSrc"
-        @error="onBezelLoadError"
         alt=""
         class="select-none"
         draggable="false"
         style="height: 100vh; max-height: 100vh; width: auto; object-fit: cover"
+        @error="onBezelLoadError"
       />
     </div>
     <div
@@ -929,6 +918,7 @@ onUnmounted(() => {
                   }
             "
             role="button"
+            tabindex="0"
             :aria-selected="focusedExitIndex === i"
             @click="activateExitOption(opt.id)"
             @keydown.enter="activateExitOption(opt.id)"

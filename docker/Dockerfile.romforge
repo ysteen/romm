@@ -1,4 +1,6 @@
-ARG ROMM_WORKER_BASE_IMAGE=romm-custom-dosbox-pure:5.2.0
+ARG ROMM_WORKER_BASE_IMAGE=romm-custom-dosbox-pure:5.3.1
+FROM ${ROMM_WORKER_BASE_IMAGE} AS romm-worker-base
+
 FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS core
 RUN apk add --no-cache curl
 WORKDIR /build
@@ -11,7 +13,7 @@ RUN sed -i 's|string baseDir = AppContext.BaseDirectory;|string baseDir = "/romm
     && sed -i 's/if (_header.FixedKey)/if (_header.NoCrypto || _header.FixedKey)/' upstream/3DS.Core/IO/NcchDecryptionStream.cs \
     && dotnet publish RomForge.Cli.csproj -c Release --self-contained true -o /out
 
-FROM ${ROMM_WORKER_BASE_IMAGE}
+FROM romm-worker-base
 USER root
 RUN apk add --no-cache xdelta3 libstdc++ libgcc
 COPY --from=core /out/ /opt/romforge/
@@ -21,6 +23,7 @@ COPY --from=core /build/upstream/LICENSE /opt/romforge/source/LICENSE
 COPY docker/romforge/ /opt/romforge/source/adapter/
 COPY docker/Dockerfile.romforge /opt/romforge/source/Dockerfile.romforge
 COPY backend/ /backend/
+COPY --from=romm-worker-base /backend/__version__.py /backend/__version__.py
 WORKDIR /backend
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 HEALTHCHECK NONE

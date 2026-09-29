@@ -42,12 +42,14 @@ from endpoints.feeds import router as feeds_router
 from endpoints.firmware import router as firmware_router
 from endpoints.heartbeat import router as heartbeat_router
 from endpoints.logs import router as logs_router
+from endpoints.memory_cards import router as memory_cards_router
 from endpoints.music import router as music_router
 from endpoints.music_playlists import router as music_playlists_router
 from endpoints.netplay import router as netplay_router
 from endpoints.permissions import router as permissions_router
 from endpoints.platform import router as platform_router
 from endpoints.play_sessions import router as play_sessions_router
+from endpoints.recommendations import router as recommendations_router
 from endpoints.roms import router as rom_router
 from endpoints.saves import router as saves_router
 from endpoints.screenshots import router as screenshots_router
@@ -72,6 +74,7 @@ from utils.context import (
     initialize_context,
     set_context_middleware,
 )
+from utils.memory_cards import MEMORY_CARD_MAX_BYTES
 
 logging.config.dictConfig(LOGGING_CONFIG)
 
@@ -132,6 +135,15 @@ app.add_middleware(
     ],
 )
 
+# Memory cards are bounded by what a broker will take, which is lower than the
+# asset ceiling. Bounding them here too keeps a card the endpoint would refuse
+# from being spooled to disk in full first.
+app.add_middleware(
+    UploadSizeLimitMiddleware,
+    max_size=min(MEMORY_CARD_MAX_BYTES, MAX_ASSET_UPLOAD_SIZE_BYTES),
+    paths=[re.compile(r"^/api/memory-cards")],
+)
+
 if not IS_PYTEST_RUN and not DISABLE_CSRF_PROTECTION:
     # CSRF protection (except endpoints listed in exempt_urls)
     app.add_middleware(
@@ -177,6 +189,7 @@ app.include_router(device_auth_router, prefix="/api")
 app.include_router(play_sessions_router, prefix="/api")
 app.include_router(platform_router, prefix="/api")
 app.include_router(rom_router, prefix="/api")
+app.include_router(recommendations_router, prefix="/api")
 app.include_router(music_router, prefix="/api")
 app.include_router(music_playlists_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
@@ -194,6 +207,7 @@ app.include_router(collections_router, prefix="/api")
 app.include_router(export_router, prefix="/api")
 app.include_router(netplay_router, prefix="/api")
 app.include_router(permissions_router, prefix="/api")
+app.include_router(memory_cards_router, prefix="/api")
 app.include_router(streaming_router, prefix="/api")
 
 app.mount("/ws", socket_handler.socket_app)

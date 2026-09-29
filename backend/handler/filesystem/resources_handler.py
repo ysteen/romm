@@ -1,3 +1,4 @@
+import asyncio
 import gzip
 import os
 from collections.abc import Callable, Iterable
@@ -18,12 +19,13 @@ from models.collection import Collection
 from models.rom import Rom
 from tasks.scheduled.convert_images_to_webp import ImageConverter
 from utils.context import ctx_httpx_client
+from utils.images import frame_durations, is_animated, webp_loop
 
 from .base_handler import CoverSize, FSHandler
 
 LOCAL_FILE_SCHEMES = ("file://", "launchbox-file://")
 
-ALLOWED_MANUAL_EXTENSIONS = frozenset({".pdf", ".md"})
+ALLOWED_MANUAL_EXTENSIONS = frozenset({".pdf", ".md", ".txt"})
 
 
 def _resolve_local_file_uri(uri: str) -> Path | None:
@@ -90,7 +92,7 @@ def _is_chroma_key_placeholder(image_path: Path) -> bool:
             sample = img.convert("RGB")
             sample.thumbnail((32, 32))  # cheap: sample a downscaled copy
             raw = sample.tobytes()  # flat RGB triples
-    except (UnidentifiedImageError, OSError, ValueError):
+    except UnidentifiedImageError, OSError, ValueError:
         return False
 
     total = len(raw) // 3
@@ -143,9 +145,41 @@ class FSResourcesHandler(FSHandler):
         small_width = int(cover.width * ratio)
         small_height = int(cover.height * ratio)
         small_size = (small_width, small_height)
-        small_img = cover.resize(small_size)
 
+        frames: list[Image.Image] = []
+        durations = frame_durations(
+            cover, lambda frame: frames.append(frame.convert("RGBA").resize(small_size))
+        )
+        if durations:
+            # WebP whatever the extension, as it encodes whole composited frames
+            frames[0].save(
+                save_path,
+                format="WEBP",
+                save_all=True,
+                append_images=frames[1:],
+                duration=durations,
+                loop=webp_loop(cover),
+            )
+            return
+
+        small_img = cover.resize(small_size)
         small_img.save(save_path)
+
+    def _write_derived_covers(
+        self, path_cover_l: Path, path_cover_s: Path, convert_large: bool = True
+    ) -> None:
+        """Write the small cover and the WebP copies; blocking, so run in a thread.
+
+        Args:
+            convert_large: Also refresh the large cover's WebP copy.
+        """
+        with Image.open(path_cover_l) as img:
+            self.resize_cover_to_small(img, save_path=str(path_cover_s))
+
+        if ENABLE_SCHEDULED_CONVERT_IMAGES_TO_WEBP:
+            if convert_large:
+                self.image_converter.convert_to_webp(path_cover_l, force=True)
+            self.image_converter.convert_to_webp(path_cover_s, force=True)
 
     async def _discard_if_chroma_key(self, relative_path: str) -> bool:
         """Remove a just-downloaded image if it's a chroma-key placeholder.
@@ -254,18 +288,11 @@ class FSResourcesHandler(FSHandler):
                 await self._discard_partial_file(small_path)
                 return None
 
-            with Image.open(self.validate_path(big_path)) as img:
-                self.resize_cover_to_small(
-                    img, save_path=str(self.validate_path(small_path))
-                )
-
-            if ENABLE_SCHEDULED_CONVERT_IMAGES_TO_WEBP:
-                self.image_converter.convert_to_webp(
-                    self.validate_path(big_path), force=True
-                )
-                self.image_converter.convert_to_webp(
-                    self.validate_path(small_path), force=True
-                )
+            await asyncio.to_thread(
+                self._write_derived_covers,
+                self.validate_path(big_path),
+                self.validate_path(small_path),
+            )
         except UnidentifiedImageError as exc:
             # Undecodable bytes still satisfy cover_exists(), so keeping them
             # would stop every later scan from refetching a working cover.
@@ -293,15 +320,12 @@ class FSResourcesHandler(FSHandler):
         )
 
         try:
-            with Image.open(self.validate_path(path_cover_l)) as img:
-                self.resize_cover_to_small(
-                    img, save_path=str(self.validate_path(path_cover_s))
-                )
-
-            if ENABLE_SCHEDULED_CONVERT_IMAGES_TO_WEBP:
-                self.image_converter.convert_to_webp(
-                    self.validate_path(path_cover_s), force=True
-                )
+            await asyncio.to_thread(
+                self._write_derived_covers,
+                self.validate_path(path_cover_l),
+                self.validate_path(path_cover_s),
+                convert_large=False,
+            )
         except (UnidentifiedImageError, OSError) as exc:
             # Unlike a fresh download, these bytes weren't written here, so the
             # large cover stays put and only the partial small one is dropped.
@@ -383,12 +407,18 @@ class FSResourcesHandler(FSHandler):
 
         try:
             with Image.open(artwork) as img:
-                img.save(path_cover_l)
-                self.resize_cover_to_small(img, save_path=str(path_cover_s))
-
-                if ENABLE_SCHEDULED_CONVERT_IMAGES_TO_WEBP:
-                    self.image_converter.convert_to_webp(path_cover_l, force=True)
-                    self.image_converter.convert_to_webp(path_cover_s, force=True)
+                if is_animated(img):
+                    # Kept as uploaded: re-encoding composited frames loses quality
+                    await self.write_file(
+                        artwork,
+                        path=f"{entity.fs_resources_path}/cover",
+                        filename=path_cover_l.name,
+                    )
+                else:
+                    img.save(path_cover_l)
+            await asyncio.to_thread(
+                self._write_derived_covers, path_cover_l, path_cover_s
+            )
         except UnidentifiedImageError as exc:
             log.error(
                 f"Unable to identify image for {entity.fs_resources_path}: {str(exc)}"
@@ -407,12 +437,14 @@ class FSResourcesHandler(FSHandler):
         )
 
     # Screenshots
-    async def _store_screenshot(self, rom: Rom, url_screenhot: str, idx: int):
+    async def _store_screenshot(self, rom: Rom, url_screenhot: str, idx: int) -> bool:
         """Store roms resources in filesystem
 
         Args:
             rom: Rom object
             url_screenhot: URL to get the screenshot
+        Returns
+            True if the screenshot landed on disk else False
         """
         screenshot_path = f"{rom.fs_resources_path}/screenshots"
         await self.make_directory(screenshot_path)
@@ -423,14 +455,15 @@ class FSResourcesHandler(FSHandler):
                 resolved = _resolve_local_file_uri(url_screenhot)
                 if resolved is None or not await AnyioPath(resolved).exists():
                     log.warning(f"Screenshot file not found: {url_screenhot}")
-                    return None
+                    return False
                 await self.copy_file(
                     resolved, f"{screenshot_path}/{idx}.jpg", allow_link=True
                 )
+                return True
             except Exception as exc:
                 log.error(f"Unable to copy screenshot file {url_screenhot}: {str(exc)}")
                 await self._discard_partial_file(f"{screenshot_path}/{idx}.jpg")
-                return None
+                return False
         else:
             # Handle HTTP URLs
             httpx_client = ctx_httpx_client.get()
@@ -443,7 +476,7 @@ class FSResourcesHandler(FSHandler):
                 ):
                     if response.status_code == status.HTTP_200_OK:
                         if not _check_content_type(response, ("image/",), "screenshot"):
-                            return None
+                            return False
 
                         # Check if content is gzipped from response headers
                         is_gzipped = (
@@ -466,25 +499,21 @@ class FSResourcesHandler(FSHandler):
                                 # Content is not gzipped, stream directly
                                 async for chunk in response.aiter_raw():
                                     await f.write(chunk)
+
+                        return True
             except httpx.TransportError as exc:
                 log.error(f"Unable to fetch screenshot at {url_screenhot}: {str(exc)}")
-                return None
+                return False
             except OSError as exc:
                 log.error(f"Unable to write screenshot for {url_screenhot}: {str(exc)}")
-                return None
+                return False
 
-    def screenshots_exist(self, rom: Rom) -> bool:
-        """Check if rom screenshots exist in filesystem
-
-        Args:
-            rom: Rom object
-        Returns
-            True if screenshots exists in filesystem else False
-        """
-        full_path = self.validate_path(f"{rom.fs_resources_path}/screenshots")
-        for _ in full_path.glob("*.jpg"):
-            return True
         return False
+
+    def _stored_screenshot_indexes(self, rom: Rom) -> set[str]:
+        """Screenshot indexes this rom already has on disk."""
+        full_path = self.validate_path(f"{rom.fs_resources_path}/screenshots")
+        return {path.stem for path in full_path.glob("*.jpg")}
 
     def _get_screenshot_path(self, rom: Rom, idx: str):
         """Returns rom cover filesystem path adapted to frontend folder structure
@@ -507,15 +536,19 @@ class FSResourcesHandler(FSHandler):
         Returns
             List of paths to screenshots
         """
-        # Return existing screenshots if no URLs provided
-        # Or if not overwriting and screenshots already exist
-        if not url_screenshots or (not overwrite and self.screenshots_exist(rom)):
+        if not url_screenshots:
             return rom.path_screenshots or []
 
-        # Download and store new screenshots
+        # Go by what is on disk, not what was recorded: an unchanged url set
+        # still has to replace whatever an earlier run failed to write.
+        stored = set() if overwrite else self._stored_screenshot_indexes(rom)
+
         path_screenshots: list[str] = []
         for idx, url_screenshot in enumerate(url_screenshots):
-            await self._store_screenshot(rom, url_screenshot, idx)
+            if str(idx) not in stored and not await self._store_screenshot(
+                rom, url_screenshot, idx
+            ):
+                continue
             path_screenshots.append(self._get_screenshot_path(rom, str(idx)))
 
         return path_screenshots

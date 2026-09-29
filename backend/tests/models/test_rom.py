@@ -1,9 +1,48 @@
-from models.rom import LookupHashes, Rom, RomFile
+import pytest
+
+from handler.database import db_rom_handler
+from models.platform import Platform
+from models.rom import LookupHashes, Rom, RomFile, compute_full_path_hash
 
 
 def test_rom(rom: Rom):
     assert rom.fs_path == "test_platform_slug/roms"
     assert rom.full_path == "test_platform_slug/roms/test_rom.zip"
+
+
+def test_rom_defaults_to_non_physical(rom: Rom):
+    assert rom.is_physical is False
+    assert rom.upc is None
+
+
+def test_physical_rom_round_trips(platform: Platform):
+    rom = db_rom_handler.add_rom(
+        Rom(
+            platform_id=platform.id,
+            name="Sonic the Hedgehog",
+            fs_name="Sonic the Hedgehog",
+            fs_path=f"{platform.slug}/roms/.physical",
+            fs_size_bytes=0,
+            is_physical=True,
+            upc="012345678905",
+        )
+    )
+
+    stored = db_rom_handler.get_rom(rom.id)
+    assert stored is not None
+    assert stored.is_physical is True
+    assert stored.upc == "012345678905"
+
+
+def test_has_file_on_disk_covers_both_file_less_cases(rom: Rom):
+    assert rom.has_file_on_disk is True
+
+    rom.missing_from_fs = True
+    assert rom.has_file_on_disk is False
+
+    rom.missing_from_fs = False
+    rom.is_physical = True
+    assert rom.has_file_on_disk is False
 
 
 def test_rom_with_libretro_match_is_identified(rom: Rom):
@@ -149,3 +188,130 @@ def test_lookup_hashes_tolerates_a_member_without_a_size():
     assert file.lookup_hashes == LookupHashes(
         crc="romcrc", md5="rommd5", sha1="romsha1"
     )
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "javascript:x",
+        "../../evil",
+        "ugPZnsRH٣k٣",
+        "short",
+        "waytoolongvideoid",
+        None,
+        12345,
+    ],
+)
+def test_youtube_video_id_drops_anything_that_is_not_an_id(rom: Rom, stored):
+    """raw_*_metadata is client-writable, so the embed must not trust the blob."""
+    rom.igdb_metadata = {"youtube_video_id": stored}
+
+    assert rom.youtube_video_id is None
+
+
+def test_youtube_video_id_falls_through_to_the_next_valid_source(rom: Rom):
+    rom.igdb_metadata = {"youtube_video_id": "javascript:x"}
+    rom.demozoo_metadata = {"youtube_video_id": "ugPZnsRHUkc"}
+
+    assert rom.youtube_video_id == "ugPZnsRHUkc"
+
+
+class TestFullPathHash:
+    """The digest the unique index reads, since fs_path plus fs_name is 5804
+    bytes of utf8mb4 and InnoDB caps a key at 3072."""
+
+    def test_it_digests_the_full_path_whichever_half_is_assigned_first(self):
+        expected = compute_full_path_hash("nes/roms/Hacks", "Game.zip")
+
+        name_first = Rom(fs_name="Game.zip", fs_path="nes/roms/Hacks")
+        path_first = Rom(fs_path="nes/roms/Hacks", fs_name="Game.zip")
+
+        assert name_first.full_path_hash == expected
+        assert path_first.full_path_hash == expected
+
+    def test_it_is_re_derived_when_either_half_changes(self, rom: Rom):
+        rom.fs_path = "test_platform_slug/roms/Hacks"
+        assert rom.full_path_hash == compute_full_path_hash(
+            "test_platform_slug/roms/Hacks", "test_rom.zip"
+        )
+
+        rom.fs_name = "renamed.zip"
+        assert rom.full_path_hash == compute_full_path_hash(
+            "test_platform_slug/roms/Hacks", "renamed.zip"
+        )
+
+    def test_the_cached_full_path_does_not_survive_a_rename(self, rom: Rom):
+        """A scan reads `full_path` and then renames the file in place, so the
+        cached pair has to be dropped when either half is set."""
+        assert rom.full_path == "test_platform_slug/roms/test_rom.zip"
+
+        rom.fs_name = "renamed.zip"
+        assert rom.full_path == "test_platform_slug/roms/renamed.zip"
+
+        rom.fs_path = "test_platform_slug/roms/Hacks"
+        assert rom.full_path == "test_platform_slug/roms/Hacks/renamed.zip"
+
+    def test_the_same_name_in_two_folders_is_two_distinct_roms(self):
+        """What the (platform_id, fs_name) index used to forbid, and what a
+        custom library structure makes ordinary."""
+        root = Rom(fs_name="Game.zip", fs_path="nes/roms")
+        nested = Rom(fs_name="Game.zip", fs_path="nes/roms/Hacks")
+
+        assert root.full_path_hash != nested.full_path_hash
+
+
+def _achievement(ra_id: int | None, display_order: int | None) -> dict:
+    return {
+        "ra_id": ra_id,
+        "display_order": display_order,
+        "badge_path": f"{ra_id}.png",
+        "badge_path_lock": f"{ra_id}_lock.png",
+    }
+
+
+class TestMergedRAMetadata:
+    def test_achievements_come_back_in_retroachievements_display_order(self):
+        rom = Rom(
+            fs_name="Game.zip",
+            fs_path="nes/roms",
+            ra_metadata={
+                "achievements": [
+                    _achievement(30, 3),
+                    _achievement(10, 1),
+                    _achievement(20, 2),
+                ]
+            },
+        )
+
+        merged = rom.merged_ra_metadata
+        assert merged is not None
+        assert [a["ra_id"] for a in merged["achievements"]] == [10, 20, 30]
+
+    def test_ties_and_missing_orders_stay_deterministic(self):
+        rom = Rom(
+            fs_name="Game.zip",
+            fs_path="nes/roms",
+            ra_metadata={
+                "achievements": [
+                    _achievement(None, None),
+                    _achievement(9, None),
+                    _achievement(8, 1),
+                    _achievement(7, 1),
+                ]
+            },
+        )
+
+        merged = rom.merged_ra_metadata
+        assert merged is not None
+        assert [a["ra_id"] for a in merged["achievements"]] == [7, 8, 9, None]
+
+    def test_the_stored_metadata_keeps_its_own_order_and_relative_paths(self):
+        """Badge paths on disk stay relative for the filesystem handlers."""
+        stored = {"achievements": [_achievement(2, 2), _achievement(1, 1)]}
+        rom = Rom(fs_name="Game.zip", fs_path="nes/roms", ra_metadata=stored)
+
+        merged = rom.merged_ra_metadata
+
+        assert merged is not None
+        assert [a["ra_id"] for a in stored["achievements"]] == [2, 1]
+        assert stored["achievements"][0]["badge_path"] == "2.png"

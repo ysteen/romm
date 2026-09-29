@@ -20,7 +20,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.romforge
       args:
-        ROMM_WORKER_BASE_IMAGE: ${ROMM_IMAGE:-romm-custom-dosbox-pure:5.2.0}
+        ROMM_WORKER_BASE_IMAGE: ${ROMM_IMAGE:-romm-custom-dosbox-pure:5.3.1}
     restart: unless-stopped
     init: true
     # RomM's embedded Redis listens on localhost.

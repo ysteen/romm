@@ -2,14 +2,14 @@ import asyncio
 import json
 from collections.abc import Iterable
 from enum import Enum
-from typing import Final, NotRequired, TypedDict
+from typing import Final, Literal, NotRequired, TypedDict, TypeIs, get_args
 
 import httpx
 import yarl
-from fastapi import HTTPException, status
+from fastapi import status
 
 from config import PLAYMATCH_API_ENABLED, PLAYMATCH_API_URL
-from handler.metadata.base_handler import MetadataHandler
+from handler.metadata.base_handler import MetadataHandler, unavailable
 from logger.logger import log
 from models.rom import Rom, RomFile
 from utils import get_version
@@ -53,9 +53,13 @@ PLAYMATCH_TAG_TO_ATTR: Final[dict[str, str]] = {
 
 # Rom attrs the scan handler actually consumes from a Playmatch lookup.
 # Other tags exist only for outbound suggestions.
-PLAYMATCH_LOOKUP_ROM_ATTRS: frozenset[str] = frozenset(
-    {"igdb_id", "moby_id", "ss_id", "launchbox_id", "sgdb_id"}
-)
+PlaymatchLookupAttr = Literal["igdb_id", "moby_id", "ss_id", "launchbox_id", "sgdb_id"]
+PLAYMATCH_LOOKUP_ROM_ATTRS: Final = frozenset(get_args(PlaymatchLookupAttr))
+
+
+def _is_lookup_attr(attr: str | None) -> TypeIs[PlaymatchLookupAttr]:
+    return attr in PLAYMATCH_LOOKUP_ROM_ATTRS
+
 
 # MetadataSource values (StrEnum) for which Playmatch can return ids. Typed as
 # strings so this module stays free of scan_handler imports. EmuReady and
@@ -201,10 +205,7 @@ class PlaymatchHandler(MetadataHandler):
                 log.warning(
                     "Connection error: can't connect to Playmatch", exc_info=True
                 )
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Can't connect to Playmatch, check your internet connection",
-                ) from exc
+                raise unavailable("Playmatch") from exc
             except json.JSONDecodeError as exc:
                 log.error("Error decoding JSON response from Playmatch: %s", exc)
                 return {}
@@ -277,12 +278,12 @@ class PlaymatchHandler(MetadataHandler):
                 continue
 
             attr = PLAYMATCH_TAG_TO_ATTR.get(provider_name.upper())
-            if not attr or attr not in PLAYMATCH_LOOKUP_ROM_ATTRS:
+            if not _is_lookup_attr(attr):
                 continue
 
             try:
                 parsed_id = int(provider_game_id)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 log.debug(
                     "Playmatch returned non-int ID for %s: %r",
                     provider_name,
@@ -291,7 +292,7 @@ class PlaymatchHandler(MetadataHandler):
                 continue
 
             log.debug("Playmatch found %s match with id: %s", provider_name, parsed_id)
-            result[attr] = parsed_id  # trunk-ignore(mypy/literal-required)
+            result[attr] = parsed_id
 
         return result
 

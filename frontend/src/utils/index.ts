@@ -9,6 +9,8 @@ import type { Heartbeat } from "@/stores/heartbeat";
 import storeNavigation from "@/stores/navigation";
 import type { DetailedRom, SimpleRom } from "@/stores/roms";
 
+export { getDownloadLink, getDownloadPath } from "@/utils/downloadPath";
+
 /**
  * Views configuration object.
  */
@@ -105,52 +107,6 @@ export function convertCronExperssion(expression: string) {
     convertedExpression.charAt(0).toLocaleLowerCase() +
     convertedExpression.substr(1);
   return convertedExpression;
-}
-
-/**
- * Generate a download link for ROM content.
- *
- * @param rom The ROM object.
- * @param files Optional array of file names to include in the download.
- * @returns The download link.
- */
-export function getDownloadPath({
-  rom,
-  fileIDs = [],
-}: {
-  rom: SimpleRom;
-  fileIDs?: number[];
-}) {
-  const queryParams = new URLSearchParams();
-  if (fileIDs.length > 0) {
-    queryParams.append("file_ids", fileIDs.join(","));
-  }
-  const queryString = queryParams.toString();
-
-  // If a single file is selected, use its name for the download path
-  const selectedFile =
-    fileIDs.length === 1
-      ? rom.files?.find((f) => f.id === fileIDs[0])
-      : undefined;
-  const contentName = selectedFile
-    ? encodeURIComponent(selectedFile.file_name)
-    : rom.fs_name;
-
-  return `/api/roms/${rom.id}/content/${contentName}${
-    queryString ? `?${queryString}` : ""
-  }`;
-}
-
-export function getDownloadLink({
-  rom,
-  fileIDs = [],
-}: {
-  rom: SimpleRom;
-  fileIDs?: number[];
-}) {
-  return `${window.location.origin}${encodeURI(
-    getDownloadPath({ rom, fileIDs }),
-  )}`;
 }
 
 /**
@@ -595,7 +551,9 @@ export function getSupportedEJSCores(
 }
 
 /**
- * Check if a given EJS core requires threads enabled.
+ * Whether an EJS core ships only as a threaded build; a core added here gets
+ * the cross-origin isolated document it needs from the v2 launch view (see
+ * `useIsolatedLaunch`).
  *
  * @param core The core name.
  * @returns True if threads are required, false otherwise.
@@ -607,6 +565,17 @@ export function areThreadsRequiredForEJSCore(core: string): boolean {
 const canvas = document.createElement("canvas");
 const gl =
   canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+
+/**
+ * Resolve a platform slug through the configured version remap.
+ *
+ * @param platformSlug The platform slug.
+ * @param config Optional configuration object.
+ * @returns The remapped slug, or the original when no remap applies.
+ */
+export function resolvePlatformSlug(platformSlug: string, config?: Config) {
+  return config?.PLATFORMS_VERSIONS[platformSlug] || platformSlug;
+}
 
 /**
  * Check if EJS emulation is supported for a given platform.
@@ -623,7 +592,7 @@ export function isEJSEmulationSupported(
 ) {
   if (heartbeat.EMULATION.DISABLE_EMULATOR_JS) return false;
 
-  const slug = config?.PLATFORMS_VERSIONS[platformSlug] || platformSlug;
+  const slug = resolvePlatformSlug(platformSlug, config);
   return (
     getSupportedEJSCores(slug, config?.EJS_NETPLAY_ENABLED).length > 0 &&
     gl instanceof WebGLRenderingContext
@@ -680,8 +649,73 @@ export function isRuffleEmulationSupported(
 ) {
   if (heartbeat.EMULATION.DISABLE_RUFFLE_RS) return false;
 
-  const slug = config?.PLATFORMS_VERSIONS[platformSlug] || platformSlug;
+  const slug = resolvePlatformSlug(platformSlug, config);
   return ["flash", "browser"].includes(slug.toLowerCase());
+}
+
+/**
+ * Check if js-dos emulation is supported for a given platform.
+ *
+ * @param platformSlug The platform slug.
+ * @param heartbeat The heartbeat object.
+ * @param config Optional configuration object.
+ * @returns True if supported, false otherwise.
+ */
+export function isJsDosEmulationSupported(
+  platformSlug: string,
+  heartbeat: Heartbeat,
+  config?: Config,
+) {
+  if (heartbeat.EMULATION.DISABLE_JSDOS) return false;
+
+  const slug = resolvePlatformSlug(platformSlug, config);
+  return ["win3x", "win9x"].includes(slug.toLowerCase());
+}
+
+/**
+ * Check if a ROM file is a js-dos bundle.
+ *
+ * js-dos panics on anything that is not an archive carrying
+ * `.jsdos/dosbox.conf`.
+ *
+ * @param rom The ROM to check.
+ * @returns True if the file is a js-dos bundle, false otherwise.
+ */
+export function isJsDosBundle(rom: SimpleRom | null | undefined) {
+  return rom?.fs_extension.toLowerCase() === "jsdos";
+}
+
+/**
+ * Check if PICO-8 emulation is supported for a given platform.
+ *
+ * @param platformSlug The platform slug.
+ * @param heartbeat The heartbeat object.
+ * @param config Optional configuration object.
+ * @returns True if supported, false otherwise.
+ */
+export function isPico8EmulationSupported(
+  platformSlug: string,
+  heartbeat: Heartbeat,
+  config?: Config,
+) {
+  if (heartbeat.EMULATION.DISABLE_PICO8) return false;
+
+  const slug = resolvePlatformSlug(platformSlug, config);
+  return slug.toLowerCase() === "pico";
+}
+
+/**
+ * Check if a ROM file is a PICO-8 cartridge.
+ *
+ * `fs_extension` holds only `png` for a `.p8.png` cart: the backend joins
+ * multi-part extensions from letter-only segments, and `p8` has a digit.
+ *
+ * @param rom The ROM to check.
+ * @returns True if the file is a PICO-8 cartridge, false otherwise.
+ */
+export function isPico8Rom(rom: SimpleRom | null | undefined) {
+  const name = rom?.fs_name.toLowerCase();
+  return name?.endsWith(".p8") === true || name?.endsWith(".p8.png") === true;
 }
 
 export type PlayingStatus =
@@ -904,4 +938,18 @@ export const ARCADE_SYSTEMS = new Set(["arcade", "neogeoaes", "neogeomvs"]);
 
 export function isArcadeSystem(platformSlug: string): boolean {
   return ARCADE_SYSTEMS.has(platformSlug.toLowerCase());
+}
+
+/** Fisher-Yates shuffle returning a new array. `random` is injectable so
+ *  callers can make shuffled output deterministic under test. */
+export function shuffled<T>(
+  items: T[],
+  random: () => number = Math.random,
+): T[] {
+  const result = [...items];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(random() * (index + 1));
+    [result[index], result[target]] = [result[target], result[index]];
+  }
+  return result;
 }

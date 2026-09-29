@@ -31,17 +31,14 @@ from handler.filesystem.base_handler import region_name_to_provider_shortcode
 from logger.formatter import highlight as hl
 from logger.logger import log
 from models.rom import Rom, RomFile
+from utils.platform_slugs import UniversalPlatformSlug as UPS
 
 from .base_handler import (
     PS2_OPL_REGEX,
     SONY_SERIAL_REGEX,
-    SWITCH_PRODUCT_ID_REGEX,
     SWITCH_TITLEDB_REGEX,
     BaseRom,
     MetadataHandler,
-)
-from .base_handler import UniversalPlatformSlug as UPS
-from .base_handler import (
     restore_sensitive_query_params,
     strip_sensitive_query_params,
 )
@@ -159,9 +156,7 @@ def add_ss_auth_to_url(url: str | None) -> str:
     )
 
 
-def get_preferred_regions(
-    rom: Rom | None = None, *, for_media: bool = False
-) -> list[str]:
+def get_preferred_regions(rom: Rom | None = None) -> list[str]:
     """Get preferred regions, prepending the rom's own region tags when available.
 
     When a rom is tagged with multiple regions (e.g. "(Japan, USA)"), the rom's
@@ -170,11 +165,11 @@ def get_preferred_regions(
     Filename-tagged regions not present in the priority list keep their relative
     order and follow the prioritized ones.
 
-    With SCAN_REGION_MODE set to "prefer_config" and for_media=True, the
-    configured priority is authoritative instead: config regions come first and
-    the rom's own tags become the fallback when the config regions have no
-    media. The mode only applies to media selection; name and release-date
-    selection always keep the rom-tags-first ordering.
+    With SCAN_REGION_MODE set to "prefer_config" the configured priority is
+    authoritative instead: config regions come first and the rom's own tags
+    become the fallback. Everything region-selected reads this ordering, so a
+    game picked up in French comes back with its French artwork, title and
+    release date rather than a mix.
     """
     config = cm.get_config()
     priority = config.SCAN_REGION_PRIORITY
@@ -189,7 +184,7 @@ def get_preferred_regions(
             key=lambda code: priority.index(code) if code in priority else len(priority)
         )
 
-    if for_media and config.SCAN_REGION_MODE == "prefer_config":
+    if config.SCAN_REGION_MODE == "prefer_config":
         ordered = priority + rom_codes
     else:
         ordered = rom_codes + priority
@@ -257,12 +252,10 @@ def _is_daily_quota_error(exc: HTTPException) -> bool:
 
 
 def _is_provider_exhausted(exc: HTTPException) -> bool:
-    """True for the errors that take ScreenScraper out for the rest of the scan.
+    """True for the errors a breaker raises in ScreenScraper's place.
 
-    Both an exhausted daily quota and a refused credential set trip a breaker in
-    the service, so the remaining ROMs short-circuit. The scan carries on with
-    the other providers rather than failing over a provider that has already said
-    everything it is going to say.
+    An exhausted daily quota and a refused credential set both trip one, so the
+    request never went out and the answer is not ScreenScraper's.
     """
     return _is_daily_quota_error(exc) or isinstance(exc, ScreenScraperCredentialsError)
 
@@ -330,6 +323,8 @@ class SSMetadata(SSMetadataMedia):
     alternative_names: list[str]
     age_ratings: list[SSAgeRating]
     companies: list[str]
+    publishers: list[str]
+    developers: list[str]
     franchises: list[str]
     game_modes: list[str]
     genres: list[str]
@@ -339,6 +334,18 @@ class SSMetadata(SSMetadataMedia):
 class SSRom(BaseRom):
     ss_id: int | None
     ss_metadata: NotRequired[SSMetadata]
+
+
+class ScreenScraperExhaustedError(Exception):
+    """A breaker answered this lookup, so ScreenScraper itself never saw it.
+
+    Carries the match the lookup would have returned, which still holds the name
+    the handler derived locally.
+    """
+
+    def __init__(self, fallback: SSRom):
+        super().__init__("ScreenScraper short-circuited the lookup")
+        self.fallback = fallback
 
 
 def _get_rom_type(file: RomFile) -> str:
@@ -387,7 +394,7 @@ def extract_media_from_ss_game(rom: Rom, game: SSGame) -> SSMetadataMedia:
         video_normalized_path=None,
     )
 
-    for region in get_preferred_regions(rom, for_media=True):
+    for region in get_preferred_regions(rom):
         for media in game.get("medias", []):
             if media.get("region", "unk") != region or media.get("parent") != "jeu":
                 continue
@@ -549,7 +556,7 @@ def extract_metadata_from_ss_rom(rom: Rom, game: SSGame) -> SSMetadata:
         """Normalize the score to be between 0 and 10 because for some reason Screenscraper likes to rate over 20."""
         try:
             return str(int(score) / 2)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return ""
 
     def _parse_date(date_text: str) -> int | None:
@@ -634,17 +641,17 @@ def extract_metadata_from_ss_rom(rom: Rom, game: SSGame) -> SSMetadata:
             if classification.get("type") and classification.get("text")
         ]
 
+    publishers = pydash.compact([game.get("editeur", {}).get("text")])
+    developers = pydash.compact([game.get("developpeur", {}).get("text")])
+
     return SSMetadata(
         {
             "ss_score": _normalize_score(game.get("note", {}).get("text", "")),
             "alternative_names": [name["text"] for name in game.get("noms", [])],
             "age_ratings": _get_age_ratings(game),
-            "companies": pydash.compact(
-                [
-                    game.get("editeur", {}).get("text"),
-                    game.get("developpeur", {}).get("text"),
-                ]
-            ),
+            "companies": [*publishers, *developers],
+            "publishers": publishers,
+            "developers": developers,
             "genres": _get_genres(game),
             "first_release_date": _get_lowest_date(game.get("dates", [])),
             "franchises": _get_franchises(game),
@@ -874,11 +881,9 @@ class SSHandler(MetadataHandler):
                 rom_type=_get_rom_type(first_file),
             )
         except HTTPException as exc:
-            # Quota exhausted or credentials refused: skip ScreenScraper for this
-            # ROM so the scan falls back to the other providers.
             if not _is_provider_exhausted(exc):
                 raise
-            return SSRom(ss_id=None), False
+            raise ScreenScraperExhaustedError(SSRom(ss_id=None)) from exc
         if not res:
             return SSRom(ss_id=None), False
 
@@ -956,10 +961,9 @@ class SSHandler(MetadataHandler):
                 )
 
         # Support for switch productID filename format
-        match = SWITCH_PRODUCT_ID_REGEX.search(file_name)
-        if platform_ss_id == SWITCH_SS_ID and match:
+        if platform_ss_id == SWITCH_SS_ID:
             search_term, index_entry = await self._switch_productid_format(
-                match, search_term
+                rom, file_name, search_term
             )
             if index_entry:
                 fallback_rom = SSRom(
@@ -998,11 +1002,9 @@ class SSHandler(MetadataHandler):
                     terms[-1], platform_ss_id, split_game_name=True
                 )
         except HTTPException as exc:
-            # Quota exhausted or credentials refused: fall back to the name-only
-            # match (if any).
             if not _is_provider_exhausted(exc):
                 raise
-            return fallback_rom
+            raise ScreenScraperExhaustedError(fallback_rom) from exc
 
         if not res or not res.get("id"):
             return fallback_rom
@@ -1016,11 +1018,9 @@ class SSHandler(MetadataHandler):
         try:
             res = await self.ss_service.get_game_info(game_id=ss_id)
         except HTTPException as exc:
-            # Quota exhausted or credentials refused: return an empty match rather
-            # than failing.
             if not _is_provider_exhausted(exc):
                 raise
-            return SSRom(ss_id=None)
+            raise ScreenScraperExhaustedError(SSRom(ss_id=None)) from exc
         if not res:
             return SSRom(ss_id=None)
 
@@ -1030,7 +1030,12 @@ class SSHandler(MetadataHandler):
         if not self.is_enabled():
             return None
 
-        game_rom = await self.get_rom_by_id(rom, ss_id)
+        try:
+            game_rom = await self.get_rom_by_id(rom, ss_id)
+        except ScreenScraperExhaustedError:
+            # A manual match wants the providers that can still answer, not this.
+            return None
+
         return game_rom if game_rom.get("ss_id", "") else None
 
     async def get_matched_roms_by_name(
@@ -1042,10 +1047,17 @@ class SSHandler(MetadataHandler):
         if not platform_ss_id:
             return []
 
-        matched_games = await self.ss_service.search_games(
-            term=uc(search_term),
-            system_id=platform_ss_id,
-        )
+        try:
+            matched_games = await self.ss_service.search_games(
+                term=uc(search_term),
+                system_id=platform_ss_id,
+            )
+        except HTTPException as exc:
+            # A provider that has said everything it is going to say contributes
+            # no matches; it is not a failed search.
+            if not _is_provider_exhausted(exc):
+                raise
+            return []
 
         def _is_ss_region(game: SSGame) -> bool:
             return any(name.get("region") == "ss" for name in game.get("noms", []))
@@ -1114,6 +1126,7 @@ SCREENSAVER_PLATFORM_LIST: dict[UPS, SlugToSSId] = {
     UPS.CPS3: {"id": CPS3_SS_ID, "name": "Capcom Play System 3"},
     UPS.CPET: {"id": 240, "name": "PET"},
     UPS.CREATIVISION: {"id": 241, "name": "CreatiVision"},
+    UPS.DOOM: {"id": 290, "name": "Doom"},
     UPS.DOS: {"id": 135, "name": "PC Dos"},
     UPS.DRAGON_32_SLASH_64: {"id": 91, "name": "Dragon 32/64"},
     UPS.DC: {"id": 23, "name": "Dreamcast"},
@@ -1154,6 +1167,7 @@ SCREENSAVER_PLATFORM_LIST: dict[UPS, SlugToSSId] = {
     UPS.MSX2: {"id": 116, "name": "MSX2"},
     UPS.MSX_TURBO: {"id": 118, "name": "MSX Turbo R"},
     UPS.MAC: {"id": 146, "name": "Mac OS"},
+    UPS.MEGA_DUCK_SLASH_COUGAR_BOY: {"id": 90, "name": "Mega Duck"},
     UPS.NGAGE: {"id": 30, "name": "N-Gage"},
     UPS.NES: {"id": 3, "name": "NES"},
     UPS.FAMICOM: {"id": 3, "name": "Famicom"},
@@ -1194,6 +1208,7 @@ SCREENSAVER_PLATFORM_LIST: dict[UPS, SlugToSSId] = {
     UPS.PS4: {"id": 60, "name": "Playstation 4"},
     UPS.PS5: {"id": 284, "name": "Playstation 5"},
     UPS.POKEMON_MINI: {"id": 211, "name": "Pokémon mini"},
+    UPS.RPG_MAKER: {"id": 231, "name": "EasyRPG"},
     UPS.SAM_COUPE: {"id": 213, "name": "MGT SAM Coupé"},
     UPS.SCUMMVM: {"id": 123, "name": "ScummVM"},
     UPS.SEGA32: {"id": 19, "name": "Megadrive 32X"},

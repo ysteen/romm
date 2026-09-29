@@ -1,8 +1,9 @@
 /* eslint-disable vue/one-component-per-file */
 import { flushPromises, mount } from "@vue/test-utils";
+import { AxiosError } from "axios";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { defineComponent, ref } from "vue";
+import { defineComponent, nextTick, ref } from "vue";
 import storeCollections, {
   type Collection,
   type SmartCollection,
@@ -13,20 +14,24 @@ import storeGalleryRoms from "@/v2/stores/galleryRoms";
 import CollectionView from "./Collection.vue";
 
 const {
+  getCollection,
   getRandomRom,
   getRoms,
+  getVirtualCollection,
   push,
   routeGuards,
   snackbarError,
   snackbarInfo,
 } = vi.hoisted(() => ({
+  getCollection: vi.fn(),
   getRandomRom: vi.fn(),
   getRoms: vi.fn(),
+  getVirtualCollection: vi.fn(),
   push: vi.fn(),
-  routeGuards: [] as ((to: {
-    name: string;
-    params: Record<string, string>;
-  }) => unknown)[],
+  routeGuards: [] as ((
+    to: { name: string; path: string; params: Record<string, string> },
+    from: { name: string; path: string; params: Record<string, string> },
+  ) => unknown)[],
   snackbarError: vi.fn(),
   snackbarInfo: vi.fn(),
 }));
@@ -62,7 +67,12 @@ vi.mock("@/services/api/rom", () => ({
 }));
 
 vi.mock("@/services/api/collection", () => ({
-  default: { deleteCollection: vi.fn() },
+  default: {
+    deleteCollection: vi.fn(),
+    getCollection,
+    getVirtualCollection,
+    getSmartCollection: vi.fn(),
+  },
 }));
 
 vi.mock("@v2/lib", () => ({
@@ -80,8 +90,9 @@ vi.mock("@/v2/components/Gallery/GalleryShell.vue", () => ({
 
 vi.mock("@/v2/components/Gallery/CollectionHead.vue", () => ({
   default: defineComponent({
+    props: { collection: { type: Object, default: null } },
     emits: ["random"],
-    template: `<header><button class="random" @click="$emit('random')" /></header>`,
+    template: `<header><span class="rom-count">{{ collection?.rom_count }}</span><button class="random" @click="$emit('random')" /></header>`,
   }),
 }));
 
@@ -116,6 +127,14 @@ function collection(id: number): Collection {
   return { id, name: `Collection ${id}`, rom_count: 9000 } as Collection;
 }
 
+function virtualCollection(romCount: number): VirtualCollection {
+  return {
+    id: "collection-zelda",
+    name: "The Legend of Zelda",
+    rom_count: romCount,
+  } as VirtualCollection;
+}
+
 function rom(id: number): SimpleRom {
   return { id, name: "Chrono Trigger" } as SimpleRom;
 }
@@ -131,6 +150,34 @@ async function mountView() {
   return wrapper;
 }
 
+/** Drive the captured route guards the way vue-router does: both `to` and
+ *  `from`, each carrying the path the guard compares. */
+/** A sort / filter / search change: same path, new query. */
+function runQueryOnlyGuards() {
+  const at = {
+    name: routeState.name,
+    path: `/collection/${routeState.params.collection}`,
+    params: { ...routeState.params },
+  };
+  routeGuards.forEach((guard) => guard({ ...at }, { ...at }));
+}
+
+function runRouteGuards(name: string, collection: string) {
+  const from = {
+    name: routeState.name,
+    path: `/collection/${routeState.params.collection}`,
+    params: { ...routeState.params },
+  };
+  routeState.name = name;
+  routeState.params = { collection };
+  const to = {
+    name,
+    path: `/collection/${collection}`,
+    params: { collection },
+  };
+  routeGuards.forEach((guard) => guard(to, from));
+}
+
 describe("Collection view random rom", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -139,6 +186,9 @@ describe("Collection view random rom", () => {
     routeState.name = "collection";
     routeState.params = { collection: "1" };
     getRoms.mockResolvedValue({ data: { items: [], total: 0 } });
+    getCollection.mockImplementation((id: number) =>
+      Promise.resolve({ data: collection(id) }),
+    );
     storeCollections().setCollections([collection(1), collection(2)]);
   });
 
@@ -223,10 +273,7 @@ describe("Collection view random rom", () => {
     const wrapper = await mountView();
     await wrapper.get("button.random").trigger("click");
 
-    routeState.params = { collection: "2" };
-    routeGuards.forEach((guard) =>
-      guard({ name: "collection", params: { collection: "2" } }),
-    );
+    runRouteGuards("collection", "2");
     await flushPromises();
 
     resolvePick({ data: rom(42) });
@@ -248,10 +295,7 @@ describe("Collection view random rom", () => {
     const wrapper = await mountView();
     await wrapper.get("button.random").trigger("click");
 
-    routeState.params = { collection: "2" };
-    routeGuards.forEach((guard) =>
-      guard({ name: "collection", params: { collection: "2" } }),
-    );
+    runRouteGuards("collection", "2");
     await flushPromises();
 
     failPick(new Error("boom"));
@@ -327,5 +371,123 @@ describe("Collection view random rom", () => {
     resolvePick({ data: rom(42) });
     await flushPromises();
     expect(push).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The store's lists load once per session, so a cached ROM count disagrees
+// with the gallery below it.
+describe("Collection view freshness", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    routeGuards.length = 0;
+    routeState.name = "collection";
+    routeState.params = { collection: "1" };
+    getRoms.mockResolvedValue({ data: { items: [], total: 0 } });
+    getCollection.mockImplementation((id: number) =>
+      Promise.resolve({ data: collection(id) }),
+    );
+    // `collection()` caches 9000 ROMs, so any other count came from the server.
+    storeCollections().setCollections([collection(1)]);
+  });
+
+  it("renders the count the server returns, not the cached one", async () => {
+    getCollection.mockResolvedValue({
+      data: { ...collection(1), rom_count: 12 },
+    });
+
+    const wrapper = await mountView();
+
+    expect(getCollection).toHaveBeenCalledWith(1);
+    expect(wrapper.get(".rom-count").text()).toBe("12");
+  });
+
+  it("re-reads the virtual collection being opened", async () => {
+    routeState.name = "virtual-collection";
+    routeState.params = { collection: "collection-zelda" };
+    storeCollections().setVirtualCollections([virtualCollection(4)]);
+    getVirtualCollection.mockResolvedValue({ data: virtualCollection(5) });
+
+    const wrapper = await mountView();
+
+    expect(getVirtualCollection).toHaveBeenCalledWith("collection-zelda");
+    expect(wrapper.get(".rom-count").text()).toBe("5");
+  });
+
+  // What a finished scan does: the store refetches, and the open page has to
+  // follow it.
+  it("adopts the store's copy when a refresh replaces it", async () => {
+    routeState.name = "virtual-collection";
+    routeState.params = { collection: "collection-zelda" };
+    const collections = storeCollections();
+    collections.setVirtualCollections([virtualCollection(4)]);
+    getVirtualCollection.mockResolvedValue({ data: virtualCollection(4) });
+
+    const wrapper = await mountView();
+    collections.setVirtualCollections([virtualCollection(5)]);
+    await nextTick();
+
+    expect(wrapper.get(".rom-count").text()).toBe("5");
+  });
+
+  it("ignores a read that lands after the route moved on", async () => {
+    let settleFirst!: (value: { data: Collection }) => void;
+    getCollection.mockReturnValueOnce(
+      new Promise((resolve) => {
+        settleFirst = resolve;
+      }),
+    );
+
+    const galleryRoms = storeGalleryRoms();
+    vi.spyOn(galleryRoms, "fetchInitialMetadata").mockResolvedValue();
+    const wrapper = mount(CollectionView);
+
+    getCollection.mockResolvedValueOnce({
+      data: { ...collection(2), rom_count: 22 },
+    });
+    runRouteGuards("collection", "2");
+    await flushPromises();
+
+    settleFirst({ data: { ...collection(1), rom_count: 11 } });
+    await flushPromises();
+
+    expect(wrapper.get(".rom-count").text()).toBe("22");
+  });
+
+  // A 404 answers, unlike a failed read, so the cached copy must not keep a
+  // deleted collection on screen.
+  it("shows not-found when the server says the collection is gone", async () => {
+    getCollection.mockRejectedValue(
+      Object.assign(new AxiosError("HTTP 404"), { response: { status: 404 } }),
+    );
+
+    const wrapper = await mountView();
+
+    expect(wrapper.find(".rom-count").exists()).toBe(false);
+    expect(storeCollections().allCollections).toEqual([]);
+  });
+
+  it("falls back to the cached copy when the re-read fails", async () => {
+    getCollection.mockRejectedValue(new Error("offline"));
+
+    const wrapper = await mountView();
+
+    expect(wrapper.get(".rom-count").text()).toBe("9000");
+  });
+});
+
+describe("Collection view query-only navigation", () => {
+  it("does not re-read or reset the collection when only the query changes", async () => {
+    const galleryRoms = storeGalleryRoms();
+    const wrapper = await mountView();
+    getCollection.mockClear();
+    const resetGallery = vi.spyOn(galleryRoms, "resetGallery");
+
+    runQueryOnlyGuards();
+    await flushPromises();
+
+    expect(getCollection).not.toHaveBeenCalled();
+    expect(resetGallery).not.toHaveBeenCalled();
+    expect(wrapper.get(".rom-count").text()).toBe("9000");
   });
 });

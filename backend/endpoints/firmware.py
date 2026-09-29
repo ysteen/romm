@@ -1,6 +1,7 @@
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import Body, File, HTTPException, Request, UploadFile, status
+from fastapi import Body, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from config import DISABLE_DOWNLOAD_ENDPOINT_AUTH
@@ -115,7 +116,9 @@ async def add_firmware(
         "uploaded": len(files),
         "firmware": [
             FirmwareSchema.model_validate(f)
-            for f in db_firmware_handler.list_firmware(platform_id=platform_id)
+            for f in db_firmware_handler.list_firmware(
+                platform_ids=[platform_id] if platform_id else None
+            )
         ],
     }
 
@@ -124,6 +127,10 @@ async def add_firmware(
 def get_platform_firmware(
     request: Request,
     platform_id: int | None = None,
+    missing: Annotated[
+        bool | None,
+        Query(description="Whether the firmware is missing from the filesystem."),
+    ] = None,
 ) -> list[FirmwareSchema]:
     """Get firmware endpoint
 
@@ -137,7 +144,8 @@ def get_platform_firmware(
     return [
         FirmwareSchema.model_validate(f)
         for f in db_firmware_handler.list_firmware(
-            platform_id=platform_id,
+            platform_ids=[platform_id] if platform_id else None,
+            missing=missing,
             hidden_platform_ids=perms.hidden_platform_ids,
         )
     ]
@@ -156,11 +164,9 @@ def get_firmware_identifiers(
         list[int]: List of firmware IDs
     """
     perms = get_permissions(request)
-    firmware = db_firmware_handler.list_firmware(
-        only_fields=[Firmware.id],
+    return db_firmware_handler.list_firmware_ids(
         hidden_platform_ids=perms.hidden_platform_ids,
     )
-    return [f.id for f in firmware]
 
 
 @protected_route(
@@ -189,6 +195,36 @@ def get_firmware(request: Request, id: int) -> FirmwareSchema:
     return FirmwareSchema.model_validate(firmware)
 
 
+def _resolve_firmware_content(request: Request, id: int) -> tuple[Firmware, Path]:
+    """Resolve a firmware row and the readable file backing it.
+
+    Args:
+        request (Request): Fastapi Request object
+        id (int): Firmware internal id
+
+    Returns:
+        tuple[Firmware, Path]: The firmware row and its absolute path on disk
+    """
+
+    firmware = db_firmware_handler.get_firmware(id)
+    if not firmware:
+        error = f"Firmware with ID {id} not found"
+        log.error(error)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error)
+
+    assert_firmware_visible(request, firmware)
+
+    firmware_path = fs_firmware_handler.validate_path(firmware.full_path)
+    # A row can outlive its file: the scan marks it missing, or it was moved
+    # away without one. Either way FileResponse would raise a 500.
+    if firmware.missing_from_fs or not firmware_path.is_file():
+        error = f"Firmware file '{firmware.file_name}' is missing from filesystem"
+        log.error(error)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error)
+
+    return firmware, firmware_path
+
+
 @protected_route(
     router.head,
     "/{id}/content/{file_name}",
@@ -206,15 +242,7 @@ def head_firmware_content(request: Request, id: int, file_name: str):
         FileResponse: Returns the response with headers
     """
 
-    firmware = db_firmware_handler.get_firmware(id)
-    if not firmware:
-        error = f"Firmware with ID {id} not found"
-        log.error(error)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error)
-
-    assert_firmware_visible(request, firmware)
-
-    firmware_path = fs_firmware_handler.validate_path(firmware.full_path)
+    firmware, firmware_path = _resolve_firmware_content(request, id)
 
     return FileResponse(
         path=firmware_path,
@@ -246,15 +274,7 @@ def get_firmware_content(
         FileResponse: Returns the firmware file
     """
 
-    firmware = db_firmware_handler.get_firmware(id)
-    if not firmware:
-        error = f"Firmware with ID {id} not found"
-        log.error(error)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error)
-
-    assert_firmware_visible(request, firmware)
-
-    firmware_path = fs_firmware_handler.validate_path(firmware.full_path)
+    firmware, firmware_path = _resolve_firmware_content(request, id)
 
     return FileResponse(path=firmware_path, filename=firmware.file_name)
 

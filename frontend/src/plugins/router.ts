@@ -7,6 +7,11 @@ import {
   type RouteLocationNormalized,
 } from "vue-router";
 import i18n, { loadLocale } from "@/locales";
+import {
+  isAuthExemptRoute,
+  ROUTES,
+  type RouteName,
+} from "@/plugins/routeNames";
 import { startViewTransition } from "@/plugins/transition";
 import romApi from "@/services/api/rom";
 import storeAuth from "@/stores/auth";
@@ -14,61 +19,21 @@ import storeHeartbeat from "@/stores/heartbeat";
 import storeRoms from "@/stores/roms";
 import type { User } from "@/stores/users";
 import {
-  fallbackComponent,
+  notFoundComponent,
   v2Layouts,
   v2RouteComponents,
 } from "@/v2/router/routes";
 
-export const ROUTES = {
-  SETUP: "setup",
-  LOGIN: "login",
-  RESET_PASSWORD: "reset-password",
-  REGISTER: "register",
-  MAIN: "main",
-  HOME: "home",
-  SEARCH: "search",
-  PLATFORM: "platform",
-  COLLECTION: "collection",
-  VIRTUAL_COLLECTION: "virtual-collection",
-  SMART_COLLECTION: "smart-collection",
-  ROM: "rom",
-  EMULATORJS: "emulatorjs",
-  RUFFLE: "ruffle",
-  STREAM: "stream",
-  SCAN: "scan",
-  UPLOAD: "upload",
-  ACTIVITY: "activity",
-  USER_PROFILE: "user-profile",
-  USER_INTERFACE: "user-interface",
-  LIBRARY_MANAGEMENT: "library-management",
-  SCAN_SETTINGS: "scan-settings",
-  METADATA_SOURCES: "metadata-sources",
-  CLIENT_API_TOKENS: "client-api-tokens",
-  ADMINISTRATION: "administration",
-  SERVER_STATS: "server-stats",
-  LOGS: "logs",
-  PAIR: "pair",
-  PAIR_DEVICE: "pair-device",
-  APRIL_FOOLS: "april-fools",
-  CONSOLE_HOME: "console-home",
-  CONSOLE_PLATFORM: "console-platform",
-  CONSOLE_COLLECTION: "console-collection",
-  CONSOLE_SMART_COLLECTION: "console-smart-collection",
-  CONSOLE_VIRTUAL_COLLECTION: "console-virtual-collection",
-  CONSOLE_ROM: "console-rom",
-  CONSOLE_PLAY: "console-play",
-  // V2-only routes (no v1 equivalent — v1 uses its drawer for these).
-  PLATFORMS_INDEX: "platforms-index",
-  COLLECTIONS_INDEX: "collections-index",
-  CONTROLLER_DEBUG: "controller-debug",
-  NOT_FOUND: "404",
-} as const;
+export { isAuthExemptRoute, ROUTES };
 
-// Resolve the v2 component for a given route name, falling back to the
-// "not ready yet" screen so every route at least renders something when the
-// user is on uiVersion=v2.
-function v2For(routeName: string) {
-  return v2RouteComponents[routeName] ?? fallbackComponent;
+// Resolve the v2 component for a given route name, falling back to the 404
+// view so every route renders something when the user is on uiVersion=v2.
+function v2For(routeName: RouteName) {
+  const component = v2RouteComponents[routeName];
+  if (!component && import.meta.env.DEV) {
+    console.warn(`[v2] route "${routeName}" has no v2 component; showing 404`);
+  }
+  return component ?? notFoundComponent;
 }
 
 const routes = [
@@ -186,6 +151,16 @@ const routes = [
         },
       },
       {
+        path: "music/:mode?",
+        name: ROUTES.MUSIC,
+        meta: { title: "common.jukebox" },
+        components: {
+          // v1 has no equivalent; redirect to home
+          default: () => import("@/views/Home.vue"),
+          v2: v2For(ROUTES.MUSIC),
+        },
+      },
+      {
         path: "platform/:platform",
         name: ROUTES.PLATFORM,
         components: {
@@ -229,18 +204,15 @@ const routes = [
         beforeEnter: (async (to, _from, next) => {
           const romsStore = storeRoms();
 
-          if (
-            !romsStore.currentRom ||
-            romsStore.currentRom.id !== parseInt(to.params.rom as string)
-          ) {
-            try {
-              const data = await romApi.getRom({
-                romId: parseInt(to.params.rom as string),
-              });
-              romsStore.setCurrentRom(data.data);
-            } catch (error) {
-              console.error(error);
-            }
+          // Read the ROM on every entry, a matching id included: a play page
+          // writes saves server-side, then navigates here to hand the tab back.
+          try {
+            const data = await romApi.getRom({
+              romId: parseInt(to.params.rom as string),
+            });
+            romsStore.setCurrentRom(data.data);
+          } catch (error) {
+            console.error(error);
           }
           next();
         }) as NavigationGuardWithThis<undefined>,
@@ -251,6 +223,22 @@ const routes = [
         components: {
           default: () => import("@/views/Player/EmulatorJS/Base.vue"),
           v2: v2For(ROUTES.EMULATORJS),
+        },
+      },
+      {
+        path: "rom/:rom/jsdos",
+        name: ROUTES.JSDOS,
+        components: {
+          default: () => import("@/views/Home.vue"),
+          v2: v2For(ROUTES.JSDOS),
+        },
+      },
+      {
+        path: "rom/:rom/pico8",
+        name: ROUTES.PICO8,
+        components: {
+          default: () => import("@/views/Home.vue"),
+          v2: v2For(ROUTES.PICO8),
         },
       },
       {
@@ -275,6 +263,16 @@ const routes = [
         components: {
           default: () => import("@/views/Home.vue"),
           v2: v2For(ROUTES.STREAM),
+        },
+      },
+      {
+        // No :rom, unlike the player route: a desktop session runs no game.
+        // The container is a query param because its key is a URL.
+        path: "stream/desktop",
+        name: ROUTES.STREAM_DESKTOP,
+        components: {
+          default: () => import("@/views/Home.vue"),
+          v2: v2For(ROUTES.STREAM_DESKTOP),
         },
       },
       // Settings group — every settings route shares the same v2
@@ -306,6 +304,7 @@ const routes = [
             name: ROUTES.UPLOAD,
             meta: {
               title: "common.upload-roms",
+              fill: "desktop",
             },
             components: {
               // v1 has no Upload view (the dialog was its only entry
@@ -480,7 +479,7 @@ const routes = [
         name: ROUTES.NOT_FOUND,
         components: {
           default: () => import("@/views/404.vue"),
-          v2: v2For(ROUTES.NOT_FOUND),
+          v2: notFoundComponent,
         },
       },
     ],
@@ -574,20 +573,6 @@ const routePermissions: RoutePermissions[] = [
   { path: ROUTES.LOGS, requiredScopes: ["logs.read"] },
 ];
 
-const authExemptRoutes = [
-  ROUTES.LOGIN,
-  ROUTES.SETUP,
-  ROUTES.RESET_PASSWORD,
-  ROUTES.REGISTER,
-  ROUTES.PAIR,
-] as const;
-
-type AuthExemptRoute = (typeof authExemptRoutes)[number];
-
-export function isAuthExemptRoute(route: string): route is AuthExemptRoute {
-  return (authExemptRoutes as readonly string[]).includes(route);
-}
-
 function checkRoutePermissions(route: string, user: User | null): boolean {
   // No checks needed for login and setup pages
   if (isAuthExemptRoute(route)) {
@@ -610,13 +595,21 @@ function checkRoutePermissions(route: string, user: User | null): boolean {
 // `meta.title` holds an i18n key, translated per navigation rather than when
 // the route table is built. Messages load asynchronously and aren't there yet
 // at module-eval time.
-function applyRouteTitle(route: RouteLocationNormalized) {
-  document.title = route.meta.title
-    ? i18n.global.t(route.meta.title as string)
-    : "RomM";
+export function applyRouteTitle(
+  route: RouteLocationNormalized,
+  from?: RouteLocationNormalized,
+) {
+  if (route.meta.title) {
+    document.title = i18n.global.t(route.meta.title as string);
+    return;
+  }
+  // A query/hash-only navigation leaves the view mounted, so `usePageTitle`
+  // won't refire and the fallback would drop the title it already set.
+  if (from && route.path === from.path) return;
+  document.title = "RomM";
 }
 
-router.beforeEach(async (to, _from, next) => {
+router.beforeEach(async (to, from, next) => {
   const heartbeat = storeHeartbeat();
   const auth = storeAuth();
   const { user } = storeToRefs(auth);
@@ -629,7 +622,7 @@ router.beforeEach(async (to, _from, next) => {
     // allows; the offline notice explains it and the connection layer
     // re-routes correctly once the backend answers again.
     if (!heartbeat.connected) {
-      applyRouteTitle(to);
+      applyRouteTitle(to, from);
       return next();
     }
 
@@ -675,7 +668,7 @@ router.beforeEach(async (to, _from, next) => {
       return next({ name: ROUTES.NOT_FOUND });
     }
 
-    applyRouteTitle(to);
+    applyRouteTitle(to, from);
     next();
   } catch (error) {
     console.error("Navigation guard error:", error);

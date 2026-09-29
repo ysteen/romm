@@ -1,19 +1,24 @@
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import Body, File, HTTPException, Request, UploadFile, status
+from fastapi import Body, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from decorators.auth import protected_route
 from endpoints.responses.assets import StateSchema
 from endpoints.roms import refresh_affected_smart_collections
 from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
+from handler.asset_store import (
+    remove_asset_file,
+    remove_screenshot,
+    store_screenshot,
+    store_state_file,
+)
 from handler.auth.constants import Scope
 from handler.auth.dependencies import assert_rom_visible
 from handler.database import db_rom_handler, db_screenshot_handler, db_state_handler
 from handler.filesystem import fs_asset_handler
 from handler.filesystem.assets_handler import build_asset_file_response
-from handler.scan_handler import scan_screenshot, scan_state
 from logger.formatter import BLUE
 from logger.formatter import highlight as hl
 from logger.logger import log
@@ -21,6 +26,15 @@ from models.assets import State
 from utils.filesystem import sanitize_filename
 from utils.router import APIRouter
 from utils.uploads import check_asset_upload_size
+from utils.validation import RomIdScope, narrow_rom_id_scope
+
+
+async def _delete_state(state: State) -> None:
+    """Drop a state row with its file and screenshot."""
+    db_state_handler.delete_state(state.id)
+    await remove_asset_file(state.full_path, "State file")
+    await remove_screenshot(state.screenshot)
+
 
 router = APIRouter(
     prefix="/states",
@@ -71,51 +85,9 @@ async def add_state(
         f"Uploading state {hl(sanitized_state_filename)} for {hl(str(rom.name), color=BLUE)}"
     )
 
-    states_path = fs_asset_handler.build_states_file_path(
-        user=request.user,
-        platform_fs_slug=rom.platform.fs_slug,
-        rom_id=rom.id,
-        emulator=emulator,
+    db_state = await store_state_file(
+        request.user, rom, emulator, stateFile, sanitized_state_filename
     )
-
-    await fs_asset_handler.write_file(
-        file=stateFile, path=states_path, filename=sanitized_state_filename
-    )
-
-    # Scan or update state
-    scanned_state = await scan_state(
-        file_name=sanitized_state_filename,
-        user=request.user,
-        platform_fs_slug=rom.platform.fs_slug,
-        rom_id=rom_id,
-        emulator=emulator,
-    )
-    db_state = db_state_handler.get_state_by_filename(
-        user_id=request.user.id, rom_id=rom.id, file_name=sanitized_state_filename
-    )
-    if db_state:
-        # The new bytes land under the requested emulator's folder, so the row
-        # follows them and the file at the old location is left orphaned.
-        stale_full_path = db_state.full_path
-        db_state = db_state_handler.update_state(
-            db_state.id,
-            {
-                "file_size_bytes": scanned_state.file_size_bytes,
-                "file_path": scanned_state.file_path,
-                "emulator": emulator,
-            },
-        )
-
-        if stale_full_path != db_state.full_path:
-            try:
-                await fs_asset_handler.remove_file(stale_full_path)
-            except FileNotFoundError:
-                pass
-    else:
-        scanned_state.rom_id = rom.id
-        scanned_state.user_id = request.user.id
-        scanned_state.emulator = emulator
-        db_state = db_state_handler.add_state(state=scanned_state)
 
     if screenshotFile and screenshotFile.filename:
         try:
@@ -126,39 +98,9 @@ async def add_state(
                 detail=f"Invalid screenshot filename: {str(exc)}",
             ) from exc
 
-        screenshots_path = fs_asset_handler.build_screenshots_file_path(
-            user=request.user, platform_fs_slug=rom.platform_slug, rom_id=rom.id
+        await store_screenshot(
+            request.user, rom, screenshotFile, sanitized_screenshot_filename
         )
-
-        await fs_asset_handler.write_file(
-            file=screenshotFile,
-            path=screenshots_path,
-            filename=sanitized_screenshot_filename,
-        )
-
-        # Scan or update screenshot
-        scanned_screenshot = await scan_screenshot(
-            file_name=sanitized_screenshot_filename,
-            user=request.user,
-            platform_fs_slug=rom.platform_slug,
-            rom_id=rom.id,
-        )
-        db_screenshot = db_screenshot_handler.get_screenshot(
-            file_name=sanitized_screenshot_filename,
-            rom_id=rom.id,
-            user_id=request.user.id,
-        )
-        if db_screenshot:
-            db_screenshot = db_screenshot_handler.update_screenshot(
-                db_screenshot.id,
-                {"file_size_bytes": scanned_screenshot.file_size_bytes},
-            )
-        else:
-            scanned_screenshot.rom_id = rom.id
-            scanned_screenshot.user_id = request.user.id
-            db_screenshot = db_screenshot_handler.add_screenshot(
-                screenshot=scanned_screenshot
-            )
 
     # Set the last played time for the current user
     rom_user = db_rom_handler.get_rom_user(rom_id=rom.id, user_id=request.user.id)
@@ -180,10 +122,25 @@ async def add_state(
 
 @protected_route(router.get, "", [Scope.ASSETS_READ])
 def get_states(
-    request: Request, rom_id: int | None = None, platform_id: int | None = None
+    request: Request,
+    rom_id: int | None = None,
+    rom_ids: Annotated[
+        RomIdScope,
+        Query(
+            description=(
+                "ROM IDs to scope the results to, for clients syncing a known "
+                "set of ROMs. Multiple values are allowed by repeating the "
+                "parameter. Combined with `rom_id` when both are given."
+            ),
+        ),
+    ] = None,
+    platform_id: int | None = None,
 ) -> list[StateSchema]:
+    """Retrieve states for the current user."""
     states = db_state_handler.get_states(
-        user_id=request.user.id, rom_id=rom_id, platform_id=platform_id
+        user_id=request.user.id,
+        rom_ids=narrow_rom_id_scope(rom_id, rom_ids),
+        platform_id=platform_id,
     )
 
     return [StateSchema.model_validate(state) for state in states]
@@ -201,12 +158,7 @@ def get_state_identifiers(
     Returns:
         list[int]: List of state IDs
     """
-    states = db_state_handler.get_states(
-        user_id=request.user.id,
-        only_fields=[State.id],
-    )
-
-    return [state.id for state in states]
+    return db_state_handler.get_state_ids(user_id=request.user.id)
 
 
 @protected_route(router.get, "/{id}", [Scope.ASSETS_READ])
@@ -287,41 +239,12 @@ async def update_state(
                 detail=f"Invalid screenshot filename: {str(exc)}",
             ) from exc
 
-        screenshots_path = fs_asset_handler.build_screenshots_file_path(
-            user=request.user,
-            platform_fs_slug=db_state.rom.platform_slug,
-            rom_id=db_state.rom.id,
+        await store_screenshot(
+            request.user,
+            db_state.rom,
+            screenshotFile,
+            sanitized_screenshot_filename,
         )
-
-        await fs_asset_handler.write_file(
-            file=screenshotFile,
-            path=screenshots_path,
-            filename=sanitized_screenshot_filename,
-        )
-
-        # Scan or update screenshot
-        scanned_screenshot = await scan_screenshot(
-            file_name=sanitized_screenshot_filename,
-            user=request.user,
-            platform_fs_slug=db_state.rom.platform_slug,
-            rom_id=db_state.rom.id,
-        )
-        db_screenshot = db_screenshot_handler.get_screenshot(
-            file_name=sanitized_screenshot_filename,
-            rom_id=db_state.rom.id,
-            user_id=request.user.id,
-        )
-        if db_screenshot:
-            db_screenshot = db_screenshot_handler.update_screenshot(
-                db_screenshot.id,
-                {"file_size_bytes": scanned_screenshot.file_size_bytes},
-            )
-        else:
-            scanned_screenshot.rom_id = db_state.rom.id
-            scanned_screenshot.user_id = request.user.id
-            db_screenshot = db_screenshot_handler.add_screenshot(
-                screenshot=scanned_screenshot
-            )
 
     # Set the last played time for the current user
     rom_user = db_rom_handler.get_rom_user(db_state.rom_id, request.user.id)
@@ -404,27 +327,10 @@ async def delete_states(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error)
 
         affected_rom_ids.add(state.rom_id)
-        db_state_handler.delete_state(state_id)
         log.info(
             f"Deleting state {hl(state.file_name)} [{state.rom.platform_slug}] from filesystem"
         )
-
-        try:
-            file_path = f"{state.file_path}/{state.file_name}"
-            await fs_asset_handler.remove_file(file_path=file_path)
-        except FileNotFoundError:
-            error = f"State file {hl(state.file_name)} not found for platform {hl(state.rom.platform_display_name, color=BLUE)}[{hl(state.rom.platform_slug)}]"
-            log.error(error)
-
-        if state.screenshot:
-            db_screenshot_handler.delete_screenshot(state.screenshot.id)
-
-            try:
-                file_path = f"{state.screenshot.file_path}/{state.screenshot.file_name}"
-                await fs_asset_handler.remove_file(file_path=file_path)
-            except FileNotFoundError:
-                error = f"Screenshot file {hl(state.screenshot.file_name)} not found for state {hl(state.file_name)}[{hl(state.rom.platform_slug)}]"
-                log.error(error)
+        await _delete_state(state)
 
     refresh_affected_smart_collections(list(affected_rom_ids), membership_only=True)
 

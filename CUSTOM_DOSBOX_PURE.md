@@ -1,7 +1,7 @@
 # Custom DOSBox Pure and shared Windows 95
 
 This workspace pins EmulatorJS 4.3 nightly commit
-`cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` on RomM 5.2.0. Nightly core files are
+`cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` on RomM 5.3.1. Nightly core files are
 downloaded during the image build, then local DOSBox Pure, PPSSPP and Azahar
 binaries replace their corresponding cores. DOSBox Pure declares a minimum
 EmulatorJS version of 4.3.0, so RomM's bundled 4.2.3 frontend cannot run it. It
@@ -56,12 +56,16 @@ to the mutable CDN nightly. The included GameManager flushes IDBFS every five
 seconds only for DOSBox Pure; other cores retain upstream save timing and
 shutdown behavior.
 
-## RomM 5.2 upgrade and Azahar core
+## RomM 5.3.1 upgrade and Azahar core
 
-This branch includes the official RomM `5.2.0` release and retains the custom
+This branch includes the official RomM `5.3.1` release and retains the custom
 DOSBox Pure, PPSSPP and Azahar save-bundle integration. At startup, an emulator
 state takes precedence over an ordinary SRAM save. Directory-backed save bundles
 are still extracted before the core starts and are not loaded a second time.
+
+The 5.3.1 integration supports the new save slots and offline save/state queue.
+RomForge uses the new scan-job handler, and the application and worker images
+retain the official base version after copying the custom backend.
 
 The included Azahar core contains the WebAssembly interpreter, streaming-buffer
 and color-order fixes, plus signed GLSL jump dispatch for ANGLE/D3D11. In the
@@ -74,7 +78,7 @@ The matching source patches, tests and measurement notes are in the
 
 For an existing installation, back up the database and persistent directories
 before upgrading. Change `ROMM_IMAGE` in `deploy/.env` to
-`romm-custom-dosbox-pure:5.2.0` if it still names an older image, then run the
+`romm-custom-dosbox-pure:5.3.1` if it still names an older image, then run the
 deployment command above. The deployment script preserves existing credentials
 and configuration. Updating this Git checkout alone does not restart containers
 or migrate the running database.
@@ -194,3 +198,7 @@ automatic start action.
 
 Do not modify `Windows95.img` after using `Save Difference Per Content`.
 Existing per-game C: differences are tied to the exact base image.
+
+js-dos is disabled by default (`DISABLE_JSDOS=true`). Set it to `false` explicitly
+to enable the optional js-dos player. EmulatorJS and the custom DOSBox Pure core
+remain enabled.

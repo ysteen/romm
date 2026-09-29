@@ -21,11 +21,11 @@ import {
 } from "@v2/lib";
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import socket from "@/services/socket";
 import type { Platform } from "@/stores/platforms";
-import storeScanning from "@/stores/scanning";
 import { useScanProviders } from "@/v2/composables/useScanProviders";
+import { useScanTrigger } from "@/v2/composables/useScanTrigger";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
+import { type ScanType as SharedScanType } from "@/v2/types/scan";
 
 defineOptions({ inheritAttrs: false });
 
@@ -40,7 +40,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const snackbar = useSnackbar();
-const scanningStore = storeScanning();
+const { startScan } = useScanTrigger();
 
 const {
   calculateHashes,
@@ -62,7 +62,7 @@ const {
 // Per-platform scan types — the full Scan-view list minus
 // `new_platforms` (a discovery scan against fs_slugs not yet in the
 // DB, which can't be scoped to a known platform).
-type ScanType = "quick" | "unmatched" | "update" | "hashes" | "complete";
+type ScanType = Exclude<SharedScanType, "new_platforms">;
 
 const scanOptions = computed<
   { title: string; subtitle: string; value: ScanType }[]
@@ -100,19 +100,22 @@ function closeDialog() {
 }
 
 function onScan() {
-  scanningStore.setScanning(true);
+  const started = startScan([
+    {
+      platforms: [props.platform.id],
+      type: scanType.value,
+      ...buildScanPayload(),
+    },
+  ]);
+  if (!started) return;
   persistSelection();
 
-  if (!socket.connected) socket.connect();
-  socket.emit("scan", {
-    platforms: [props.platform.id],
-    type: scanType.value,
-    ...buildScanPayload(),
-  });
-
-  snackbar.info(`Scanning ${props.platform.display_name}…`, {
-    icon: "mdi-loading mdi-spin",
-  });
+  snackbar.info(
+    t("scan.scanning-platform", { platform: props.platform.display_name }),
+    {
+      icon: "mdi-loading mdi-spin",
+    },
+  );
   closeDialog();
 }
 </script>
@@ -122,6 +125,7 @@ function onScan() {
     :model-value="modelValue"
     icon="mdi-magnify-scan"
     :width="560"
+    cancelable
     @update:model-value="$emit('update:modelValue', $event)"
     @close="closeDialog"
   >
@@ -395,15 +399,13 @@ function onScan() {
     </template>
 
     <template #footer>
-      <RBtn variant="text" @click="closeDialog">
-        {{ t("common.cancel") }}
-      </RBtn>
-      <span class="r-v2-scan-plat__footer-spacer" />
       <RBtn
         variant="translucent"
         color="primary"
         prepend-icon="mdi-magnify-scan"
-        :disabled="effectiveMetadataSources.length === 0"
+        :disabled="
+          effectiveMetadataSources.length === 0 && scanType !== 'quick'
+        "
         @click="onScan"
       >
         {{ t("scan.scan", "Scan") }}
@@ -417,10 +419,6 @@ function onScan() {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.r-v2-scan-plat__footer-spacer {
-  flex: 1;
 }
 
 /* Platform identity row — sibling of `.r-v2-refresh__rom` in

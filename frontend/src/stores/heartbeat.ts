@@ -15,6 +15,7 @@ export type MetadataOption = {
 const defaultHeartbeat: Heartbeat = {
   SYSTEM: {
     VERSION: "0.0.0",
+    GIT_BRANCH: null,
     SHOW_SETUP_WIZARD: false,
   },
   METADATA_SOURCES: {
@@ -31,14 +32,21 @@ const defaultHeartbeat: Heartbeat = {
     TGDB_API_ENABLED: false,
     FLASHPOINT_API_ENABLED: false,
     HLTB_API_ENABLED: false,
+    DEMOZOO_API_ENABLED: false,
+    POUET_API_ENABLED: false,
+    CSDB_API_ENABLED: false,
+    STEAM_API_ENABLED: false,
     LIBRETRO_API_ENABLED: false,
   },
   FILESYSTEM: {
     FS_PLATFORMS: [],
+    TITLE_ID_EXTRACTION_ENABLED: false,
   },
   EMULATION: {
     DISABLE_EMULATOR_JS: false,
     DISABLE_RUFFLE_RS: false,
+    DISABLE_JSDOS: true,
+    DISABLE_PICO8: false,
   },
   FRONTEND: {
     DISABLE_USERPASS_LOGIN: false,
@@ -179,7 +187,7 @@ export default defineStore("heartbeat", {
             : "",
         },
         {
-          name: "Flashpoint Project",
+          name: "Flashpoint",
           value: "flashpoint",
           logo_path: "/assets/scrappers/flashpoint.png",
           disabled: !this.value.METADATA_SOURCES?.FLASHPOINT_API_ENABLED
@@ -192,6 +200,38 @@ export default defineStore("heartbeat", {
           logo_path: "/assets/scrappers/hltb.png",
           disabled: !this.value.METADATA_SOURCES?.HLTB_API_ENABLED
             ? i18n.global.t("scan.api-key-missing")
+            : "",
+        },
+        {
+          name: "Demozoo",
+          value: "demozoo",
+          logo_path: "/assets/scrappers/demozoo.png?v=2",
+          disabled: !this.value.METADATA_SOURCES?.DEMOZOO_API_ENABLED
+            ? i18n.global.t("scan.disabled-by-admin")
+            : "",
+        },
+        {
+          name: "Pouët",
+          value: "pouet",
+          logo_path: "/assets/scrappers/pouet.png?v=2",
+          disabled: !this.value.METADATA_SOURCES?.POUET_API_ENABLED
+            ? i18n.global.t("scan.disabled-by-admin")
+            : "",
+        },
+        {
+          name: "CSDb",
+          value: "csdb",
+          logo_path: "/assets/scrappers/csdb.png",
+          disabled: !this.value.METADATA_SOURCES?.CSDB_API_ENABLED
+            ? i18n.global.t("scan.disabled-by-admin")
+            : "",
+        },
+        {
+          name: "Steam",
+          value: "steam",
+          logo_path: "/assets/scrappers/steam.png",
+          disabled: !this.value.METADATA_SOURCES?.STEAM_API_ENABLED
+            ? i18n.global.t("scan.disabled-by-admin")
             : "",
         },
         {

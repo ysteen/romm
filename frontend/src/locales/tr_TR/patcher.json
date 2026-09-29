@@ -40,6 +40,7 @@
   "romforge-limit": "Sınırlar: ROM {rom}, yama {patch}.",
   "search-patch-library": "Kütüphanede yama ara",
   "search-rom-library": "Kütüphanede ROM ara",
+  "select-archive-member": "Select file inside archive",
   "select-file": "Dosya seç",
   "select-patch-file": "Yama dosyası seç",
   "start-typing": "Aramak için yazmaya başlayın...",

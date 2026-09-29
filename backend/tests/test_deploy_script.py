@@ -114,6 +114,21 @@ if os.environ.get('DEPLOY_TEST_FAIL_BUILD') and args[-2:] == ['build', 'romm']:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any("--force-recreate" in action for action in self.actions()))
 
+    def test_new_install_disables_jsdos(self):
+        self.env_file.unlink()
+        result = self.run_script("--no-build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DISABLE_JSDOS=true", self.env_file.read_text())
+        self.assertIn(
+            "ROMM_IMAGE=romm-custom-dosbox-pure:5.3.1", self.env_file.read_text()
+        )
+
+    def test_preserves_explicit_jsdos_opt_in(self):
+        self.env_file.write_text("DISABLE_JSDOS=false\n")
+        result = self.run_script("--no-build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DISABLE_JSDOS=false", self.env_file.read_text())
+
     def test_failed_build_leaves_running_services_alone(self):
         self.env["DEPLOY_TEST_FAIL_BUILD"] = "1"
         result = self.run_script("--romforge")

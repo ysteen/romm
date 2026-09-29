@@ -4,16 +4,17 @@ from typing import Any, NotRequired, TypedDict
 
 import httpx
 import pydash
-from fastapi import HTTPException, status
+import yarl
+from fastapi import status
 
-from config import DEV_MODE, HASHEOUS_API_ENABLED
+from config import DEV_MODE, HASHEOUS_API_ENABLED, HASHEOUS_API_URL
 from logger.logger import log
 from models.rom import RomFile
 from utils import get_version
 from utils.context import ctx_httpx_client
+from utils.platform_slugs import UniversalPlatformSlug as UPS
 
-from .base_handler import BaseRom, MetadataHandler
-from .base_handler import UniversalPlatformSlug as UPS
+from .base_handler import BaseRom, MetadataHandler, unavailable
 from .igdb_handler import (
     IGDB_AGE_RATINGS,
     IGDBMetadata,
@@ -58,6 +59,18 @@ class HasheousRom(BaseRom):
 ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG = {UPS.DC: ["bin", "chd", "cue"]}
 
 
+def _involved_company_names(rom: dict[str, Any], role: str) -> list[str]:
+    """Company names for an IGDB involvement role.
+
+    The proxy keys its expanded lists by id, so involvements arrive as a dict
+    rather than the list IGDB itself returns.
+    """
+    involved = pydash.values(rom.get("involved_companies", {}))
+    return pydash.compact(
+        pydash.map_([c for c in involved if c.get(role)], "company.name")
+    )
+
+
 def extract_metadata_from_igdb_rom(rom: dict[str, Any]) -> IGDBMetadata:
     return IGDBMetadata(
         {
@@ -67,6 +80,7 @@ def extract_metadata_from_igdb_rom(rom: dict[str, Any]) -> IGDBMetadata:
                 else None
             ),
             "total_rating": str(round(rom.get("total_rating", 0.0), 2)),
+            "total_rating_count": rom.get("total_rating_count"),
             "aggregated_rating": str(round(rom.get("aggregated_rating", 0.0), 2)),
             "first_release_date": (
                 int(
@@ -85,9 +99,15 @@ def extract_metadata_from_igdb_rom(rom: dict[str, Any]) -> IGDBMetadata:
             "alternative_names": pydash.map_(rom.get("alternative_names", {}), "name"),
             "collections": pydash.map_(rom.get("collections", {}), "name"),
             "game_modes": pydash.map_(rom.get("game_modes", {}), "name"),
+            # Not in `expandColumns`, so the proxy returns bare ids with no names.
+            "keywords": [],
+            "themes": [],
+            "player_perspectives": [],
             "companies": pydash.compact(
                 pydash.map_(rom.get("involved_companies", {}), "company.name")
             ),
+            "publishers": _involved_company_names(rom, "publisher"),
+            "developers": _involved_company_names(rom, "developer"),
             "platforms": [
                 IGDBMetadataPlatform(igdb_id=p.get("id", ""), name=p.get("name", ""))
                 for p in pydash.map_(rom.get("platforms", {}))
@@ -113,11 +133,16 @@ def extract_metadata_from_igdb_rom(rom: dict[str, Any]) -> IGDBMetadata:
 
 class HasheousHandler(MetadataHandler):
     def __init__(self) -> None:
-        self.BASE_URL = (
-            "https://beta.hasheous.org/api/v1"
-            if DEV_MODE
-            else "https://hasheous.org/api/v1"
-        )
+        self.BASE_URL = HASHEOUS_API_URL
+        # Cover art is linked relative to the site root, not the API path.
+        try:
+            self.BASE_ORIGIN = str(yarl.URL(self.BASE_URL).origin())
+        except ValueError:
+            log.warning(
+                "Invalid HASHEOUS_API_URL %r, cover art URLs may be wrong",
+                self.BASE_URL,
+            )
+            self.BASE_ORIGIN = ""
         self.healthcheck_endpoint = f"{self.BASE_URL}/HealthCheck"
         self.platform_endpoint = f"{self.BASE_URL}/Lookup/Platforms"
         self.games_endpoint = f"{self.BASE_URL}/Lookup/ByHash"
@@ -202,21 +227,17 @@ class HasheousHandler(MetadataHandler):
                 exc.response.status_code,
                 exc.response.text,
             )
-            pass
+            raise unavailable("Hasheous") from exc
         except httpx.NetworkError as exc:
             log.critical("Connection error: can't connect to Hasheous")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Can't connect to Hasheous, check your internet connection",
-            ) from exc
+            raise unavailable("Hasheous") from exc
         except json.decoder.JSONDecodeError as exc:
             # Log the error and return an empty dict if the response is not valid JSON
             log.error(exc)
             return {}
-        except httpx.TimeoutException:
-            pass
-
-        return {}
+        except httpx.TimeoutException as exc:
+            log.error("Hasheous API timed out: %s", exc)
+            raise unavailable("Hasheous") from exc
 
     def get_platform(self, slug: str) -> HasheousPlatform:
         if slug not in HASHEOUS_PLATFORM_LIST:
@@ -318,7 +339,7 @@ class HasheousHandler(MetadataHandler):
                 try:
                     # TEMP: Hasheous is slowly replacing slugs with IDs
                     igdb_id = int(meta["immutableId"])
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     log.debug(
                         f"Found an IGDB slug instead of an ID: {meta['immutableId']}"
                     )
@@ -331,7 +352,7 @@ class HasheousHandler(MetadataHandler):
         url_cover = ""
         for attr in attributes:
             if attr["attributeName"] == "Logo":
-                url_cover = f"https://hasheous.org{attr['link']}"
+                url_cover = f"{self.BASE_ORIGIN}{attr['link']}"
                 break
 
         return (
@@ -819,6 +840,14 @@ HASHEOUS_PLATFORM_LIST: dict[UPS, SlugToHasheousId] = {
         "igdb_slug": "dc",
         "name": "Sega Dreamcast",
         "ra_id": 40,
+        "tgdb_id": None,
+    },
+    UPS.DOOM: {
+        "id": 645195,
+        "igdb_id": None,
+        "igdb_slug": "",
+        "name": "PrBoom",
+        "ra_id": None,
         "tgdb_id": None,
     },
     UPS.DOS: {

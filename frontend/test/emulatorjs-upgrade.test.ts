@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext, runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 
@@ -43,7 +43,7 @@ if (
 }
 const injectionCode = injection.expression.expression.getText(source);
 
-describe("EmulatorJS 5.2 save integration", () => {
+describe("EmulatorJS save integration", () => {
   for (const directory of [false, true]) {
     for (const save of [false, true]) {
       for (const state of [false, true]) {
@@ -54,6 +54,8 @@ describe("EmulatorJS 5.2 save integration", () => {
           };
           const loadSave = vi.fn().mockResolvedValue(undefined);
           const loadState = vi.fn().mockResolvedValue(undefined);
+          const baseline = vi.fn();
+          const installAutoSaveSync = vi.fn();
           const emulator = { settings: { vsync: "enabled" } };
           await runInNewContext(injectionCode, {
             props,
@@ -61,11 +63,18 @@ describe("EmulatorJS 5.2 save integration", () => {
             waitForGameManager: async () => true,
             loadSave,
             loadState,
+            baselineSaveTrackerFromEmulator: baseline,
+            EJS_ENABLE_AUTO_SAVE_SYNC: true,
+            installAutoSaveSync,
             STATE_APPLY_SETTLE_MS: 500,
             setTimeout: (callback: () => void) => callback(),
             window: { EJS_emulator: emulator },
           });
           expect(loadState).toHaveBeenCalledTimes(state ? 1 : 0);
+          expect(installAutoSaveSync).toHaveBeenCalledOnce();
+          expect(baseline).toHaveBeenCalledTimes(
+            !state && (!save || directory) ? 1 : 0,
+          );
           expect(loadSave).toHaveBeenCalledTimes(
             save && !state && !directory ? 1 : 0,
           );
@@ -95,6 +104,75 @@ describe("EmulatorJS 5.2 save integration", () => {
       expect(files).toEqual(directory ? { "/data/saves/": downloadPath } : {});
     },
   );
+});
+
+describe("EmulatorJS Save & Quit", () => {
+  function saveQuitCallback(): string {
+    let callback: ts.Node | undefined;
+    function visit(node: ts.Node) {
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.getText(source) === "saveAndQuit.addEventListener"
+      )
+        callback = node.arguments[1];
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    if (!callback) throw new Error("Save & Quit callback not found");
+    return ts.transpile(`(${callback.getText(source)})`, {
+      target: ts.ScriptTarget.ESNext,
+    });
+  }
+
+  it("resumes autosave after a failed upload and permits a successful retry", async () => {
+    const writeSaveIfChanged = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const installAutoSaveSync = vi.fn();
+    const immediateExit = vi.fn();
+    const emulator = {
+      stateActionPending: false,
+      saveFileExt: "srm",
+      gameManager: {
+        supportsStates: () => false,
+        getSaveFile: () => new Uint8Array([1, 2, 3]),
+      },
+    };
+    const context = createContext({
+      stateBusy: false,
+      stateSession: new AbortController(),
+      window: { EJS_emulator: emulator },
+      romRef: { value: { id: 1 } },
+      saveWrite: Promise.resolve(),
+      uninstallAutoSaveSync: vi.fn(),
+      EJS_ENABLE_AUTO_SAVE_SYNC: true,
+      installAutoSaveSync,
+      isAzahar: false,
+      usesDirectorySaveBundle: false,
+      captureScreenshot: async () => undefined,
+      toArrayBuffer: (bytes: Uint8Array) => bytes.buffer,
+      writeSaveIfChanged,
+      console: { error: vi.fn() },
+      displayMessage: vi.fn(),
+      romsStore: { update: vi.fn() },
+      flushDosBoxPureCacheOnQuit: vi.fn(),
+      immediateExit,
+    });
+    const quit = runInContext(
+      saveQuitCallback(),
+      context,
+    ) as () => Promise<void>;
+    await quit();
+    expect(installAutoSaveSync).toHaveBeenCalledOnce();
+    expect(immediateExit).not.toHaveBeenCalled();
+    expect(emulator.stateActionPending).toBe(false);
+    expect(context.stateBusy).toBe(false);
+
+    await quit();
+    expect(writeSaveIfChanged).toHaveBeenCalledTimes(2);
+    expect(immediateExit).toHaveBeenCalledOnce();
+  });
 });
 
 describe("EmulatorJS runtime cache revision", () => {

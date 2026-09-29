@@ -16,6 +16,13 @@ const meta: Meta<typeof RDialog> = {
     scrollContent: { control: "boolean" },
     persistent: { control: "boolean" },
     fullscreenOnMobile: { control: "boolean" },
+    bodyPadding: {
+      control: "inline-radio",
+      options: ["default", "compact", "flush"],
+    },
+    cancelable: { control: "boolean" },
+    cancelDisabled: { control: "boolean" },
+    cancelText: { control: "text" },
   },
 };
 
@@ -34,7 +41,7 @@ export const Basic: Story = {
     template: `
       <div class="r-v2 r-v2-dark" style="padding: 48px; background: #07070f; min-height: 300px;">
         <RBtn @click="open = true">Open dialog</RBtn>
-        <RDialog v-bind="args" v-model="open">
+        <RDialog v-bind="args" v-model="open" cancelable>
           <template #header>
             <span>Dialog title</span>
           </template>
@@ -42,14 +49,36 @@ export const Basic: Story = {
             <p>This is the dialog body. Keep content concise and actionable.</p>
           </template>
           <template #footer>
-            <RBtn variant="text" @click="open = false">Cancel</RBtn>
-            <div style="flex:1" />
             <RBtn color="primary" @click="open = false">Confirm</RBtn>
           </template>
         </RDialog>
       </div>
     `,
   }),
+  play: async ({ canvasElement, step }) => {
+    const canvas = within(canvasElement);
+    // The dialog teleports to <body>, outside the story canvas.
+    const body = within(document.body);
+
+    await step("Cancel sits left of the spacer, Confirm right", async () => {
+      await userEvent.click(
+        canvas.getByRole("button", { name: "Open dialog" }),
+      );
+      const dialog = await body.findByRole("dialog");
+      const footer = dialog.querySelector(".r-dialog__footer");
+      const items = Array.from(footer?.children ?? []).map((el) =>
+        el.getAttribute("aria-hidden") === "true"
+          ? "spacer"
+          : el.textContent?.trim(),
+      );
+      expect(items).toEqual(["Cancel", "spacer", "Confirm"]);
+    });
+
+    await step("Cancel closes the dialog", async () => {
+      await userEvent.click(body.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(body.queryByRole("dialog")).toBeNull());
+    });
+  },
 };
 
 export const ExplicitInitialFocus: Story = {
@@ -172,7 +201,7 @@ export const WithToolbarAndFooter: Story = {
     template: `
       <div class="r-v2 r-v2-dark" style="padding: 48px; background: #07070f; min-height: 300px;">
         <RBtn @click="open = true">Open full dialog</RBtn>
-        <RDialog v-bind="args" v-model="open">
+        <RDialog v-bind="args" v-model="open" cancelable>
           <template #header><span>Edit ROM</span></template>
           <template #toolbar>
             <small style="color: rgba(255,255,255,0.55)">Super Mario World · Super Nintendo</small>
@@ -181,8 +210,6 @@ export const WithToolbarAndFooter: Story = {
             <p>Body content with form fields would go here.</p>
           </template>
           <template #footer>
-            <RBtn variant="text" @click="open = false">Cancel</RBtn>
-            <div style="flex:1" />
             <RBtn color="primary" @click="open = false">Save</RBtn>
           </template>
         </RDialog>

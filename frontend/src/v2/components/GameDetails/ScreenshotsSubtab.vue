@@ -2,9 +2,9 @@
 // ScreenshotsSubtab — the Media tab's Screenshots panel. Three sections:
 //
 //   * ROM        — shared library screenshots stored in the ROM's
-//                  `screenshots/` folder (RomFile, category SCREENSHOT). Only
-//                  folder-based multi-file ROMs can host them. Public to every
-//                  user who can see the ROM. Upload → `romApi.uploadScreenshots`.
+//                  `screenshots/` folder (RomFile, category SCREENSHOT). A
+//                  single-file ROM is promoted to a folder on upload. Public to
+//                  every user who can see the ROM. Upload → `useRomFileUpload`.
 //   * Mine       — per-user screenshots stored under the user's asset folder.
 //                  Private by default, with a per-item public/private toggle.
 //                  Any ROM. Upload → `screenshotApi.uploadGalleryScreenshots`.
@@ -13,20 +13,24 @@
 // Both uploadable sections use RDropzone (CTA when empty, overlay over the
 // grid when filled).
 import { RBtn, RDropzone } from "@v2/lib";
-import axios from "axios";
 import { storeToRefs } from "pinia";
 import { computed, defineAsyncComponent, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import romApi from "@/services/api/rom";
 import screenshotApi from "@/services/api/screenshot";
 import storeAuth from "@/stores/auth";
-import storeRoms, { type DetailedRom } from "@/stores/roms";
+import type { DetailedRom } from "@/stores/roms";
 import storeUpload from "@/stores/upload";
 import type { ScreenshotItem } from "@/v2/components/GameDetails/ScreenshotsTab.vue";
 import { useCan } from "@/v2/composables/useCan";
 import { useConfirm } from "@/v2/composables/useConfirm";
+import {
+  ROM_UPLOAD_FOLDERS,
+  useRomFileUpload,
+} from "@/v2/composables/useRomFileUpload";
 import { useRomSync } from "@/v2/composables/useRomSync";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
+import { errorMessage } from "@/v2/utils/errorMessage";
 
 const ScreenshotsTab = defineAsyncComponent(
   () => import("@/v2/components/GameDetails/ScreenshotsTab.vue"),
@@ -44,22 +48,13 @@ const IMAGE_EXTENSIONS = new Set([
   "avif",
 ]);
 
-function errorMessage(err: unknown): string {
-  if (axios.isAxiosError(err)) {
-    const detail = err.response?.data?.detail;
-    if (typeof detail === "string" && detail) return detail;
-    return err.message;
-  }
-  return err instanceof Error ? err.message : String(err);
-}
-
 const props = defineProps<{ rom: DetailedRom }>();
 
 const { t } = useI18n();
 const snackbar = useSnackbar();
 const confirm = useConfirm();
-const romsStore = storeRoms();
-const { syncCachedRom } = useRomSync();
+const { refetchRom } = useRomSync();
+const { uploadFiles } = useRomFileUpload();
 const uploadStore = storeUpload();
 const authStore = storeAuth();
 const { user } = storeToRefs(authStore);
@@ -67,17 +62,6 @@ const { user } = storeToRefs(authStore);
 // The shared ROM section writes to the ROM itself (roms.write); the "Mine"
 // section writes per-user assets and stays available to everyone.
 const canEditRom = useCan("rom.edit");
-
-// Uploading per-ROM screenshots to a single-file ROM promotes it to a folder
-// ROM in place (the backend converts on upload); warn before that happens.
-async function confirmFolderConversionIfNeeded(): Promise<boolean> {
-  if (!props.rom.has_simple_single_file) return true;
-  return confirm({
-    title: t("rom.convert-to-folder-title"),
-    body: t("rom.convert-to-folder-body"),
-    tone: "warning",
-  });
-}
 
 // ---------- ROM (shared) screenshots — RomFile-backed ----------
 const romScreenshots = computed<ScreenshotItem[]>(() => {
@@ -133,16 +117,10 @@ const communityScreenshots = computed<ScreenshotItem[]>(() =>
 );
 
 async function refreshRom() {
-  try {
-    const { data } = await romApi.getRom({ romId: props.rom.id });
-    romsStore.currentRom = data;
-    syncCachedRom(data);
-  } catch (error) {
-    console.error(error);
-  }
+  await refetchRom(props.rom.id);
 }
 
-// ---------- Upload result toast (shared by both upload paths) ----------
+// ---------- Upload result toast for the per-user gallery ----------
 function reportUpload(responses: PromiseSettledResult<unknown>[]) {
   const successful = responses.filter((r) => r.status === "fulfilled").length;
   const failed = responses.length - successful;
@@ -171,14 +149,7 @@ const romDz = ref<InstanceType<typeof RDropzone> | null>(null);
 const myDz = ref<InstanceType<typeof RDropzone> | null>(null);
 
 async function handleRomFiles(files: File[]) {
-  if (files.length === 0) return;
-  if (!(await confirmFolderConversionIfNeeded())) return;
-  const responses = await romApi.uploadScreenshots({
-    romId: props.rom.id,
-    filesToUpload: files,
-  });
-  reportUpload(responses);
-  if (responses.some((r) => r.status === "fulfilled")) await refreshRom();
+  await uploadFiles(props.rom, ROM_UPLOAD_FOLDERS.screenshots, files);
 }
 
 async function handleMyFiles(files: File[]) {
@@ -387,7 +358,6 @@ async function toggleVisibility(id: number, isPublic: boolean) {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--r-color-border-strong) transparent;
-  padding-right: 4px;
 }
 
 .r-v2-shots__section {

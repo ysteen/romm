@@ -4,10 +4,9 @@
 // same payload for the same choices.
 //
 // Hash matchers are proxies, not catalogs: they match files by hash and
-// feed IDs into the primary catalogs. Hasheous rides along in `apis`
-// (backend gate: `MetadataSource.HASHEOUS in apis`); Playmatch has no enum
-// entry and uses the separate `playmatch_enabled` flag (backend gate:
-// `playmatch_enabled and IGDB in apis`), hence its IGDB requirement.
+// feed IDs into the primary catalogs. Both ride along in `apis` (backend
+// gate: `MetadataSource.HASHEOUS in apis`, and `MetadataSource.PLAYMATCH in
+// apis` plus a supported catalog, hence Playmatch's IGDB requirement).
 //
 // A group's RSelect treats an empty model as "All", so an All-mode group
 // contributes nothing to `metadataSources`, while the backend reads an
@@ -19,6 +18,12 @@ import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
 import { useI18n } from "vue-i18n";
 import storeConfig from "@/stores/config";
 import storeHeartbeat, { type MetadataOption } from "@/stores/heartbeat";
+import {
+  metadataProviderGroup,
+  providerKeysInGroup,
+  type MetadataProviderGroup,
+  type MetadataProviderKeyIn,
+} from "@/v2/utils/metadataProviderGroups";
 
 const LOCAL_STORAGE_METADATA_SOURCES_KEY = "scan.metadataSources";
 const LOCAL_STORAGE_LAUNCHBOX_REMOTE_ENABLED_KEY =
@@ -26,22 +31,10 @@ const LOCAL_STORAGE_LAUNCHBOX_REMOTE_ENABLED_KEY =
 const LOCAL_STORAGE_HASHEOUS_ENABLED_KEY = "scan.hasheousEnabled";
 const LOCAL_STORAGE_PLAYMATCH_ENABLED_KEY = "scan.playmatchEnabled";
 
-const HASH_MATCHER_KEYS = ["hasheous", "playmatch"] as const;
+export type HashMatcherKey = MetadataProviderKeyIn<"proxy">;
 
-// Mirrors the split used by the setup wizard's metadata step: general
-// catalogs ship a full game record, specific sources add one dimension.
-const GENERAL_PROVIDER_KEYS = new Set([
-  "igdb",
-  "ss",
-  "moby",
-  "launchbox",
-  "flashpoint",
-  "gamelist",
-  "libretro",
-]);
-const SPECIFIC_PROVIDER_KEYS = new Set(["ra", "sgdb", "hltb"]);
-
-export type HashMatcherKey = (typeof HASH_MATCHER_KEYS)[number];
+// Render order for the hash-matcher switches.
+const HASH_MATCHER_KEYS = providerKeysInGroup("proxy");
 
 export interface HashMatcher {
   value: HashMatcherKey;
@@ -56,7 +49,6 @@ export interface HashMatcher {
 export interface ScanPayload {
   apis: string[];
   launchbox_remote_enabled: boolean;
-  playmatch_enabled: boolean;
 }
 
 export interface UseScanProviders {
@@ -91,10 +83,7 @@ export function useScanProviders(): UseScanProviders {
   const metadataOptions = computed(() =>
     heartbeat
       .getMetadataOptionsByPriority()
-      .filter(
-        (option) =>
-          !(HASH_MATCHER_KEYS as readonly string[]).includes(option.value),
-      )
+      .filter((option) => metadataProviderGroup(option.value) !== "proxy")
       .map((option) => {
         const requiresHashes = option.value === "ra";
         let disabled = option.disabled;
@@ -106,10 +95,14 @@ export function useScanProviders(): UseScanProviders {
   );
 
   const generalProviders = computed<MetadataOption[]>(() =>
-    metadataOptions.value.filter((o) => GENERAL_PROVIDER_KEYS.has(o.value)),
+    metadataOptions.value.filter(
+      (o) => metadataProviderGroup(o.value) === "catalog",
+    ),
   );
   const specificProviders = computed<MetadataOption[]>(() =>
-    metadataOptions.value.filter((o) => SPECIFIC_PROVIDER_KEYS.has(o.value)),
+    metadataOptions.value.filter(
+      (o) => metadataProviderGroup(o.value) === "specialised",
+    ),
   );
   const enabledGeneralProviders = computed(() =>
     generalProviders.value.filter((o) => !o.disabled),
@@ -126,14 +119,10 @@ export function useScanProviders(): UseScanProviders {
     LOCAL_STORAGE_LAUNCHBOX_REMOTE_ENABLED_KEY,
     true,
   );
-  const hasheousEnabled = useLocalStorage(
-    LOCAL_STORAGE_HASHEOUS_ENABLED_KEY,
-    true,
-  );
-  const playmatchEnabled = useLocalStorage(
-    LOCAL_STORAGE_PLAYMATCH_ENABLED_KEY,
-    true,
-  );
+  const hashMatcherEnabled: Record<HashMatcherKey, RemovableRef<boolean>> = {
+    hasheous: useLocalStorage(LOCAL_STORAGE_HASHEOUS_ENABLED_KEY, true),
+    playmatch: useLocalStorage(LOCAL_STORAGE_PLAYMATCH_ENABLED_KEY, true),
+  };
 
   // A group with no pick stays empty, which the selects read as All.
   const metadataSources = ref<MetadataOption[]>([]);
@@ -154,36 +143,40 @@ export function useScanProviders(): UseScanProviders {
     { immediate: true },
   );
 
-  function hasGroupSelection(keys: Set<string>): boolean {
-    return metadataSources.value.some((s) => keys.has(s.value));
+  function hasGroupSelection(group: MetadataProviderGroup): boolean {
+    return metadataSources.value.some(
+      (s) => metadataProviderGroup(s.value) === group,
+    );
   }
 
   // All-mode mirrors of each select, initialised the way the primitive does
   // (no own selection ⇒ All) and kept in sync via `@update:all-selected`.
-  const generalAllSelected = ref(!hasGroupSelection(GENERAL_PROVIDER_KEYS));
-  const specificAllSelected = ref(!hasGroupSelection(SPECIFIC_PROVIDER_KEYS));
+  const generalAllSelected = ref(!hasGroupSelection("catalog"));
+  const specificAllSelected = ref(!hasGroupSelection("specialised"));
 
   // An explicit pick always wins over the All flag: the two are mutually
   // exclusive in the select, and reading the model keeps us right even
   // before a select has mounted to emit its initial state.
   function resolveGroup(
-    keys: Set<string>,
+    group: MetadataProviderGroup,
     allSelected: boolean,
     enabled: MetadataOption[],
   ): MetadataOption[] {
-    const picked = metadataSources.value.filter((s) => keys.has(s.value));
+    const picked = metadataSources.value.filter(
+      (s) => metadataProviderGroup(s.value) === group,
+    );
     if (picked.length > 0) return picked;
     return allSelected ? enabled : [];
   }
 
   const effectiveMetadataSources = computed<MetadataOption[]>(() => [
     ...resolveGroup(
-      GENERAL_PROVIDER_KEYS,
+      "catalog",
       generalAllSelected.value,
       enabledGeneralProviders.value,
     ),
     ...resolveGroup(
-      SPECIFIC_PROVIDER_KEYS,
+      "specialised",
       specificAllSelected.value,
       enabledSpecificProviders.value,
     ),
@@ -203,9 +196,8 @@ export function useScanProviders(): UseScanProviders {
     const hasheousAdmin = Boolean(sources?.HASHEOUS_API_ENABLED);
     const playmatchAdmin = Boolean(sources?.PLAYMATCH_API_ENABLED);
 
-    return [
-      {
-        value: "hasheous",
+    const matchers: Record<HashMatcherKey, Omit<HashMatcher, "value">> = {
+      hasheous: {
         name: "Hasheous",
         logo: "/assets/scrappers/hasheous.png",
         blockedReason: !hasheousAdmin
@@ -215,8 +207,7 @@ export function useScanProviders(): UseScanProviders {
             : null,
         switchEnabled: hasheousAdmin && !noHashes,
       },
-      {
-        value: "playmatch",
+      playmatch: {
         name: "Playmatch",
         logo: "/assets/scrappers/playmatch.png",
         blockedReason: !playmatchAdmin
@@ -228,19 +219,17 @@ export function useScanProviders(): UseScanProviders {
               : null,
         switchEnabled: playmatchAdmin && !noHashes && igdbSelected,
       },
-    ];
+    };
+
+    return HASH_MATCHER_KEYS.map((value) => ({ value, ...matchers[value] }));
   });
 
   function setHashMatcher(value: HashMatcherKey, next: boolean) {
-    if (value === "hasheous") hasheousEnabled.value = next;
-    else playmatchEnabled.value = next;
+    hashMatcherEnabled[value].value = next;
   }
 
   function isHashMatcherOn(matcher: HashMatcher): boolean {
-    if (!matcher.switchEnabled) return false;
-    return matcher.value === "hasheous"
-      ? hasheousEnabled.value
-      : playmatchEnabled.value;
+    return matcher.switchEnabled && hashMatcherEnabled[matcher.value].value;
   }
 
   function isOn(value: HashMatcherKey): boolean {
@@ -251,10 +240,10 @@ export function useScanProviders(): UseScanProviders {
   function buildScanPayload(): ScanPayload {
     const apis = effectiveMetadataSources.value.map((s) => s.value);
     if (isOn("hasheous")) apis.push("hasheous");
+    if (isOn("playmatch")) apis.push("playmatch");
     return {
       apis,
       launchbox_remote_enabled: launchboxRemoteEnabled.value,
-      playmatch_enabled: isOn("playmatch"),
     };
   }
 

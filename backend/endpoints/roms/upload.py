@@ -1,19 +1,41 @@
 import json
 import shutil
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 
+from anyio import Path as AsyncPath
 from anyio import open_file
 from fastapi import Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
+from starlette.requests import ClientDisconnect
 from starlette.responses import Response
+from streaming_form_data import StreamingFormDataParser
+from streaming_form_data.targets import FileTarget, NullTarget
 
 from config import ROM_UPLOAD_TMP_BASE, ROM_UPLOAD_TTL
 from decorators.auth import protected_route
+from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
+from exceptions.fs_exceptions import RomAlreadyExistsException
 from handler.auth.constants import Scope
-from handler.database import db_platform_handler
+from handler.auth.dependencies import assert_rom_visible, get_permissions
+from handler.database import db_platform_handler, db_rom_handler
 from handler.filesystem import fs_rom_handler
 from handler.redis_handler import async_cache
+from handler.rom_upload import (
+    UploadConflictException,
+    UploadDestination,
+    UploadNotRegisteredException,
+    UploadRejectedException,
+    commit_upload,
+    parse_upload_folder,
+    prepare_upload_destination,
+    resolve_upload_destination,
+    sanitize_upload_filename,
+    staging_path,
+)
 from logger.logger import log
+from models.rom import Rom, RomFile
 from utils.router import APIRouter
 
 router = APIRouter(
@@ -86,6 +108,149 @@ async def _cleanup_upload_state(upload_id: str) -> None:
     await async_cache.delete(_chunks_key(upload_id))
 
 
+def _sanitized_filename(filename: str) -> str:
+    try:
+        return sanitize_upload_filename(filename)
+    except UploadRejectedException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+
+def _get_upload_rom(request: Request, rom_id: int, platform_id: int) -> Rom:
+    rom = db_rom_handler.get_rom_simple(rom_id)
+    if not rom:
+        raise RomNotFoundInDatabaseException(rom_id)
+    assert_rom_visible(request, rom)
+    if rom.platform_id != platform_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload platform does not match the game's platform",
+        )
+    return rom
+
+
+async def _prepare_rom_destination(
+    rom: Rom, folder: str, filename: str, *, overwrite: bool
+) -> UploadDestination:
+    try:
+        return await prepare_upload_destination(
+            rom, folder, filename, overwrite=overwrite
+        )
+    except UploadRejectedException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except (UploadConflictException, RomAlreadyExistsException) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+
+
+async def _commit(
+    destination: UploadDestination, staged: Path, *, overwrite: bool
+) -> RomFile | None:
+    try:
+        return await commit_upload(destination, staged, overwrite=overwrite)
+    except UploadConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except UploadNotRegisteredException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+
+async def receive_rom_file(
+    request: Request, rom: Rom, folder: str, filename: str
+) -> RomFile | None:
+    """Stream a single-file multipart body into a subfolder of the ROM and
+    register it the way a chunked upload is, replacing a file of the same name.
+
+    Returns:
+        The registered file row, or None when the scanner did not list it.
+    """
+    safe_filename = _sanitized_filename(filename)
+    destination = await _prepare_rom_destination(
+        rom, folder, safe_filename, overwrite=True
+    )
+    staged = staging_path(destination.location)
+    log.info(f"Uploading {safe_filename} to {destination.location}")
+
+    parser = StreamingFormDataParser(headers=request.headers)
+    parser.register("x-upload-platform", NullTarget())
+    parser.register(safe_filename, FileTarget(str(staged)))
+    try:
+        async for chunk in request.stream():
+            parser.data_received(chunk)
+    except ClientDisconnect:
+        log.error("Client disconnected during upload")
+        await AsyncPath(staged).unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        log.error(f"Error uploading {safe_filename}", exc_info=exc)
+        await AsyncPath(staged).unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="There was an error uploading the file",
+        ) from exc
+
+    # The parser only writes the part whose field name matches the header, so
+    # a body naming the file differently leaves nothing behind.
+    if not await AsyncPath(staged).exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"The upload body has no file part named {safe_filename}",
+        )
+
+    return await _commit(destination, staged, overwrite=True)
+
+
+async def _resolve_destination(request: Request, session: dict) -> UploadDestination:
+    """Where a completed upload lands, with its directory created."""
+    filename = session["filename"]
+    rom_id = session.get("rom_id")
+    if rom_id is None:
+        try:
+            roms_path = fs_rom_handler.get_roms_upload_path(session["platform_fs_slug"])
+            location = fs_rom_handler.validate_path(f"{roms_path}/{filename}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        await fs_rom_handler.make_directory(roms_path)
+        return UploadDestination(rom=None, rel_dir=roms_path, location=location)
+
+    rom = _get_upload_rom(request, rom_id, session["platform_id"])
+    return await _prepare_rom_destination(
+        rom, session["folder"], filename, overwrite=session["overwrite"]
+    )
+
+
+class UploadTargetPayload(BaseModel):
+    """Optional body of `/start`: upload into a ROM's folder instead of the
+    platform folder, and name the file where the header cannot."""
+
+    rom_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="Upload into this ROM's folder instead of the platform folder.",
+    )
+    folder: str = Field(
+        default="",
+        description="Subfolder inside the ROM's folder, relative and forward-slashed. Empty for the root.",
+    )
+    filename: str | None = Field(
+        default=None,
+        description="The file name. Takes precedence over the header, which cannot carry characters outside Latin-1.",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Replace a file of the same name in the ROM's folder instead of refusing the upload.",
+    )
+
+
 @protected_route(
     router.post,
     "/start",
@@ -104,30 +269,67 @@ async def start_chunked_upload(
     ],
     total_size: Annotated[
         int,
-        Header(alias="x-upload-total-size", ge=1),
+        Header(alias="x-upload-total-size", ge=0),
     ],
     total_chunks: Annotated[
         int,
-        Header(alias="x-upload-total-chunks", ge=1),
+        Header(alias="x-upload-total-chunks", ge=0),
     ],
+    target: UploadTargetPayload | None = None,
 ) -> dict:
     """Initiate a chunked ROM upload session."""
 
+    # Only an empty file takes no chunks, and it goes straight to /complete.
+    if (total_size == 0) != (total_chunks == 0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chunk count does not match the file size",
+        )
+
     db_platform = db_platform_handler.get_platform(platform_id)
-    if not db_platform:
+    # A hidden platform answers like a missing one, so a restricted caller can
+    # neither write into its folder nor tell the two apart.
+    if not db_platform or not get_permissions(request).can_see_platform(platform_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Platform not found",
         )
 
     platform_fs_slug = db_platform.fs_slug
-    roms_path = fs_rom_handler.get_roms_fs_structure(platform_fs_slug)
+    if target and target.filename is not None:
+        filename = target.filename
+    safe_filename = _sanitized_filename(filename)
+    rom_id = target.rom_id if target else None
+    overwrite = bool(target and target.overwrite and rom_id is not None)
+    rel_folder = ""
 
-    if await fs_rom_handler.file_exists(f"{roms_path}/{filename}"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File {filename} already exists",
-        )
+    if rom_id is None:
+        try:
+            roms_path = fs_rom_handler.get_roms_upload_path(platform_fs_slug)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        if await fs_rom_handler.file_exists(f"{roms_path}/{safe_filename}"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File {filename} already exists",
+            )
+    else:
+        rom = _get_upload_rom(request, rom_id, platform_id)
+        try:
+            rel_folder = parse_upload_folder(target.folder if target else "")
+            resolve_upload_destination(
+                rom, rel_folder, safe_filename, overwrite=overwrite
+            )
+        except UploadRejectedException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        except UploadConflictException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
 
     upload_id = str(uuid4())
     tmp_dir = ROM_UPLOAD_TMP_BASE / upload_id
@@ -137,15 +339,18 @@ async def start_chunked_upload(
         "upload_id": upload_id,
         "platform_id": platform_id,
         "platform_fs_slug": platform_fs_slug,
-        "filename": filename,
+        "filename": safe_filename,
         "total_chunks": total_chunks,
         "total_size": total_size,
         "user_id": request.user.id,
+        "rom_id": rom_id,
+        "folder": rel_folder,
+        "overwrite": overwrite,
     }
     await _save_session(upload_id, session)
 
     log.info(
-        f"Started chunked upload session {upload_id} for {filename} "
+        f"Started chunked upload session {upload_id} for {safe_filename} "
         f"({total_chunks} chunks, {total_size} bytes)"
     )
 
@@ -239,6 +444,42 @@ async def upload_chunk(
     return {"received": received_count, "total": session["total_chunks"]}
 
 
+async def _assemble_chunks(upload_id: str, session: dict, staged: Path) -> None:
+    """Concatenate the received chunks into the staged file, dropping it on
+    any failure."""
+    total_chunks = session["total_chunks"]
+    log.info(f"Assembling {total_chunks} chunks into {staged}")
+    assembled_bytes = 0
+    try:
+        async with await open_file(staged, "wb") as dest:
+            for i in range(total_chunks):
+                chunk_path = ROM_UPLOAD_TMP_BASE / upload_id / f"{i:05d}"
+                async with await open_file(chunk_path, "rb") as src:
+                    while True:
+                        buf = await src.read(ROM_ASSEMBLY_CHUNK_SIZE)
+                        if not buf:
+                            break
+                        assembled_bytes += len(buf)
+                        await dest.write(buf)
+        if assembled_bytes != session["total_size"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Assembled file size mismatch: "
+                    f"expected {session['total_size']}, got {assembled_bytes}"
+                ),
+            )
+    except Exception as exc:
+        await AsyncPath(staged).unlink(missing_ok=True)
+        if isinstance(exc, HTTPException):
+            raise
+        log.error(f"Error assembling upload {upload_id}", exc_info=exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error assembling file chunks",
+        ) from exc
+
+
 @protected_route(
     router.post,
     "/{upload_id}/complete",
@@ -278,66 +519,13 @@ async def complete_chunked_upload(
             detail="Upload is already being assembled or has already completed",
         )
 
-    filename = session["filename"]
-    platform_fs_slug = session["platform_fs_slug"]
-    roms_path = fs_rom_handler.get_roms_fs_structure(platform_fs_slug)
-
     try:
-        file_location = fs_rom_handler.validate_path(f"{roms_path}/{filename}")
-    except ValueError as exc:
+        destination = await _resolve_destination(request, session)
+        staged = staging_path(destination.location)
+        await _assemble_chunks(upload_id, session, staged)
+        await _commit(destination, staged, overwrite=session["overwrite"])
+    finally:
         await _cleanup_upload_state(upload_id)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-
-    await fs_rom_handler.make_directory(roms_path)
-
-    log.info(f"Assembling {total_chunks} chunks into {file_location}")
-
-    # Assemble chunks in order into final file with a temporary filename
-    # then atomically rename to final location
-    temp_location = file_location.with_name(
-        f".{file_location.name}.{uuid4().hex}.assembling"
-    )
-    assembled_bytes = 0
-
-    try:
-        async with await open_file(temp_location, "wb") as dest:
-            for i in range(total_chunks):
-                chunk_path = ROM_UPLOAD_TMP_BASE / upload_id / f"{i:05d}"
-                async with await open_file(chunk_path, "rb") as src:
-                    while True:
-                        buf = await src.read(ROM_ASSEMBLY_CHUNK_SIZE)
-                        if not buf:
-                            break
-                        assembled_bytes += len(buf)
-                        await dest.write(buf)
-        if assembled_bytes != session["total_size"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Assembled file size mismatch: "
-                    f"expected {session['total_size']}, got {assembled_bytes}"
-                ),
-            )
-
-        temp_location.replace(file_location)
-    except Exception as exc:
-        if temp_location.exists():
-            temp_location.unlink()
-        await _cleanup_upload_state(upload_id)
-        if isinstance(exc, HTTPException):
-            raise
-        log.error(f"Error assembling upload {upload_id}", exc_info=exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error assembling file chunks",
-        ) from exc
-
-    await _cleanup_upload_state(upload_id)
-
-    log.info(f"Chunked upload complete: {file_location}")
 
     return Response(status_code=status.HTTP_201_CREATED)
 

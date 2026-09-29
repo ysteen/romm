@@ -3,6 +3,7 @@ from typing import TypedDict
 
 class SystemDict(TypedDict):
     VERSION: str
+    GIT_BRANCH: str | None
     SHOW_SETUP_WIZARD: bool
 
 
@@ -20,16 +21,23 @@ class MetadataSourcesDict(TypedDict):
     TGDB_API_ENABLED: bool
     FLASHPOINT_API_ENABLED: bool
     HLTB_API_ENABLED: bool
+    DEMOZOO_API_ENABLED: bool
+    POUET_API_ENABLED: bool
+    CSDB_API_ENABLED: bool
+    STEAM_API_ENABLED: bool
     LIBRETRO_API_ENABLED: bool
 
 
 class FilesystemDict(TypedDict):
     FS_PLATFORMS: list[str]
+    TITLE_ID_EXTRACTION_ENABLED: bool
 
 
 class EmulationDict(TypedDict):
     DISABLE_EMULATOR_JS: bool
     DISABLE_RUFFLE_RS: bool
+    DISABLE_JSDOS: bool
+    DISABLE_PICO8: bool
 
 
 class FrontendDict(TypedDict):

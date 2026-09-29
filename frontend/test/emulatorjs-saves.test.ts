@@ -4,7 +4,8 @@ import saveApi from "@/services/api/save";
 import type { DetailedRom } from "@/stores/roms";
 import { saveSave } from "@/views/Player/EmulatorJS/utils";
 
-vi.mock("@/services/api/save", () => ({
+vi.mock("@/services/api/save", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/services/api/save")>()),
   default: { uploadSaves: vi.fn(), updateSave: vi.fn() },
 }));
 
@@ -63,7 +64,7 @@ describe("EmulatorJS save filenames", () => {
       const saved = await saveSave({ rom, save: null, saveFile: zipBytes });
       const { saveFile } = vi.mocked(saveApi.uploadSaves).mock.calls[0][0]
         .savesToUpload[0];
-      expect(saveFile.name).toMatch(/^Example \[.*\]\.zip$/);
+      expect(saveFile.name).toBe("Example.zip");
       expect(saveFile.type).toBe("application/zip");
       expect(new Uint8Array(await saveFile.arrayBuffer())).toEqual(
         new Uint8Array(zipBytes),
