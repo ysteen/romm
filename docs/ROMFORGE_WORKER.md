@@ -15,6 +15,15 @@ disk I/O or guarantee latency for other services on a shared disk.
 The native patch process also has an output file size limit of twice
 `ROMFORGE_MAX_FILE_SIZE` (1 GiB by default), including sparse files.
 
+## Job status
+
+Administrators can open **System > RomForge** in the v2 UI (`/romforge`) to see
+worker availability, running and queued jobs, pending automatic conversions,
+and the latest 50 results retained for up to seven days. The page refreshes every
+five seconds while visible. It shows the current processing stage, result links
+and errors, including jobs submitted by other users. This overview requires
+the `tasks.run` scope and does not start, retry or cancel jobs.
+
 ## Enable
 
 The deployment script keeps existing credentials, paths and RomForge preferences:

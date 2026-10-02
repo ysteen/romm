@@ -134,6 +134,12 @@ const groups = computed<Group[]>(() => {
           visible: true,
         },
         {
+          icon: "mdi-hammer-wrench",
+          label: t("romforge.title"),
+          to: { name: ROUTES.ROMFORGE },
+          visible: isAdmin.value && scopes.value.includes("tasks.run"),
+        },
+        {
           icon: "mdi-server",
           label: t("common.server-stats"),
           to: { name: ROUTES.SERVER_STATS },

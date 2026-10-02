@@ -105,7 +105,8 @@ async function onLogout() {
     snackbar.success(t("common.logout-success"), { icon: "mdi-check-bold" });
     await router.push({ name: ROUTES.LOGIN });
     const pinia = getActivePinia() as
-      { _s?: Map<string, { reset?: () => void } & StateTree> } | undefined;
+      | { _s?: Map<string, { reset?: () => void } & StateTree> }
+      | undefined;
     pinia?._s?.forEach((store) => {
       store.reset?.();
     });
@@ -249,6 +250,13 @@ async function onLogout() {
         :to="{ name: ROUTES.ACTIVITY }"
         icon="mdi-access-point"
         :label="t('activity.active-sessions')"
+        @click="open = false"
+      />
+      <RMenuItem
+        v-if="isAdmin && scopes.includes('tasks.run')"
+        :to="{ name: ROUTES.ROMFORGE }"
+        icon="mdi-hammer-wrench"
+        :label="t('romforge.title')"
         @click="open = false"
       />
       <RMenuItem

@@ -4,9 +4,8 @@ from typing import Annotated, Literal
 from uuid import uuid4
 
 from anyio import to_thread
-from fastapi import File, Form, HTTPException
+from fastapi import File, Form, HTTPException, Request, UploadFile
 from fastapi import Path as PathVar
-from fastapi import Request, UploadFile
 from rq.exceptions import NoSuchJobError
 from starlette.responses import FileResponse
 
@@ -25,6 +24,7 @@ from endpoints.responses.patch_job import (
     PatchDownloadLink,
     PatchJobSchema,
     PatchWorkerCapabilities,
+    RomForgeStatus,
 )
 from handler import patch_jobs
 from handler.auth.constants import Scope
@@ -53,6 +53,15 @@ def patcher_capabilities(request: Request) -> PatchWorkerCapabilities:
         cia_ready=(Path(ROMM_BASE_PATH) / "config/romforge/keys/certs.bin").is_file(),
         normalize_on_scan=ROMFORGE_NORMALIZE_3DS_ON_SCAN,
     )
+
+
+@protected_route(router.get, "/patcher/status", [Scope.TASKS_RUN])
+def romforge_status(request: Request) -> RomForgeStatus:
+    from handler.romforge_status import get_status
+
+    if not get_permissions(request).is_admin:
+        raise HTTPException(403, "Administrator access required")
+    return get_status(patcher_capabilities(request))
 
 
 def _input(request: Request, file_id: int):

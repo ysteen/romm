@@ -410,6 +410,15 @@ const routes = [
             },
           },
           {
+            path: "romforge",
+            name: ROUTES.ROMFORGE,
+            meta: { title: "romforge.title", bare: true },
+            components: {
+              default: () => import("@/views/Home.vue"),
+              v2: v2For(ROUTES.ROMFORGE),
+            },
+          },
+          {
             path: "server-stats",
             name: ROUTES.SERVER_STATS,
             meta: {
@@ -570,6 +579,7 @@ const routePermissions: RoutePermissions[] = [
   { path: ROUTES.LIBRARY_MANAGEMENT, requiredScopes: ["platforms.write"] },
   { path: ROUTES.SCAN_SETTINGS, requiredScopes: ["platforms.write"] },
   { path: ROUTES.ADMINISTRATION, requiredScopes: ["users.write"] },
+  { path: ROUTES.ROMFORGE, requiredScopes: ["tasks.run"] },
   { path: ROUTES.LOGS, requiredScopes: ["logs.read"] },
 ];
 

@@ -29,6 +29,7 @@ export const ROUTES = {
   CLIENT_API_TOKENS: "client-api-tokens",
   ADMINISTRATION: "administration",
   SERVER_STATS: "server-stats",
+  ROMFORGE: "romforge",
   LOGS: "logs",
   PAIR: "pair",
   PAIR_DEVICE: "pair-device",

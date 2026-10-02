@@ -188,6 +188,8 @@ export type { RomFileSchema } from './models/RomFileSchema';
 export type { RomFileUserSchema } from './models/RomFileUserSchema';
 export type { RomFiltersDict } from './models/RomFiltersDict';
 export type { RomFlashpointMetadata } from './models/RomFlashpointMetadata';
+export type { RomForgeJobSchema } from './models/RomForgeJobSchema';
+export type { RomForgeStatus } from './models/RomForgeStatus';
 export type { RomGamelistMetadata } from './models/RomGamelistMetadata';
 export type { RomHasheousMetadata } from './models/RomHasheousMetadata';
 export type { RomHLTBMetadata } from './models/RomHLTBMetadata';

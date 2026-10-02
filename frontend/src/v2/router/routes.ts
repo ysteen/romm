@@ -64,6 +64,7 @@ export const v2RouteComponents: Partial<Record<RouteName, V2Route>> = {
   [ROUTES.ADMINISTRATION]: () =>
     import("@/v2/views/Settings/Administration.vue"),
   [ROUTES.SERVER_STATS]: () => import("@/v2/views/Settings/ServerStats.vue"),
+  [ROUTES.ROMFORGE]: () => import("@/v2/views/Settings/RomForge.vue"),
   [ROUTES.LOGS]: () => import("@/v2/views/Settings/Logs.vue"),
   // V2-only index pages (no v1 equivalent — the v1 UI uses its drawer)
   [ROUTES.PLATFORMS_INDEX]: () => import("@/v2/views/PlatformsIndex.vue"),
