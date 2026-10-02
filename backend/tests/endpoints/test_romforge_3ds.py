@@ -17,7 +17,7 @@ from handler import romforge_install as install
 from handler import romforge_scan as scan
 from handler.database import db_rom_handler
 from handler.database.base_handler import sync_session
-from models.rom import RomFile, RomFileCategory
+from models.rom import Rom, RomFile, RomFileCategory
 
 inputs = patch_inputs
 
@@ -29,7 +29,7 @@ native = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def zip_writer_compatibility(monkeypatch):
     # The app's streaming ZIP hook accepts one argument; stdlib writers pass two.
-    compressor = zipfile._get_compressor
+    compressor = zipfile._get_compressor  # type: ignore[attr-defined]
     monkeypatch.setattr(
         zipfile, "_get_compressor", lambda kind, level=None: compressor(kind)
     )
@@ -53,7 +53,7 @@ def make_cci(path, encrypted=False):
     if encrypted:
         ctr = (0x0004000000000100).to_bytes(8, "big") + b"\x02" + bytes(7)
         encryptor = Cipher(algorithms.AES(bytes(16)), modes.CTR(ctr)).encryptor()
-        exefs = encryptor.update(exefs) + encryptor.finalize()
+        exefs = bytearray(encryptor.update(exefs) + encryptor.finalize())
     header = bytearray(0x4000)
     header[0x100:0x104] = b"NCSD"
     struct.pack_into("<I", header, 0x104, 35)
@@ -73,6 +73,249 @@ def set_source(inputs, rom, extension=".3ds", encrypted=False):
     return source
 
 
+@pytest.fixture
+def normalization(inputs, monkeypatch):
+    monkeypatch.setattr(scan, "ROMFORGE_NORMALIZE_3DS_ON_SCAN", True)
+    monkeypatch.setattr(scan, "ROMFORGE_WORK_PATH", inputs["work"])
+    monkeypatch.setattr(scan, "redis_client", inputs["redis"])
+    monkeypatch.setattr(scan, "get_running_scan_job", lambda: None)
+    monkeypatch.setattr(scan, "keys_ready", lambda: True)
+    calls = []
+
+    def convert(source, patch, output, *args):
+        calls.append(source)
+        make_cci(output)
+
+    monkeypatch.setattr(jobs, "_run_engine", convert)
+    return calls
+
+
+@pytest.fixture
+def folder_variants(inputs, rom: Rom):
+    source = set_source(inputs, rom, encrypted=True)
+    folder = source.parent / "Game v1"
+    folder.mkdir()
+    source = source.rename(folder / source.name)
+    patch = inputs["patch"].rename(folder / inputs["patch"].name)
+    db_rom_handler.update_rom(rom.id, {"fs_name": folder.name})
+    relative = f"{rom.fs_path}/{folder.name}"
+    for file in inputs["files"]:
+        db_rom_handler.update_rom_file(file.id, {"file_path": relative})
+    translated = folder / "source Korean.3ds"
+    make_cci(translated, encrypted=True)
+    translation = db_rom_handler.add_rom_file(
+        RomFile(
+            rom_id=rom.id,
+            file_name=translated.name,
+            file_path=relative,
+            file_size_bytes=translated.stat().st_size,
+        )
+    )
+    doc = folder / "readme.txt"
+    doc.write_text("Translation instructions")
+    db_rom_handler.add_rom_file(
+        RomFile(
+            rom_id=rom.id,
+            file_name=doc.name,
+            file_path=relative,
+            file_size_bytes=doc.stat().st_size,
+        )
+    )
+    return folder, source, translated, translation.id, patch, doc
+
+
+def test_scan_normalizes_each_folder_variant(
+    inputs, rom: Rom, platform, normalization, folder_variants
+):
+    from handler.database import db_platform_handler
+
+    folder, original, translated, translation_id, patch, doc = folder_variants
+    db_platform_handler.update_platform(platform.id, {"slug": "3ds"})
+    scan.schedule_scan([platform.id], [])
+    assert inputs["redis"].scard(scan.PENDING_KEY) == 2
+    scan.pump_pending()
+    scan.pump_pending()
+    assert inputs["queue"].count == 2
+    for file_id, source in (
+        (inputs["files"][0].id, original),
+        (translation_id, translated),
+    ):
+        result = scan.normalize(
+            {"file_id": file_id, "source_fingerprint": jobs.fingerprint(source)}
+        )
+        assert result["output_rom_id"] == rom.id
+        assert result["output_file_id"] == file_id
+        assert not source.exists()
+        assert scan.requires_valid_cci(source.with_suffix(".cci"))
+    after = db_rom_handler.get_rom(rom.id)
+    assert after is not None
+    assert after.fs_name == folder.name
+    assert after.name == rom.name
+    assert after.fs_size_bytes == sum(f.file_size_bytes for f in after.files)
+    assert after.multi_file
+    assert patch.read_bytes() == b"PATCH\x00\x00\x00\x00\x03NEWEOF"
+    assert doc.read_text() == "Translation instructions"
+    assert normalization == [original, translated]
+    scan.schedule_scan([platform.id], [])
+    scan.pump_pending()
+    scan.pump_pending()
+    assert inputs["queue"].count == 2
+
+
+def test_scan_ignores_patch_archives(
+    inputs, rom: Rom, platform, normalization, folder_variants
+):
+    from handler.database import db_platform_handler
+
+    folder, _, translated, translation_id, _, _ = folder_variants
+    archive = translated.rename(folder / "translation.zip")
+    db_rom_handler.update_rom_file(
+        translation_id,
+        {
+            "file_name": archive.name,
+            "archive_members": [
+                {
+                    "name": "code.ips",
+                    "size": 8,
+                    "crc_hash": "",
+                    "md5_hash": "",
+                    "sha1_hash": "",
+                }
+            ],
+        },
+    )
+    db_platform_handler.update_platform(platform.id, {"slug": "3ds"})
+    scan.schedule_scan([platform.id], [])
+    assert inputs["redis"].scard(scan.PENDING_KEY) == 1
+    assert not inputs["redis"].sismember(scan.PENDING_KEY, translation_id)
+
+
+def test_standalone_decrypted_cci_is_moved_into_folder(inputs, rom: Rom, normalization):
+    source = set_source(inputs, rom, extension=".cci")
+    with sync_session.begin() as session:
+        session.delete(session.get(RomFile, inputs["files"][1].id))
+    before = source.read_bytes()
+    file_id = inputs["files"][0].id
+    inputs["redis"].sadd(scan.PENDING_KEY, file_id)
+    scan.pump_pending()
+    assert inputs["queue"].count == 1
+    result = scan.normalize(
+        {"file_id": file_id, "source_fingerprint": jobs.fingerprint(source)}
+    )
+    target = source.parent / source.stem / source.name
+    assert target.read_bytes() == before
+    assert not source.exists()
+    assert not normalization
+    after = db_rom_handler.get_rom(rom.id)
+    assert after is not None
+    assert after.fs_name == source.stem
+    file = db_rom_handler.get_rom_file_by_id(file_id)
+    assert file is not None
+    assert file.file_path == after.full_path
+    assert result["output_file_id"] == file_id
+
+
+def test_folder_name_collision_preserves_standalone_source(
+    inputs, rom: Rom, normalization
+):
+    source = set_source(inputs, rom)
+    with sync_session.begin() as session:
+        session.delete(session.get(RomFile, inputs["files"][1].id))
+    folder = source.parent / source.stem
+    folder.mkdir()
+    existing = folder / "existing.cci"
+    make_cci(existing)
+    before = source.read_bytes()
+    with pytest.raises(jobs.PatchJobError, match="folder already exists"):
+        scan.normalize(
+            {
+                "file_id": inputs["files"][0].id,
+                "source_fingerprint": jobs.fingerprint(source),
+            }
+        )
+    assert source.read_bytes() == before
+    assert existing.exists()
+    assert not normalization
+
+
+@pytest.mark.parametrize("in_folder", [False, True])
+def test_db_failure_restores_normalization_paths(
+    inputs, rom: Rom, normalization, monkeypatch, in_folder
+):
+    source = set_source(inputs, rom, extension=".cci", encrypted=True)
+    with sync_session.begin() as session:
+        session.delete(session.get(RomFile, inputs["files"][1].id))
+    folder = source.parent / source.stem
+    if in_folder:
+        folder.mkdir()
+        source = source.rename(folder / source.name)
+        db_rom_handler.update_rom(rom.id, {"fs_name": folder.name})
+        db_rom_handler.update_rom_file(
+            inputs["files"][0].id, {"file_path": f"{rom.fs_path}/{folder.name}"}
+        )
+    before = source.read_bytes()
+
+    def fail(*args):
+        raise RuntimeError("DB unavailable")
+
+    monkeypatch.setattr(scan, "_replace_record", fail)
+    with pytest.raises(RuntimeError, match="DB unavailable"):
+        scan.normalize(
+            {
+                "file_id": inputs["files"][0].id,
+                "source_fingerprint": jobs.fingerprint(source),
+            }
+        )
+    assert source.read_bytes() == before
+    assert folder.exists() == in_folder
+    assert not list(source.parent.glob(".romm_tmp_*"))
+    assert not list(inputs["work"].glob("*.partial*"))
+
+
+def test_same_stem_variants_get_distinct_cci_names(
+    inputs, rom: Rom, normalization, folder_variants
+):
+    folder, original, translated, translation_id, _, _ = folder_variants
+    translated = translated.rename(folder / "source.cia")
+    db_rom_handler.update_rom_file(translation_id, {"file_name": translated.name})
+    for file_id, source in (
+        (inputs["files"][0].id, original),
+        (translation_id, translated),
+    ):
+        scan.normalize(
+            {"file_id": file_id, "source_fingerprint": jobs.fingerprint(source)}
+        )
+    assert scan.requires_valid_cci(folder / "source.cci")
+    assert scan.requires_valid_cci(folder / "source (cia).cci")
+    assert not original.exists()
+    assert not translated.exists()
+
+
+@pytest.mark.parametrize("title_type", [0x0004000E, 0x0004008C])
+def test_scan_preserves_update_and_dlc_cia(
+    inputs, rom: Rom, platform, normalization, folder_variants, title_type
+):
+    from handler.database import db_platform_handler
+
+    folder, _, translated, translation_id, _, _ = folder_variants
+    addon = translated.rename(folder / "addon.cia")
+    data = bytearray(0x2240)
+    struct.pack_into("<I", data, 0, 0x2020)
+    struct.pack_into("<I", data, 0xC, 0x200)
+    struct.pack_into(">I", data, 0x2040, 0x10004)
+    struct.pack_into(">Q", data, 0x2040 + 0x140 + 0x9C, (title_type << 32) | 0x100)
+    addon.write_bytes(data)
+    db_rom_handler.update_rom_file(translation_id, {"file_name": addon.name})
+    db_platform_handler.update_platform(platform.id, {"slug": "3ds"})
+    assert scan.is_cia_addon(addon)
+    assert not scan.requires_conversion(addon)
+    inputs["redis"].sadd(scan.PENDING_KEY, translation_id)
+    scan.pump_pending()
+    assert inputs["queue"].count == 0
+    assert addon.read_bytes() == data
+    assert not normalization
+
+
 @native
 @pytest.mark.parametrize("encrypted", [False, True])
 def test_cci_conversion_checks_decrypted_output(tmp_path, encrypted):
@@ -84,6 +327,45 @@ def test_cci_conversion_checks_decrypted_output(tmp_path, encrypted):
     assert scan.requires_valid_cci(output)
     assert b"original" in output.read_bytes()
     assert source.read_bytes() == before
+    assert output.stat().st_size == source.stat().st_size
+    assert output.read_bytes()[0x4000:0x418F] == before[0x4000:0x418F]
+
+
+@native
+def test_conversion_rejects_bad_exefs_checksum(tmp_path):
+    source = tmp_path / "source.3ds"
+    make_cci(source)
+    data = bytearray(source.read_bytes())
+    data[-512:-504] = b"corrupt!"
+    source.write_bytes(data)
+    with pytest.raises(jobs.PatchJobError, match="checksum failed"):
+        jobs._run_engine(source, None, tmp_path / "output.cci", "3ds-convert", "cci")
+
+
+@native
+def test_cia_conversion_preserves_multiple_partitions(tmp_path):
+    source = tmp_path / "source.3ds"
+    make_cci(source)
+    data = bytearray(source.read_bytes())
+    data.extend(data[0x4000:])
+    struct.pack_into("<I", data, 0x104, len(data) // 512)
+    struct.pack_into("<II", data, 0x128, 35, 3)
+    source.write_bytes(data)
+    keys = Path("/romm/config/romforge/keys")
+    keys.mkdir(parents=True, exist_ok=True)
+    (keys / "aes_keys.txt").write_text("common0=" + "00" * 16 + "\n")
+    (keys / "certs.bin").write_bytes(bytes(0xA00))
+    cia = tmp_path / "source.cia"
+    output = tmp_path / "output.cci"
+    try:
+        jobs._run_engine(source, None, cia, "3ds-convert", "cia")
+        jobs._run_engine(cia, None, output, "3ds-convert", "cci")
+        assert scan.requires_valid_cci(output)
+        assert output.read_bytes()[0x4000:] == data[0x4000:]
+        assert struct.unpack_from("<II", output.read_bytes(), 0x128) == (35, 3)
+    finally:
+        (keys / "aes_keys.txt").unlink()
+        (keys / "certs.bin").unlink()
 
 
 @native
@@ -146,8 +428,9 @@ def test_scan_replaces_file_preserves_identity(inputs, rom, monkeypatch):
     assert result["output_rom_id"] == rom.id
     assert result["output_file_id"] == payload["file_id"]
     assert not source.exists()
-    assert scan.requires_valid_cci(source.with_suffix(".cci"))
-    assert db_rom_handler.get_rom(rom.id).fs_name == source.with_suffix(".cci").name
+    target = source.parent / source.stem / source.with_suffix(".cci").name
+    assert scan.requires_valid_cci(target)
+    assert db_rom_handler.get_rom(rom.id).fs_name == source.stem
 
 
 @native

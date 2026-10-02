@@ -39,7 +39,7 @@ from models.permission import HiddenEntity, PermAction, PermEntity
 from models.rom import Rom, RomFile, RomFileCategory
 
 QUEUE_NAME = "romforge"
-ENGINE_VERSION = "romforge-1.7.6-cli-2"
+ENGINE_VERSION = "romforge-1.7.6-cli-3"
 JOB_TTL = 7 * 86400
 HEARTBEAT_KEY = "romforge:heartbeat"
 BINARY_EXTENSIONS = frozenset(

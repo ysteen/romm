@@ -69,6 +69,12 @@ internal static class ThreeDs
                 }
                 rebuilt[content.ContentIndex] = (unpack, exefs, stream, unpack.RomFs, main ? romfs : null);
             }
+            if (patch == null && format == "cci")
+            {
+                await using var converted = File.Create(output);
+                await NcsdBuilder.BuildAsync(source, converted);
+                return;
+            }
             await using var repacked = await RepackedNcsdSource.CreateAsync(rebuilt, source.Contents);
             await using var dest = File.Create(output);
             if (format == "cia") await CiaBuilder.BuildAsync(repacked, keys, dest, exheader0, icon0);

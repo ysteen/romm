@@ -133,11 +133,16 @@ Multi-game archives and archives with extra payloads require manual extraction.
 Set `ROMFORGE_NORMALIZE_3DS_ON_SCAN=true` on the API and worker to normalize after
 successful library scans, including existing games in the selected scan scope.
 The scan queues file IDs; the worker reads/extracts/decrypts one file at a time.
-A decrypted `.cci` is skipped. Conversion preserves ROM and file IDs, metadata,
-permissions and saves. After output validation and a successful DB update, the
+A decrypted `.cci` already inside its game folder is skipped. Conversion
+preserves ROM and file IDs, metadata, permissions and saves. After output validation and a successful DB update, the
 old file/archive is removed. If conversion or registration fails, the original
-is retained/restored. Multi-file ROM entries and destination collisions are
-rejected. Interrupted publication can leave `.romm_tmp_*` recovery files;
+is retained/restored. Folder ROMs are normalized file by file, preserving the
+folder name and all variants, including original and translated editions.
+Standalone games are stored as `<game>/<filename stem>.cci`, including
+already-decrypted CCI files. DLC and update CIA files remain unchanged. If a
+CCI name is occupied, the source extension is appended, for example
+`game (cia).cci`; further collisions preserve the source and fail the job.
+Interrupted publication can leave `.romm_tmp_*` recovery files;
 do not remove them without checking the job and database state.
 Queued normalization waits while a library scan is running. A missing key file
 leaves candidates pending. A scan observed before conversion or publication
@@ -185,9 +190,11 @@ heartbeats and before jobs; stopping the worker postpones cleanup.
 | `ROMFORGE_INSTALL_CACHE_SIZE` | 16 GiB |
 | `ROMFORGE_NORMALIZE_3DS_ON_SCAN` | false |
 
-CPU/memory/concurrency limits are unchanged. The worker needs temporary disk
-space for archive extraction and publication even though only one permanent
-CCI is kept. The nginx configuration denies direct public access to its work
+Plain CCI conversion streams decrypted partitions directly without rebuilding
+RomFS. Set `ROMFORGE_MEMORY=4g` in the existing deployment env file to increase
+the worker memory limit. The Compose files already support this override.
+The worker needs temporary disk space for archive extraction and publication
+even though only one permanent CCI is kept. The nginx configuration denies direct public access to its work
 folder; CIA downloads pass through the scoped API route.
 ## Storage, reuse and permissions
 
