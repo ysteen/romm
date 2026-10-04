@@ -327,22 +327,57 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
             } catch(e) {}
         }, 5000)
     }
-    screenshot() {
+    capturePendingScreenshots() {
+        this.pendingScreenshots?.forEach(capture => capture());
+    }
+    async screenshot() {
+        if (this.isAzahar()) {
+            // RetroArch's cached-frame readback disturbs Azahar's shared GL state.
+            const source = this.EJS.canvas;
+            if (!source?.width || !source?.height) throw new Error("Azahar canvas is unavailable");
+            const capture = document.createElement("canvas");
+            capture.width = source.width;
+            capture.height = source.height;
+            const context = capture.getContext("2d");
+            if (!context) throw new Error("Could not create screenshot canvas");
+            const pending = this.pendingScreenshots ??= new Set();
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    pending.delete(copyFrame);
+                    reject(new Error("Azahar screenshot timed out"));
+                }, 2000);
+                const copyFrame = () => {
+                    try {
+                        context.drawImage(source, 0, 0);
+                        // A discarded WebGL buffer is transparent, even when the game frame is opaque.
+                        if (context.getImageData(capture.width >> 1, capture.height >> 1, 1, 1).data[3] === 0) {
+                            return;
+                        }
+                        clearTimeout(timer);
+                        pending.delete(copyFrame);
+                        resolve();
+                    } catch (error) {
+                        clearTimeout(timer);
+                        pending.delete(copyFrame);
+                        reject(error);
+                    }
+                };
+                pending.add(copyFrame);
+            });
+            const blob = await new Promise(resolve => capture.toBlob(resolve, "image/png"));
+            if (!blob) throw new Error("Could not encode screenshot");
+            return new Uint8Array(await blob.arrayBuffer());
+        }
         try {
             this.FS.unlink("/screenshot.png");
         } catch(e) {}
         this.functions.screenshot();
-        return new Promise(async (resolve, reject) => {
-            const deadline = this.isAzahar() ? Date.now() + 2000 : Infinity;
+        return new Promise(async (resolve) => {
             while (1) {
                 try {
                     this.FS.stat("/screenshot.png");
                     return resolve(this.FS.readFile("/screenshot.png"));
                 } catch(e) {}
-                if (Date.now() >= deadline) {
-                    reject(new Error("Azahar screenshot timed out"));
-                    return;
-                }
                 await new Promise(res => setTimeout(res, 50));
             }
         })

@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { expect, test as baseTest, type Page } from "@playwright/test";
+import type { PendingAsset } from "../../src/services/pending-asset";
 
 const endpoint = process.env.AZAHAR_CDP_ENDPOINT;
 const test = endpoint
@@ -36,13 +37,18 @@ interface FixtureState {
   importedSystemUrl: string | null;
   loadedBytes: number[];
   options: Record<string, string>;
+  previewPixel: number[];
+  nativeScreenshots: number;
+  renderedFrames: number;
 }
 
 declare global {
   interface Window {
     __azaharFixture: FixtureState;
     __fixtureEmulator: { prototype: object };
-    __fixtureManager: { prototype: object };
+    __fixtureManager: {
+      prototype: { screenshot(): Promise<Uint8Array<ArrayBuffer>> };
+    };
   }
 }
 
@@ -363,6 +369,7 @@ async function setup(
     restoreInitially?: boolean;
     downloadFailure?: boolean;
     saveFailure?: boolean;
+    autoSaveSync?: boolean;
   } = {},
 ) {
   if (endpoint)
@@ -371,6 +378,7 @@ async function setup(
     stateUploads: [] as string[],
     stateDownloads: [] as string[],
     writes: [] as string[],
+    savePreviews: [] as boolean[],
     external: [] as string[],
     pageErrors: [] as string[],
   };
@@ -413,6 +421,9 @@ async function setup(
           citra_use_hw_shaders: "enabled",
           citra_use_webgl_hw_draw: "disabled",
         },
+        previewPixel: [],
+        nativeScreenshots: 0,
+        renderedFrames: 0,
       };
     },
     {
@@ -467,7 +478,12 @@ async function setup(
             json: state,
           });
         }
-        if (request.method() === "POST" && url.pathname === "/api/saves")
+        if (request.method() === "POST" && url.pathname === "/api/saves") {
+          evidence.savePreviews.push(
+            /name="screenshotFile"; filename=/.test(
+              request.postDataBuffer()?.toString("latin1") ?? "",
+            ),
+          );
           return route.fulfill(
             options.saveFailure
               ? { status: 500, json: { detail: "Synthetic save failure" } }
@@ -478,6 +494,7 @@ async function setup(
                   },
                 },
           );
+        }
         return route.fulfill({
           json: url.pathname.startsWith("/api/users") ? user : {},
         });
@@ -499,7 +516,12 @@ async function setup(
       if (url.pathname === "/api/users/me")
         return route.fulfill({ json: user });
       if (url.pathname === "/api/config")
-        return route.fulfill({ json: config });
+        return route.fulfill({
+          json: {
+            ...config,
+            EJS_ENABLE_AUTO_SAVE_SYNC: options.autoSaveSync ?? false,
+          },
+        });
       if (url.pathname === "/api/permissions/me")
         return route.fulfill({
           json: {
@@ -580,7 +602,230 @@ async function selectState(page: Page, keyboard = false) {
   await expect(dialog).toHaveCount(0);
 }
 
+async function pendingAssets(page: Page, kind: PendingAsset["kind"] = "save") {
+  return page.evaluate(
+    async ({ romId, kind }) => {
+      const rows = await new Promise<PendingAsset[]>((resolve, reject) => {
+        const open = indexedDB.open("romm-player");
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const transaction = db.transaction("pending-assets", "readonly");
+          const request = transaction.objectStore("pending-assets").getAll();
+          transaction.oncomplete = () => {
+            db.close();
+            resolve(request.result as PendingAsset[]);
+          };
+          transaction.onabort = () => {
+            db.close();
+            reject(transaction.error);
+          };
+        };
+      });
+      return rows
+        .filter((row) => row.kind === kind && row.romId === romId)
+        .map((row) => ({
+          id: row.id,
+          bytes: Array.from(new Uint8Array(row.bytes)),
+          screenshotBytes: row.screenshotBytes
+            ? Array.from(new Uint8Array(row.screenshotBytes))
+            : null,
+          capturedAt: row.capturedAt,
+        }));
+    },
+    { romId, kind },
+  );
+}
+
 for (const theme of ["dark", "light"] as const) {
+  for (const action of ["auto", "manual", "quit"] as const) {
+    test(`${theme}: in-game save sync (${action}) keeps bytes before a slow preview and after tab closure`, async ({
+      page,
+      context,
+    }) => {
+      const evidence = await setup(page, {
+        theme,
+        autoSaveSync: action !== "manual",
+      });
+      await launch(page);
+      await page.evaluate(() => {
+        const runtime = window.EJS_emulator;
+        const manager = runtime.gameManager;
+        manager.screenshot = () => {
+          window.__azaharFixture.captures++;
+          return new Promise(() => {});
+        };
+        manager.getSaveFile = () => new Uint8Array([80, 75, 3, 4]);
+      });
+      if (action === "auto") {
+        await page.evaluate(() => {
+          const runtime = window.EJS_emulator;
+          runtime.callEvent("saveSaveFiles", runtime.gameManager.getSaveFile());
+          runtime.callEvent("saveSaveFiles", runtime.gameManager.getSaveFile());
+        });
+      } else if (action === "manual") {
+        await page.evaluate(() => {
+          void window.EJS_onSaveSave({
+            save: new Uint8Array([80, 75, 3, 4]).buffer,
+            screenshot: new ArrayBuffer(0),
+          });
+        });
+      } else {
+        await page.getByRole("button", { name: "Quit", exact: true }).click();
+      }
+      await expect
+        .poll(() => page.evaluate(() => window.__azaharFixture.captures))
+        .toBe(1);
+      const held = await pendingAssets(page);
+      expect(held).toHaveLength(1);
+      expect(held[0].bytes).toEqual([80, 75, 3, 4]);
+      expect(held[0].screenshotBytes).toBeNull();
+      expect(evidence.writes).not.toContain("POST /api/saves");
+
+      const reader = await context.newPage();
+      await reader.route("**/*", (route) =>
+        route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
+      );
+      await reader.goto(`${origin}/pending-save-evidence`);
+      await page.close();
+      expect(await pendingAssets(reader)).toEqual(held);
+      await reader.close();
+    });
+  }
+
+  test(`${theme}: in-game save sync uploads without a failed preview`, async ({
+    page,
+  }) => {
+    const evidence = await setup(page, { theme, autoSaveSync: true });
+    await launch(page);
+    await page.evaluate(() => {
+      const runtime = window.EJS_emulator;
+      const manager = runtime.gameManager;
+      window.__azaharFixture.previewFails = true;
+      manager.getSaveFile = () => new Uint8Array([80, 75, 3, 4]);
+      runtime.callEvent("saveSaveFiles", manager.getSaveFile());
+      runtime.callEvent("saveSaveFiles", manager.getSaveFile());
+    });
+    await expect(
+      page.getByText("Save synced with server", { exact: true }),
+    ).toBeVisible();
+    expect(evidence.savePreviews).toEqual([false]);
+    await expect.poll(() => pendingAssets(page)).toEqual([]);
+    expect(evidence.pageErrors).toEqual([]);
+  });
+
+  test(`${theme}: in-game save sync retains its original capture across upload retries`, async ({
+    page,
+  }) => {
+    const evidence = await setup(page, {
+      theme,
+      autoSaveSync: true,
+      saveFailure: true,
+    });
+    await launch(page);
+    await page.evaluate(() => {
+      const runtime = window.EJS_emulator;
+      const manager = runtime.gameManager;
+      manager.screenshot = async () => {
+        window.__azaharFixture.captures++;
+        return new Uint8Array([137, 80, 78, 71]);
+      };
+      manager.getSaveFile = () => new Uint8Array([80, 75, 3, 4]);
+      manager.saveSaveFiles = () =>
+        runtime.callEvent("saveSaveFiles", manager.getSaveFile());
+      manager.saveSaveFiles();
+      manager.saveSaveFiles();
+    });
+    await expect.poll(() => evidence.savePreviews.length).toBe(1);
+    const held = await pendingAssets(page);
+    expect(held).toHaveLength(1);
+    expect(held[0].bytes).toEqual([80, 75, 3, 4]);
+    expect(held[0].screenshotBytes).toEqual([137, 80, 78, 71]);
+    await expect.poll(() => evidence.savePreviews.length).toBeGreaterThan(1);
+    expect(await pendingAssets(page)).toEqual(held);
+    expect(await page.evaluate(() => window.__azaharFixture.captures)).toBe(1);
+    expect(evidence.savePreviews.every(Boolean)).toBe(true);
+    expect(evidence.pageErrors).toEqual([]);
+  });
+
+  test(`${theme}: in-game save sync captures an opaque frame without native readback`, async ({
+    page,
+  }, testInfo) => {
+    const evidence = await setup(page, { theme, autoSaveSync: true });
+    await launch(page);
+    const canvas = page.getByLabel("Synthetic Azahar canvas");
+    const before = await canvas.boundingBox();
+    await page.evaluate(() => {
+      const source = document.querySelector<HTMLCanvasElement>(".ejs_canvas");
+      if (!source) throw Error("Canvas unavailable");
+      const gl = source.getContext("webgl2", { preserveDrawingBuffer: false });
+      if (!gl) throw Error("WebGL2 unavailable");
+      const runtime = window.EJS_emulator;
+      const manager = runtime.gameManager;
+      const fixture = window.__azaharFixture;
+      runtime.canvas = source;
+      manager.functions = {
+        screenshot() {
+          fixture.nativeScreenshots++;
+          throw Error("Unsafe native readback");
+        },
+      };
+      manager.screenshot = async () => {
+        const bytes =
+          await window.__fixtureManager.prototype.screenshot.call(manager);
+        const bitmap = await createImageBitmap(
+          new Blob([bytes], { type: "image/png" }),
+        );
+        const preview = document.createElement("canvas");
+        preview.width = bitmap.width;
+        preview.height = bitmap.height;
+        const context = preview.getContext("2d");
+        if (!context) throw Error("Preview canvas unavailable");
+        context.drawImage(bitmap, 0, 0);
+        fixture.previewPixel = Array.from(
+          context.getImageData(200, 240, 1, 1).data,
+        );
+        bitmap.close();
+        return bytes;
+      };
+      let frame = 0;
+      const render = () => {
+        if (!source.isConnected) return;
+        // Leave alternate browser frames undrawn to exercise a discarded buffer.
+        if (++frame % 2 === 0) {
+          gl.clearColor(0.125, 0.5, 0.75, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          fixture.renderedFrames++;
+        }
+        manager.capturePendingScreenshots();
+        requestAnimationFrame(render);
+      };
+      requestAnimationFrame(render);
+      manager.getSaveFile = () => new Uint8Array([80, 75, 3, 4]);
+      manager.saveSaveFiles = () =>
+        runtime.callEvent("saveSaveFiles", manager.getSaveFile());
+    });
+    await expect(
+      page.getByText("Save synced with server", { exact: true }),
+    ).toBeVisible();
+    const captured = await page.evaluate(() => ({
+      pixel: window.__azaharFixture.previewPixel,
+      native: window.__azaharFixture.nativeScreenshots,
+      frames: window.__azaharFixture.renderedFrames,
+    }));
+    expect(captured.pixel).toEqual([32, 128, 191, 255]);
+    expect(captured.native).toBe(0);
+    expect(evidence.writes).toContain("POST /api/saves");
+    expect(await canvas.boundingBox()).toEqual(before);
+    await expect
+      .poll(() => page.evaluate(() => window.__azaharFixture.renderedFrames))
+      .toBeGreaterThan(captured.frames);
+    expect(evidence.pageErrors).toEqual([]);
+    await page.screenshot({
+      path: testInfo.outputPath(`${theme}-in-game-save-synced.png`),
+    });
+  });
+
   test(`${theme}: ordinary player controls, automatic firmware and responsive layout`, async ({
     page,
   }, testInfo) => {
@@ -796,7 +1041,9 @@ test("Save & Quit uploads the save bundle and state before exiting", async ({
 }) => {
   const evidence = await setup(page);
   await launch(page);
-  await page.getByRole("button", { name: "Save & Quit", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Save and quit", exact: true })
+    .click();
   await expect(page).toHaveURL(new RegExp(`/rom/${romId}$`));
   expect(evidence.stateUploads).toHaveLength(1);
   expect(evidence.writes).toContain("POST /api/saves");
@@ -804,7 +1051,7 @@ test("Save & Quit uploads the save bundle and state before exiting", async ({
 });
 
 for (const failure of ["state", "save"] as const) {
-  test(`Save & Quit stays open if the ${failure} upload fails`, async ({
+  test(`Save & Quit ${failure === "state" ? "keeps the failed state locally and exits" : "stays open if the save upload fails"}`, async ({
     page,
   }) => {
     const evidence = await setup(page, {
@@ -813,15 +1060,25 @@ for (const failure of ["state", "save"] as const) {
     });
     await launch(page);
     await page
-      .getByRole("button", { name: "Save & Quit", exact: true })
+      .getByRole("button", { name: "Save and quit", exact: true })
       .click();
-    await expect(
-      page.getByText("Error saving game", { exact: true }),
-    ).toBeVisible();
-    await expect(page.getByLabel("Synthetic Azahar canvas")).toBeVisible();
-    expect(
-      await page.evaluate(() => window.EJS_emulator.stateActionPending),
-    ).toBe(false);
+    if (failure === "state") {
+      await expect(page).toHaveURL(new RegExp(`/rom/${romId}$`));
+      const held = await pendingAssets(page, "state");
+      expect(held).toHaveLength(1);
+      expect(held[0].bytes).toEqual([82, 65, 1, 2]);
+    } else {
+      await expect(
+        page.getByText("Error saving game", { exact: true }),
+      ).toBeVisible();
+      await expect(page.getByLabel("Synthetic Azahar canvas")).toBeVisible();
+      expect(
+        await page.evaluate(() => window.EJS_emulator.stateActionPending),
+      ).toBe(false);
+      const held = await pendingAssets(page);
+      expect(held).toHaveLength(1);
+      expect(held[0].bytes).toEqual([80, 75, 1, 2]);
+    }
     expect(evidence.stateUploads).toHaveLength(1);
     expect(evidence.writes).toContain("POST /api/saves");
     expect(evidence.pageErrors).toEqual([]);

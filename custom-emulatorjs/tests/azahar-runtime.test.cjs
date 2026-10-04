@@ -187,6 +187,126 @@ function manager(core = "azahar", result = 1) {
     return { gm, files, calls };
 }
 
+function screenshotManager({ contextAvailable = true, blobAvailable = true, drawFails = false } = {}) {
+    const frames = new Set();
+    const timers = new Map();
+    let nextId = 0;
+    const source = { width: 800, height: 960, frame: 1, alpha: 255 };
+    const Runtime = loadClass("GameManager.js", "EJS_GameManager", {
+        setTimeout: callback => { timers.set(++nextId, callback); return nextId; },
+        clearTimeout: id => timers.delete(id),
+        document: {
+            createElement: tag => {
+                assert.equal(tag, "canvas");
+                let frame;
+                return {
+                    getContext: type => {
+                        assert.equal(type, "2d");
+                        return contextAvailable ? { getImageData: () => ({ data: [0, 0, 0, source.alpha] }), drawImage: (canvas, x, y) => {
+                            if (drawFails) throw Error("Canvas is detached");
+                            assert.equal(canvas, source);
+                            assert.deepEqual([x, y], [0, 0]);
+                            frame = canvas.frame;
+                        } } : null;
+                    },
+                    toBlob(callback, type) {
+                        assert.equal(type, "image/png");
+                        assert.deepEqual([this.width, this.height], [800, 960]);
+                        this.bytes = new Uint8Array([137, 80, 78, 71, frame]);
+                        callback(blobAvailable ? { arrayBuffer: async () => this.bytes.buffer } : null);
+                    }
+                };
+            }
+        }
+    });
+    const gm = Object.create(Runtime.prototype);
+    gm.EJS = { getCore: () => "azahar", canvas: source };
+    gm.pendingScreenshots = frames;
+    gm.functions = { screenshot: () => { throw Error("Native screenshot must not run"); } };
+    gm.FS = new Proxy({}, { get: () => { throw Error("Screenshot must not touch the core filesystem"); } });
+    const render = () => gm.capturePendingScreenshots();
+    return { gm, source, render, frames, timers };
+}
+
+test("only Azahar registers pending previews at the end of the core main loop", async () => {
+    for (const core of ["azahar", "snes9x"]) {
+        let options;
+        let captures = 0;
+        const Runtime = loadClass("emulator.js", "EmulatorJS", {
+            window: { EJS_Runtime: value => { options = value; return Promise.resolve({}); } }
+        });
+        const runtime = Object.create(Runtime.prototype);
+        Object.assign(runtime, {
+            getCore: () => core, elements: { parent: {} }, downloadFiles() {},
+            gameManager: { capturePendingScreenshots() { captures++; } }
+        });
+        runtime.initModule();
+        await Promise.resolve();
+        if (core === "azahar") {
+            options.postMainLoop();
+            assert.equal(captures, 1);
+            delete runtime.gameManager;
+            options.postMainLoop();
+        } else {
+            assert.equal(options.postMainLoop, undefined);
+        }
+    }
+});
+
+test("Azahar captures the displayed frame without native readback or filesystem changes", async () => {
+    const { gm, source, render, timers } = screenshotManager();
+    const first = gm.screenshot();
+    render();
+    source.frame = 2;
+    const second = gm.screenshot();
+    render();
+    assert.deepEqual(await first, new Uint8Array([137, 80, 78, 71, 1]));
+    assert.deepEqual(await second, new Uint8Array([137, 80, 78, 71, 2]));
+    assert.deepEqual([source.width, source.height], [800, 960]);
+    assert.equal(timers.size, 0);
+});
+test("an unavailable Azahar canvas rejects without attempting native readback", async () => {
+    const { gm, source } = screenshotManager();
+    source.width = 0;
+    await assert.rejects(gm.screenshot(), /canvas is unavailable/);
+    delete gm.EJS.canvas;
+    await assert.rejects(gm.screenshot(), /canvas is unavailable/);
+});
+test("Azahar waits past a discarded buffer and accepts an opaque black game frame", async () => {
+    const { gm, source, render, frames, timers } = screenshotManager();
+    source.alpha = 0;
+    const capture = gm.screenshot();
+    render();
+    assert.equal(frames.size, 1);
+    source.alpha = 255;
+    render();
+    assert.deepEqual(await capture, new Uint8Array([137, 80, 78, 71, 1]));
+    assert.equal(frames.size, 0);
+    assert.equal(timers.size, 0);
+});
+test("Azahar preview failures reject without native readback or lingering frame callbacks", async () => {
+    for (const options of [{ contextAvailable: false }, { blobAvailable: false }, { drawFails: true }]) {
+        const { gm, render, frames, timers } = screenshotManager(options);
+        const capture = gm.screenshot();
+        render();
+        await assert.rejects(capture, /Could not|detached/);
+        assert.equal(frames.size, 0);
+        assert.equal(timers.size, 0);
+    }
+    const { gm, frames, timers } = screenshotManager();
+    const capture = gm.screenshot();
+    for (const callback of timers.values()) callback();
+    await assert.rejects(capture, /timed out/);
+    assert.equal(frames.size, 0);
+});
+test("other cores retain native screenshot capture", async () => {
+    const { gm, files } = manager("snes9x");
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    gm.functions.screenshot = () => files.set("/screenshot.png", bytes);
+    gm.FS.stat = path => { if (!files.has(path)) throw Error("missing"); };
+    assert.deepEqual(await gm.screenshot(), bytes);
+});
+
 test("Azahar states require the safe native restore export", () => {
     const { gm } = manager();
     assert.equal(gm.supportsStates(), true);

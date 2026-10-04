@@ -2,7 +2,7 @@ import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
-import { EJS_GameManager } from "./GameManager.js?v=20260930.1";
+import { EJS_GameManager } from "./GameManager.js?v=20261004.1";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
@@ -1359,6 +1359,9 @@ class EmulatorJS {
             arguments: [],
             preRun: [],
             postRun: [],
+            postMainLoop: this.getCore() === "azahar"
+                ? () => this.gameManager?.capturePendingScreenshots()
+                : undefined,
             canvas: this.canvas,
             callbacks: {},
             parent: this.elements.parent,

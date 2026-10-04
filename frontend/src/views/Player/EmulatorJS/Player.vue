@@ -164,26 +164,43 @@ function announceHeldBack(kind: "save" | "state", kept: boolean) {
     icon: kept ? "mdi-cloud-clock-outline" : "mdi-cloud-off-outline",
   });
 }
+interface SaveWriteFile {
+  saveFile: ArrayBuffer;
+  captureScreenshot?: () => Promise<ArrayBuffer | undefined>;
+}
 function writeSave(
-  file: { saveFile: ArrayBuffer; screenshotFile?: ArrayBuffer },
+  file: SaveWriteFile,
   generation = saveGeneration,
 ): Promise<SaveSchema | null> {
   if (saveLoading) return Promise.resolve(null);
   const write = saveWrite.then(async () => {
-    if (generation !== saveGeneration) return null;
+    if (disposed || generation !== saveGeneration) return null;
     const bytes = new Uint8Array(file.saveFile);
-    inFlightSave = bytes;
     try {
-      // Held before the attempt and dropped once taken, so no path uploads
-      // without a copy; held bytes keep their frame and are not written again.
       const held = heldFor(pendingSave, bytes);
-      const screenshotFile = held?.screenshotBytes ?? file.screenshotFile;
-      if (!held || held.screenshotBytes !== screenshotFile) {
-        await rememberPendingSave(file.saveFile, screenshotFile);
+      // A slow preview must not leave the save unprotected when the tab closes.
+      if (!held) await rememberPendingSave(file.saveFile);
+      if (disposed || generation !== saveGeneration) return null;
+      let screenshotFile = held?.screenshotBytes;
+      if (!held && file.captureScreenshot) {
+        try {
+          screenshotFile = await file.captureScreenshot();
+        } catch (error) {
+          console.error("Failed to capture a save preview", error);
+        }
+        if (disposed || generation !== saveGeneration) return null;
+        if (screenshotFile && pendingSave) {
+          pendingSave = { ...pendingSave, screenshotBytes: screenshotFile };
+          const kept = await pendingAssetStore.write(pendingSave);
+          // A rejected preview write leaves the already committed save intact.
+          pendingSaveKept = kept || pendingSaveKept;
+        }
       }
+      if (disposed || generation !== saveGeneration) return null;
       // Nothing gets through while the server is down; the held bytes go once
       // it is back.
       if (!heartbeatStore.connected) return null;
+      inFlightSave = bytes;
       const save = await saveSave({
         rom: romRef.value,
         save: sessionSaveRef.value,
@@ -207,10 +224,7 @@ function writeSave(
 }
 // Forced writes (Sync save, Save & Quit) wait for the queue, then skip only when
 // no version was opened yet and the SRAM still matches a slotted server save.
-async function writeSaveIfChanged(file: {
-  saveFile: ArrayBuffer;
-  screenshotFile?: ArrayBuffer;
-}): Promise<boolean> {
+async function writeSaveIfChanged(file: SaveWriteFile): Promise<boolean> {
   const generation = saveGeneration;
   await saveWrite;
   if (
@@ -551,14 +565,9 @@ function installAutoSaveSync() {
     if (online && !retryBackoff.ready()) return;
     uploading = true;
     try {
-      // The capture needs the game running, so it happens here, once per save:
-      // a retry keeps the frame from when the game wrote the bytes.
-      const screenshotFile = heldFor(pendingSave, saveFile)
-        ? undefined
-        : await captureScreenshot();
       const save = await writeSave({
         saveFile: toArrayBuffer(saveFile),
-        screenshotFile,
+        captureScreenshot,
       });
       if (save) {
         retryBackoff.reset();
@@ -599,27 +608,31 @@ async function flushPendingSave() {
   const emulator = window.EJS_emulator;
   if (!autoSaveSyncEmulator || autoSaveSyncEmulator !== emulator) return;
   uninstallAutoSaveSync();
-  // A save the tick has not held yet takes its frame now, while the game still
-  // runs; bytes the tick already held keep the one taken when it wrote them.
-  const unsynced: Uint8Array | null = emulator.gameManager.getSaveFile(false);
-  const screenshotFile =
-    unsynced?.byteLength &&
-    saveTracker.hasChanges(unsynced) &&
-    !heldFor(pendingSave, unsynced)
-      ? await captureScreenshot()
-      : undefined;
-  emulator.pause();
-  await new Promise((resolve) => setTimeout(resolve, 50));
   const saveFile: Uint8Array | null = emulator.gameManager.getSaveFile();
-  if (!saveFile?.byteLength || !saveTracker.hasChanges(saveFile)) return;
+  if (!saveFile?.byteLength || !saveTracker.hasChanges(saveFile)) {
+    emulator.pause();
+    return;
+  }
+  if (heldFor(pendingSave, saveFile)) emulator.pause();
   try {
     if (
-      await writeSave({ saveFile: toArrayBuffer(saveFile), screenshotFile })
+      await writeSave({
+        saveFile: toArrayBuffer(saveFile),
+        captureScreenshot: async () => {
+          try {
+            return await captureScreenshot();
+          } finally {
+            emulator.pause();
+          }
+        },
+      })
     ) {
       romsStore.update(romRef.value);
     }
   } catch (error) {
     console.error("Save sync on exit failed", error);
+  } finally {
+    emulator.pause();
   }
 }
 onBeforeRouteLeave(flushPendingSave);
@@ -702,12 +715,9 @@ async function uploadUnsyncedSave() {
   if (!autoSaveSyncEmulator || autoSaveSyncEmulator !== emulator) return;
   const saveFile: Uint8Array | null = emulator.gameManager.getSaveFile();
   if (!saveFile?.byteLength || !saveTracker.hasChanges(saveFile)) return;
-  const screenshotFile = heldFor(pendingSave, saveFile)
-    ? undefined
-    : await captureScreenshot();
   try {
     if (
-      await writeSave({ saveFile: toArrayBuffer(saveFile), screenshotFile })
+      await writeSave({ saveFile: toArrayBuffer(saveFile), captureScreenshot })
     ) {
       romsStore.update(romRef.value);
     }
@@ -742,8 +752,10 @@ window.EJS_onSaveSave = async function ({
     displayMessage(t("play.save-data-none"), { duration: 3000 });
     return;
   }
-  const screenshotFile = await resolveScreenshot(emulatorScreenshot);
-  const synced = await writeSaveIfChanged({ saveFile, screenshotFile });
+  const synced = await writeSaveIfChanged({
+    saveFile,
+    captureScreenshot: () => resolveScreenshot(emulatorScreenshot),
+  });
   romsStore.update(romRef.value);
   if (synced) {
     displayMessage(t("play.save-synced"), {
@@ -1047,8 +1059,7 @@ window.EJS_onGameStart = async () => {
       const gameManager = emulator.gameManager;
       const supportsStates = gameManager.supportsStates();
 
-      // Threaded 4.3 cores need a running main loop to capture states and screenshots.
-      const screenshotFile = isAzahar ? undefined : await captureScreenshot();
+      let screenshotFile: ArrayBuffer | undefined;
       let saveCompleted = false;
       const failures: unknown[] = [];
 
@@ -1073,7 +1084,12 @@ window.EJS_onGameStart = async () => {
           if (saveFile?.byteLength) {
             const saved = await writeSaveIfChanged({
               saveFile: toArrayBuffer(saveFile),
-              screenshotFile,
+              captureScreenshot: async () => {
+                screenshotFile = isAzahar
+                  ? undefined
+                  : await captureScreenshot();
+                return screenshotFile;
+              },
             });
             if (!saved) throw new Error("Save upload failed");
             saveCompleted = true;
@@ -1091,6 +1107,8 @@ window.EJS_onGameStart = async () => {
       // state failure prevent an NDS/PSP memory-card save from being committed.
       if (supportsStates) {
         try {
+          if (!isAzahar && !screenshotFile)
+            screenshotFile = await captureScreenshot();
           const runtime = isAzahar
             ? getAzaharStateRuntime(window.EJS_emulator)
             : null;
