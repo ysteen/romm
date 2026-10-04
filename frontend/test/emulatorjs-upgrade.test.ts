@@ -44,6 +44,42 @@ if (
 const injectionCode = injection.expression.expression.getText(source);
 
 describe("EmulatorJS save integration", () => {
+  it.each([
+    { core: "melonds", applied: true, state: false, restarts: 1 },
+    { core: "melonds", applied: false, state: false, restarts: 0 },
+    { core: "melonds", applied: true, state: true, restarts: 0 },
+    { core: "snes9x", applied: true, state: false, restarts: 0 },
+  ])("reloads cartridge SRAM at startup: %j", async (scenario) => {
+    const events: string[] = [];
+    const restart = vi.fn(() => events.push("restart"));
+    const loadSave = vi.fn(async () => {
+      events.push("save");
+      return scenario.applied;
+    });
+    const loadState = vi.fn(async () => events.push("state"));
+    await runInNewContext(injectionCode, {
+      props: { save: { id: 1 }, state: scenario.state ? { id: 2 } : null },
+      usesDirectorySaveBundle: false,
+      waitForGameManager: async () => true,
+      loadSave,
+      loadState,
+      EJS_ENABLE_AUTO_SAVE_SYNC: true,
+      installAutoSaveSync: () => events.push("poll"),
+      STATE_APPLY_SETTLE_MS: 500,
+      setTimeout: (callback: () => void) => callback(),
+      window: {
+        EJS_core: scenario.core,
+        EJS_emulator: { settings: {}, gameManager: { restart } },
+      },
+    });
+    expect(restart).toHaveBeenCalledTimes(scenario.restarts);
+    expect(events).toEqual([
+      scenario.state ? "state" : "save",
+      ...(scenario.restarts ? ["restart"] : []),
+      "poll",
+    ]);
+  });
+
   for (const directory of [false, true]) {
     for (const save of [false, true]) {
       for (const state of [false, true]) {

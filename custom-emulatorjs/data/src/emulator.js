@@ -2,7 +2,7 @@ import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
-import { EJS_GameManager } from "./GameManager.js?v=20261004.1";
+import { EJS_GameManager } from "./GameManager.js?v=20261005.1";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
@@ -631,6 +631,8 @@ class EmulatorJS {
             citra_graphics_api: "Graphics API",
             citra_use_hw_shaders: "Hardware Shaders",
             citra_use_webgl_hw_draw: "WebGL Hardware Draw"
+        } : this.getCore() === "melonds" ? {
+            melonds_save_memory: "Cartridge Save Type (Restart)"
         } : {};
         const options = [];
         for (const line of this.gameManager.getCoreOptions().split("\n")) {

@@ -955,7 +955,11 @@ window.EJS_onGameStart = async () => {
         );
         await loadState(props.state);
       } else if (props.save && !usesDirectorySaveBundle) {
-        await loadSave(props.save);
+        const applied = await loadSave(props.save);
+        // melonDS reads cartridge SRAM from disk when loading or resetting a ROM.
+        if (applied && window.EJS_core === "melonds") {
+          window.EJS_emulator.gameManager.restart();
+        }
       } else {
         baselineSaveTrackerFromEmulator();
       }
