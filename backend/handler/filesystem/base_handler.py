@@ -291,26 +291,39 @@ class FSHandler:
         return full_path
 
     @asynccontextmanager
-    async def _atomic_write(self, target_path: Path):
-        """Context manager for atomic file writing.
-
-        Creates the temp file in the same directory as the target so the
-        final os.replace() occurs on the same filesystem.
-        """
+    async def _atomic_write(self, target_path: Path, *, overwrite: bool = True):
+        """Publish a completed temporary file atomically on the same filesystem."""
         fd, temp_path_str = tempfile.mkstemp(
             dir=str(target_path.parent), prefix=".romm_tmp_"
         )
         temp_path = Path(temp_path_str)
         os.close(fd)
+        reservation: os.stat_result | None = None
 
         try:
+            if not overwrite:
+                fd = os.open(target_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                try:
+                    reservation = os.fstat(fd)
+                finally:
+                    os.close(fd)
             yield temp_path
             os.chmod(temp_path, SERVED_FILE_MODE)
+            if reservation is not None and not os.path.samestat(
+                os.lstat(target_path), reservation
+            ):
+                raise FileExistsError(str(target_path))
             os.replace(str(temp_path), str(target_path))
 
         # BaseException, not Exception: a cancelled scan raises CancelledError,
         # which would otherwise skip cleanup and strand a temp file per cancel.
         except BaseException:
+            if reservation is not None:
+                try:
+                    if os.path.samestat(os.lstat(target_path), reservation):
+                        os.unlink(target_path)
+                except FileNotFoundError:
+                    pass
             async_temp = AnyioPath(temp_path)
             if await async_temp.exists():
                 await async_temp.unlink()
@@ -428,6 +441,8 @@ class FSHandler:
         file: UploadFile | BinaryIO | BytesIO | bytes | SpooledTemporaryFile,
         path: str,
         filename: str | None = None,
+        *,
+        overwrite: bool = True,
     ) -> None:
         """
         Securely write file to filesystem.
@@ -436,6 +451,7 @@ class FSHandler:
             file: File-like object to write
             path: Relative path within base directory
             filename: Optional filename override
+            overwrite: Replace an existing file when true; otherwise fail if it exists
 
         Returns:
             Dictionary with operation result and file info
@@ -454,11 +470,15 @@ class FSHandler:
         # Async thread-safe file operations
         lock = await self._get_file_lock(str(final_file_path))
         async with lock:
+            if not overwrite and final_file_path.exists():
+                raise FileExistsError(str(final_file_path))
             # Ensure target directory exists
             target_directory.mkdir(parents=True, exist_ok=True)
 
             # Write file atomically
-            async with self._atomic_write(final_file_path) as temp_path:
+            async with self._atomic_write(
+                final_file_path, overwrite=overwrite
+            ) as temp_path:
                 async with await open_file(temp_path, "wb") as temp_file:
                     if isinstance(file, UploadFile):
                         while chunk := file.file.read(8192):

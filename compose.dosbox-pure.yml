@@ -24,6 +24,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.custom-dosbox-pure
+      args:
+        ROMM_CUSTOM_REVISION: ${ROMM_CUSTOM_REVISION:-unknown}
     restart: unless-stopped
     environment:
       DB_HOST: database
@@ -42,6 +44,18 @@ services:
       - ${ROMM_DATA_DIR:-./deploy-data}/redis-data:/redis-data
     ports:
       - "${ROMM_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/heartbeat', timeout=5).read()",
+        ]
+      start_period: 60s
+      interval: 10s
+      timeout: 10s
+      retries: 30
     depends_on:
       database:
         condition: service_healthy

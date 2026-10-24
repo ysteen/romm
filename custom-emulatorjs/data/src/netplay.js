@@ -1,4 +1,5 @@
 import { guid } from "./utils.js";
+import { LinkLobby } from "./link-lobby.js?v=20261021.10";
 
 /**
  * Netplay - WebRTC-based multiplayer for EmulatorJS
@@ -111,7 +112,7 @@ export class Netplay {
     updateNetplayUI(isJoining) {
         if (!this.emu.elements.bottomBar) return;
         const bar = this.emu.elements.bottomBar;
-        const shouldHide = isJoining && !this.owner;
+        const shouldHide = isJoining && !this.owner && !this.inputSession;
         const elems = [
             ...(bar.playPause || []), ...(bar.restart || []), ...(bar.saveState || []),
             ...(bar.loadState || []), ...(bar.cheat || []), ...(bar.saveSavFiles || []),
@@ -377,6 +378,7 @@ export class Netplay {
     /** Initialize update list and hook into emulator's main loop */
     defineNetplayFunctions() {
         this.updateList = { start: () => this._updateListStart(), stop: () => this._updateListStop() };
+        if (this.inputSession) return;
         if (!this.url) {
             this.emu.displayMessage("Netplay URL not configured", 5000);
             return;
@@ -433,6 +435,7 @@ export class Netplay {
      * Must be called from a click/touch/keydown handler.
      */
     _ensureRemoteAudioContext() {
+        if (this.inputSession) return;
         try {
             if (!this._remoteAudioCtx) {
                 this._remoteAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -768,6 +771,7 @@ export class Netplay {
 
     /** Initialize WebRTC stream from emulator canvas (host only) */
     initWebRTCStream() {
+        if (this.inputSession) return Promise.resolve();
         if (this.localStream) return Promise.resolve();
 
         if (this.emu.Module && this.emu.Module.AL && this.emu.Module.AL.currentCtx && this.emu.Module.AL.currentCtx.audioCtx) {
@@ -905,6 +909,11 @@ export class Netplay {
         if (this.createButton) this.createButton.innerText = this.emu.localization("Leave Room");
 
         this.updatePlayersTable();
+
+        if (this.inputSession) {
+            this.inputSession.joined();
+            return;
+        }
 
         if (!isOwner) {
             // Guest setup: freeze local emulation and show remote stream
@@ -1070,6 +1079,7 @@ export class Netplay {
 
     /** Create WebRTC peer connection with video/audio/data channels */
     createPeerConnection(peerId) {
+        if (this.inputSession) return this.inputSession.createPeerConnection(peerId);
         const role = this.owner ? "HOST" : "GUEST";
         let iceServers = null;
 
@@ -1446,6 +1456,7 @@ export class Netplay {
 
         if (this._leaving) return;
         this._leaving = true;
+        this.inputSession?.stop();
 
         this.updateNetplayUI(false);
         clearTimeout(this.connectionTimeout);
@@ -1483,7 +1494,7 @@ export class Netplay {
             this.emu.canvas.classList.remove("ejs_netplay_offscreen_canvas");
         }
 
-        if (!this.owner) {
+        if (!this.owner && !this.inputSession) {
             this.unfreezeGuest();
         }
 
@@ -1548,7 +1559,7 @@ export class Netplay {
         if (this.passwordElem) this.passwordElem.style.display = "none";
         if (this.playerTable) this.playerTable.innerHTML = "";
 
-        if (this.emu.elements.bottomBar && this.emu.elements.bottomBar.cheat && this.emu.elements.bottomBar.cheat[0]) {
+        if (!this.inputSession && this.emu.elements.bottomBar && this.emu.elements.bottomBar.cheat && this.emu.elements.bottomBar.cheat[0]) {
             this.emu.elements.bottomBar.cheat[0].style.display = this.oldCheatDisplay || "";
         }
 
@@ -1570,12 +1581,14 @@ export class Netplay {
         }
 
         setTimeout(() => { if (this.emu.handleResize) this.emu.handleResize(); }, 100);
-        this.emu.displayMessage("Left room", 3000);
+        if (!this.inputSession) this.emu.displayMessage("Left room", 3000);
         this._leaving = false;
     }
 
     /** Process and send input to network */
     simulateInput(player, index, value) {
+        if (this.inputSession?.simulateInput)
+            return this.inputSession.simulateInput(player, index, value);
         if (!this.emu.isNetplay || !this.emu.gameManager || !this.emu.gameManager.functions || !this.emu.gameManager.functions.simulateInput) return;
         const pidx = this.getUserIndex();
         const f = this.currentFrame || 0;
@@ -1594,9 +1607,9 @@ export class Netplay {
         if (!this.url) return Promise.resolve({});
         const params = new URLSearchParams({
             domain: window.location.host,
-            game_id: this.emu.config.gameId
+            game_id: this.inputSession?.gameId ?? this.emu.config.gameId
         });
-        return fetch(this.url + "/list?" + params.toString())
+        return fetch((this.emu.config.netplayRoomListUrl || this.url + "/list") + "?" + params.toString())
             .then((res) => res.text())
             .then((text) => JSON.parse(text))
             .catch(() => ({}));
@@ -1612,7 +1625,7 @@ export class Netplay {
                     const row = this.emu.createElement("tr");
                     row.classList.add("ejs_netplay_table_row");
                     const c1 = this.emu.createElement("td");
-                    c1.innerText = r.room_name; c1.style.textAlign = "left"; c1.style.padding = "10px 0";
+                    c1.innerText = r.room_name + (r.link_game_name ? "\n" + r.link_game_name : ""); c1.style.textAlign = "left"; c1.style.padding = "10px 0";
                     const c2 = this.emu.createElement("td");
                     c2.innerText = r.current + "/" + r.max; c2.style.width = "80px"; c2.style.textAlign = "center";
                     const c3 = this.emu.createElement("td");
@@ -1655,7 +1668,7 @@ export class Netplay {
         form.classList.add("ejs_netplay_header");
         const ni = this.emu.createElement("input"); ni.type = "text"; ni.maxLength = 20;
         const ms = this.emu.createElement("select");
-        ["2", "3", "4"].forEach((v) => { const o = document.createElement("option"); o.value = v; o.innerText = v; ms.appendChild(o); });
+        (this.inputSession ? ["2"] : ["2", "3", "4"]).forEach((v) => { const o = document.createElement("option"); o.value = v; o.innerText = v; ms.appendChild(o); });
         const pw = this.emu.createElement("input"); pw.type = "text"; pw.maxLength = 20;
         [["Room Name", ni], ["Max Players", ms], ["Password (optional)", pw]].forEach((item) => {
             const s = this.emu.createElement("strong");
@@ -1784,14 +1797,15 @@ export class Netplay {
     }
 
     /** Initialize Socket.IO connection and set up event handlers */
-    startSocketIO(cb) {
+    startSocketIO(cb, inheritedSocket = null) {
         this._unlockMobileAudio();
-        if (typeof io === "undefined") { this.emu.displayMessage("Socket.IO unavailable", 5000); return; }
+        const connect = this.socketFactory || (typeof io !== "undefined" ? io : null);
+        if (!connect) { this.emu.displayMessage("Socket.IO unavailable", 5000); return; }
         if (this.socket && this.socket.connected) { cb(); return; }
         if (!this.url) { this.emu.displayMessage("Network error", 5000); return; }
 
         this.previousPlayers = {};
-        this.socket = io(this.url);
+        this.socket = inheritedSocket || connect(this.url, this.emu.config.netplaySocketOptions);
 
         this.socket.on("connect", () => { this.bindChatUI(); cb(); });
         this.socket.on("connect_error", (e) => { this.emu.displayMessage("Connect error: " + e.message, 5000); });
@@ -1814,14 +1828,19 @@ export class Netplay {
 
             this.previousPlayers = users;
             this.players = users;
+            this.inputSession?.usersUpdated(users);
             this.updatePlayersTable();
             this.chatRefreshRecipients();
 
             // Host creates peer connections for new players
-            if (this.owner) {
+            if (this.inputSession?.connectPeers) {
+                this.inputSession.connectPeers(users);
+            } else if (this.owner && this.inputSession?.ready !== false && users[this.playerID]?.link_ready !== false) {
+                const socket = this.socket;
                 this.initWebRTCStream().then(() => {
+                    if (!this.owner || this.socket !== socket) return;
                     Object.keys(users).forEach((pid) => {
-                        if (pid !== this.playerID) {
+                        if (pid !== this.playerID && users[pid].link_ready !== false) {
                             const sid = users[pid].socketId;
                             if (sid && !this.peerConnections[sid]) this.createPeerConnection(sid);
                         }
@@ -1831,6 +1850,7 @@ export class Netplay {
         });
 
         this.socket.on("data-message", (d) => { this.dataMessage(d); });
+        this.socket.on("link-started", users => this.inputSession?.started?.(users));
         
         // Handle WebRTC signaling
         this.socket.on("webrtc-signal", (data) => {
@@ -1854,7 +1874,7 @@ export class Netplay {
             let pd = this.peerConnections[sender];
             
             if (offer) {
-                if (pd && !this.owner) {
+                if (pd && !this.owner && (!this.inputSession || pd.pc.remoteDescription)) {
                     try { pd.pc.close(); } catch(e) {}
                     delete this.peerConnections[sender];
                     pd = null;
@@ -1907,6 +1927,54 @@ export class Netplay {
                 }
             }
         });
+        if (inheritedSocket?.connected) cb();
+    }
+
+    startLinkLobby(options) {
+        if (this.emu.isNetplay) this.leaveRoom();
+        this.emu.config.netplaySocketOptions = {
+            ...this.emu.config.netplaySocketOptions,
+            path: "/netplay/socket.io",
+            transports: ["websocket"]
+        };
+        new LinkLobby(this, options);
+        const room = options.room;
+        if (!this.isMenuCreated()) this.createNetplayMenu();
+        this.openMenu();
+        if (room.player === 0) this.openRoom(room.roomName, room.maxPlayers ?? 2, room.password);
+        else Netplay.prototype.joinRoom.call(this, room.roomId, room.roomName, room.maxPlayers ?? 2, room.password);
+    }
+
+    detachRoom() {
+        if (!this.socket?.connected) throw new Error("Room disconnected");
+        const connection = {
+            socket: this.socket, owner: this.owner, extra: this.extra,
+            players: this.players, playerID: this.playerID, maxPlayers: this.maxPlayers
+        };
+        this.socket.removeAllListeners();
+        this.socket = null;
+        this.inputSession = null;
+        this.emu.isNetplay = false;
+        this.updateList?.stop();
+        return connection;
+    }
+
+    adoptRoom(connection) {
+        if (!connection.socket.connected) throw new Error("Room disconnected");
+        this.owner = connection.owner;
+        this.extra = connection.extra;
+        this.playerID = connection.playerID;
+        this.players = connection.players;
+        this.maxPlayers = connection.maxPlayers ?? Object.keys(this.players).length;
+        this.inputSession.prepare(this.owner);
+        if (!this.isMenuCreated()) this.createNetplayMenu();
+        this.openMenu();
+        this.startSocketIO(() => {
+            this.roomJoined(this.owner, this.extra.room_name, this.extra.room_password, this.extra.sessionid);
+            this.socket.emit("link-ready", error => {
+                if (error) this.inputSession.fail(new Error(error));
+            });
+        }, connection.socket);
     }
 
     /** Refresh player table UI */
@@ -1917,7 +1985,11 @@ export class Netplay {
         const keys = Object.keys(this.players || {});
         keys.forEach((k) => {
             const row = this.emu.createElement("tr");
-            const values = [i + 1, this.players[k].player_name || "Unknown", i === 0 ? keys.length + "/" + (this.maxPlayers || "?") : ""];
+            const player = this.players[k];
+            const name = (player.player_name || "Unknown") + (player.cartridge ? "\n" + player.cartridge.name : "");
+            const slot = player.cartridge?.system === "gba"
+                ? (Number.isInteger(player.link_slot) ? `${player.link_slot + 1}P` : "-") : i + 1;
+            const values = [slot, name, i === 0 ? keys.length + "/" + (this.maxPlayers || "?") : ""];
             values.forEach((t) => {
                 const td = this.emu.createElement("td");
                 td.innerText = t;
@@ -1927,10 +1999,15 @@ export class Netplay {
             i++;
         });
         this.chatRefreshRecipients();
+        this.inputSession?.updateHostSeats?.(this.players);
     }
 
     /** Create and host a new room */
     openRoom(rn, mp, pw) {
+        if (this.inputSession) {
+            mp = this.inputSession.maxPlayers ?? 2;
+            this.inputSession.prepare(true);
+        }
         this._unlockMobileAudio();
         if (this.emu.Module && this.emu.Module.AL && this.emu.Module.AL.currentCtx && this.emu.Module.AL.currentCtx.audioCtx) {
             this.emu.Module.AL.currentCtx.audioCtx.resume().catch(() => {});
@@ -1942,12 +2019,14 @@ export class Netplay {
         this.maxPlayers = mp;
         this.extra = {
             domain: window.location.host,
-            game_id: this.emu.config.gameId,
+            game_id: this.inputSession?.gameId ?? this.emu.config.gameId,
             room_name: rn,
+            room_password: pw,
             player_name: this.name,
             userid: this.playerID,
             sessionid: sid
         };
+        if (this.inputSession?.cartridgeId) this.extra.cartridge_id = this.inputSession.cartridgeId;
         this.players[this.playerID] = this.extra;
         this.owner = true;
 
@@ -1961,6 +2040,7 @@ export class Netplay {
 
     /** Join an existing room */
     joinRoom(sid, rn, mp, pw) {
+        if (this.inputSession) this.inputSession.prepare(false);
         this._unlockMobileAudio();
         // Also ensure AudioContext is ready (belt and suspenders)
         this._ensureRemoteAudioContext();
@@ -1970,12 +2050,14 @@ export class Netplay {
         this.maxPlayers = mp;
         this.extra = {
             domain: window.location.host,
-            game_id: this.emu.config.gameId,
+            game_id: this.inputSession?.gameId ?? this.emu.config.gameId,
             room_name: rn,
+            room_password: pw,
             player_name: this.name,
             userid: this.playerID,
             sessionid: sid
         };
+        if (this.inputSession?.cartridgeId) this.extra.cartridge_id = this.inputSession.cartridgeId;
         this.players[this.playerID] = this.extra;
         this.owner = false;
 
@@ -1990,9 +2072,11 @@ export class Netplay {
 
     /** Handle incoming data messages (chat, inputs, game state) */
     dataMessage(d) {
-        if (d.pause) this.emu.pause(true);
-        if (d.play) this.emu.play(true);
-        if (d.restart) this.emu.gameManager.restart();
+        if (!this.inputSession) {
+            if (d.pause) this.emu.pause(true);
+            if (d.play) this.emu.play(true);
+            if (d.restart) this.emu.gameManager.restart();
+        }
         
         if (d["chat-message"]) {
             const chat = d["chat-message"];
@@ -2014,7 +2098,7 @@ export class Netplay {
         }
 
         // Handle input sync messages
-        if (d["sync-control"]) {
+        if (!this.inputSession && d["sync-control"]) {
             d["sync-control"].forEach((v) => {
                 const f = parseInt(v.frame, 10);
                 if (!v.connected_input || v.connected_input[0] < 0) return;
@@ -2047,6 +2131,7 @@ export class Netplay {
         if (this._origPostMainLoop) {
             try { this._origPostMainLoop(); } catch (e) {}
         }
+        if (this.inputSession) return;
 
         if (this.emu.isNetplay && !this.owner) return;
         this.currentFrame = (this.emu.gameManager ? this.emu.gameManager.getFrameNum() : 0) - (this.init_frame || 0);

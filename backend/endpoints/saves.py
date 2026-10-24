@@ -1,7 +1,7 @@
 import os
 import re
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import Body, File, HTTPException, Query, Request, UploadFile, status
@@ -101,7 +101,9 @@ def _syncs_for_save(
     return db_device_save_sync_handler.get_syncs_for_saves([save_id]).get(save_id, [])
 
 
-DATETIME_TAG_PATTERN = re.compile(r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\]")
+DATETIME_TAG_PATTERN = re.compile(
+    r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:\.\d{6})?\]"
+)
 
 
 async def _delete_save(save: Save) -> None:
@@ -135,14 +137,33 @@ def _slot_retention(autocleanup: bool, autocleanup_limit: int) -> int | None:
     return min(limits, default=None)
 
 
-def _apply_datetime_tag(filename: str) -> str:
+def _apply_datetime_tag(filename: str, timestamp: datetime | None = None) -> str:
     name, ext = os.path.splitext(filename)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    tag = (timestamp or datetime.now(timezone.utc)).strftime("%Y-%m-%d_%H-%M-%S.%f")
 
     if DATETIME_TAG_PATTERN.search(name):
         name = DATETIME_TAG_PATTERN.sub("", name)
 
-    return f"{name} [{timestamp}]{ext}"
+    return f"{name} [{tag}]{ext}"
+
+
+async def _write_slotted_save(save_file: UploadFile, path: str, filename: str) -> str:
+    timestamp = datetime.now(timezone.utc)
+    for attempt in range(1000):
+        actual_filename = _apply_datetime_tag(
+            filename, timestamp + timedelta(microseconds=attempt)
+        )
+        try:
+            await fs_asset_handler.write_file(
+                file=save_file, path=path, filename=actual_filename, overwrite=False
+            )
+            return actual_filename
+        except FileExistsError:
+            save_file.file.seek(0)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Could not allocate a unique save filename; retry the upload",
+    )
 
 
 def _resolve_device(
@@ -235,8 +256,6 @@ async def add_save(
         ) from exc
 
     actual_filename = sanitized_save_filename
-    if slot:
-        actual_filename = _apply_datetime_tag(sanitized_save_filename)
 
     saves_path = fs_asset_handler.build_saves_file_path(
         user=request.user,
@@ -245,8 +264,12 @@ async def add_save(
         emulator=emulator,
     )
 
-    db_save = db_save_handler.get_save_by_filename(
-        user_id=request.user.id, rom_id=rom.id, file_name=actual_filename, slot=slot
+    db_save = (
+        None
+        if slot
+        else db_save_handler.get_save_by_filename(
+            user_id=request.user.id, rom_id=rom.id, file_name=actual_filename, slot=slot
+        )
     )
 
     if device and slot and not overwrite:
@@ -278,12 +301,17 @@ async def add_save(
                 detail="Save has been updated since your last sync",
             )
 
+    if slot:
+        actual_filename = await _write_slotted_save(
+            saveFile, saves_path, sanitized_save_filename
+        )
+    else:
+        await fs_asset_handler.write_file(
+            file=saveFile, path=saves_path, filename=actual_filename
+        )
+
     log.info(
         f"Uploading save {hl(actual_filename)} for {hl(str(rom.name), color=BLUE)}"
-    )
-
-    await fs_asset_handler.write_file(
-        file=saveFile, path=saves_path, filename=actual_filename
     )
 
     scanned_save = await scan_save(

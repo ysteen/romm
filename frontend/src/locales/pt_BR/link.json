@@ -1,0 +1,22 @@
+{
+  "automatic": "O jogo em execução do jogador que entrar será detectado automaticamente.",
+  "choose-slot": "Escolher posição",
+  "connected": "Conectado",
+  "connecting": "Conectando",
+  "error": "Erro de conexão",
+  "host-game": "Jogo do anfitrião",
+  "incompatible-state": "Este estado não corresponde aos jogos atuais ou ao jogador.",
+  "max-players": "Máximo de jogadores",
+  "no-state": "Nenhum estado salvo disponível.",
+  "player-slot": "Posição do jogador",
+  "ready": "Pronto",
+  "restart": "O modo de conexão reinicia os jogos a partir dos salvamentos internos. Salve no jogo antes de criar ou entrar em uma sala.",
+  "saving": "Salve primeiro no jogo. Apenas seu salvamento é sincronizado com o RomM a cada 10 segundos. Salvar e sair aguarda o fim do envio.",
+  "slot-hint": "Escolham posições consecutivas a partir de 1P para todos na sala.",
+  "solo": "Conexão encerrada. Você pode continuar jogando sozinho.",
+  "start-game": "Iniciar jogo",
+  "stopped": "Parado",
+  "supported": "ROMs de GB, GBC e GBA são compatíveis, incluindo arquivos ZIP com um único jogo.",
+  "waiting": "Aguardando outro jogador",
+  "your-game": "Seu jogo"
+}

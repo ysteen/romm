@@ -43,6 +43,93 @@ if (
 }
 const injectionCode = injection.expression.expression.getText(source);
 
+it("opens netplay directly over WebSocket on the mounted path", () => {
+  const patch = start.body.statements.find(
+    (node) =>
+      ts.isIfStatement(node) &&
+      node.expression.getText(source).includes("__rommNetplayPatched"),
+  );
+  if (!patch) throw new Error("Netplay socket configuration not found");
+  const io = vi.fn();
+  const context = { window: { io } };
+  const code = ts.transpile(patch.getText(source), {
+    target: ts.ScriptTarget.ESNext,
+  });
+  runInNewContext(code, context);
+  runInNewContext(code, context);
+  context.window.io("https://romm.example", {
+    timeout: 5000,
+    transports: ["polling"],
+  });
+  expect(io).toHaveBeenCalledExactlyOnceWith("https://romm.example", {
+    timeout: 5000,
+    path: "/netplay/socket.io",
+    transports: ["websocket"],
+  });
+});
+
+it("waits for the asynchronous player to configure its core before loading EmulatorJS", async () => {
+  const shell = read("../src/v2/views/Player/EmulatorJS.vue");
+  const script = shell.match(
+    /<script setup lang="ts">([\s\S]*?)<\/script>/,
+  )?.[1];
+  if (!script) throw new Error("Player shell not found");
+  const tree = ts.createSourceFile("Shell.ts", script, ts.ScriptTarget.Latest);
+  const play = tree.statements.find(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === "onPlay",
+  );
+  if (!play) throw new Error("Play handler not found");
+  const mounted = Promise.withResolvers<void>();
+  const loadScript = vi.fn();
+  const context = {
+    rom: { value: null },
+    selectedCore: { value: null },
+    coverRef: { value: null },
+    gameRunning: { value: false },
+    playing: { value: false },
+    playerRef: { value: null },
+    fullscreenOnPlay: { value: false },
+    window: {},
+    runtimeInjected: false,
+    until: () => ({ toBeTruthy: () => mounted.promise }),
+    nextTick: async () => {},
+    isJsResource: async () => true,
+    loadScript,
+  };
+  const code = ts.transpile(play.getText(tree), {
+    target: ts.ScriptTarget.ESNext,
+  });
+  const pending: Promise<void> = runInNewContext(code + "\nonPlay()", context);
+  await Promise.resolve();
+  expect(loadScript).not.toHaveBeenCalled();
+  mounted.resolve();
+  await pending;
+  expect(loadScript).toHaveBeenCalledOnce();
+});
+
+it("keeps a v2 core switch in the current document while preserving legacy reloads", () => {
+  const cleanup = source.statements.find(
+    (node) =>
+      ts.isExpressionStatement(node) &&
+      ts.isCallExpression(node.expression) &&
+      node.expression.expression.getText(source) === "onUnmounted",
+  );
+  if (!cleanup || !ts.isExpressionStatement(cleanup))
+    throw new Error("Unmount handler not found");
+  for (const reloadOnUnmount of [undefined, true, false]) {
+    const reload = vi.fn();
+    runInNewContext(cleanup.getText(source), {
+      onUnmounted: (callback: () => void) => callback(),
+      props: { reloadOnUnmount },
+      window: { location: { reload } },
+    });
+    expect(reload).toHaveBeenCalledTimes(reloadOnUnmount === false ? 0 : 1);
+  }
+  expect(read("../src/v2/views/Player/EmulatorJS.vue")).toContain(
+    ':reload-on-unmount="false"',
+  );
+});
+
 describe("EmulatorJS save integration", () => {
   it.each([
     { core: "melonds", applied: true, state: false, restarts: 1 },
@@ -250,6 +337,10 @@ describe("EmulatorJS runtime cache revision", () => {
     const emulator = read("../../custom-emulatorjs/data/src/emulator.js");
     const revision = emulator.match(/GameManager\.js\?v=([^"']+)/)?.[1];
     expect(revision).toBeTruthy();
+    expect(emulator.match(/cache\.js\?v=([^"']+)/)?.[1]).toBe(revision);
+    expect(emulator.match(/netplay\.js\?v=([^"']+)/)?.[1]).toBe(revision);
+    const cache = read("../../custom-emulatorjs/data/src/cache.js");
+    expect(cache.match(/cache-storage\.js\?v=([^"']+)/)?.[1]).toBe(revision);
     for (const entry of [
       "../src/console/views/Play.vue",
       "../src/v2/views/Player/EmulatorJS.vue",

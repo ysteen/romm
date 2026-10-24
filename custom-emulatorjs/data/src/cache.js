@@ -1,5 +1,5 @@
 import { simpleHash } from "./utils.js";
-import { EJS_STORAGE } from "./storage.js";
+import { EJS_CacheStorage } from "./cache-storage.js?v=20261024.1";
 import { EJS_COMPRESSION } from "./compression.js";
 
 const CACHE_BLOB_CHUNK_SIZE = 50 * 1024 * 1024;
@@ -24,6 +24,17 @@ class EJS_Download {
     constructor(storageCache = null, EJS = null) {
         this.storageCache = storageCache;
         this.EJS = EJS;
+    }
+
+    async useCache(operation) {
+        if (!this.storageCache?.enabled) return null;
+        try {
+            return await operation();
+        } catch (error) {
+            this.storageCache.enabled = false;
+            console.warn("Download cache unavailable; continuing without it", error);
+            return null;
+        }
     }
 
     /**
@@ -131,8 +142,8 @@ class EJS_Download {
                 }
 
                 let cached = null;
-                if (this.storageCache) {
-                    cached = await this.storageCache.get(url, false, "url");
+                if (!dontCache && method === "GET") {
+                    cached = await this.useCache(() => this.storageCache.get(url, false, "url"));
                 }
                 const now = Date.now();
                 if (cached) {
@@ -142,10 +153,13 @@ class EJS_Download {
                         return;
                     }
                     let lastModified = null;
+                    const headController = new AbortController();
+                    const headTimer = setTimeout(() => headController.abort(), 5000);
                     try {
-                        const headResp = await fetch(url, { method: "HEAD", headers });
-                        lastModified = headResp.headers.get("Last-Modified");
+                        const headResp = await fetch(url, { method: "HEAD", headers, cache: "no-cache", signal: headController.signal });
+                        if (headResp.ok) lastModified = headResp.headers.get("Last-Modified");
                     } catch (e) { }
+                    finally { clearTimeout(headTimer); }
                     if (lastModified) {
                         const lastModTime = Date.parse(lastModified);
                         if (!isNaN(lastModTime) && lastModTime <= cached.added) {
@@ -153,10 +167,6 @@ class EJS_Download {
                             resolve(cached);
                             return;
                         }
-                    } else {
-                        if (this.debug) console.log("Using cached version of", url);
-                        resolve(cached);
-                        return;
                     }
                 }
 
@@ -170,6 +180,7 @@ class EJS_Download {
                         method,
                         headers,
                         body,
+                        cache: dontCache ? "no-store" : "no-cache",
                         signal: controller.signal
                     });
                     clearTimeout(timer);
@@ -181,7 +192,12 @@ class EJS_Download {
                     }
                     const cacheControl = resp.headers.get("Cache-Control");
                     const expires = resp.headers.get("Expires");
-                    if (cacheControl && /max-age=(\d+)/.test(cacheControl)) {
+                    if (cacheControl && /\bno-store\b/i.test(cacheControl)) {
+                        dontCache = true;
+                    }
+                    if (cacheControl && /\bno-cache\b/i.test(cacheControl)) {
+                        cacheExpiry = now;
+                    } else if (cacheControl && /max-age=(\d+)/.test(cacheControl)) {
                         const maxAge = parseInt(cacheControl.match(/max-age=(\d+)/)[1]);
                         cacheExpiry = now + maxAge * 1000;
                     } else if (expires) {
@@ -276,8 +292,8 @@ class EJS_Download {
                 if (this.storageCache) {
                     const key = this.storageCache.generateCacheKey(files[0].bytes);
                     const cacheItem = new EJS_CacheItem(key, files, now, type, responseType, filename, url, cacheExpiry);
-                    if (dontCache === false) {
-                        await this.storageCache.put(cacheItem);
+                    if (!dontCache && method === "GET") {
+                        await this.useCache(() => this.storageCache.put(cacheItem));
                     }
                     resolve(cacheItem);
                 } else {
@@ -338,37 +354,8 @@ class EJS_Cache {
 
         if (this.storage && this.blobStorage) return;
 
-        return new Promise((resolve, reject) => {
-            const indexes = ["type", "url"];
-            const request = window.indexedDB.open(this.databaseName, 1);
-
-            request.onupgradeneeded = (event) => {
-                const db = event.target.result;
-                // Create metadata stores
-                const cacheStore = db.createObjectStore("cache");
-                // Create indexes for cache store if indexes array is present
-                if (Array.isArray(indexes)) {
-                    for (const idx of indexes) {
-                        if (!cacheStore.indexNames.contains(idx)) {
-                            cacheStore.createIndex(idx, idx, { unique: false });
-                        }
-                    }
-                }
-                // Create blobs store
-                db.createObjectStore("blobs");
-            };
-
-            request.onsuccess = (event) => {
-                this.storage = new EJS_STORAGE(this.databaseName, "cache", indexes);
-                this.blobStorage = new EJS_STORAGE(this.databaseName, "blobs");
-                resolve();
-            };
-
-            request.onerror = (event) => {
-                console.error("Error creating cache database:", event);
-                reject(event);
-            };
-        });
+        this.storage = new EJS_CacheStorage(this.databaseName, "cache");
+        this.blobStorage = new EJS_CacheStorage(this.databaseName, "blobs");
     }
 
     /**
@@ -397,29 +384,13 @@ class EJS_Cache {
     }
 
     /**
-     * Opens the raw IndexedDB object store used for blob payload records.
-     * @param {IDBTransactionMode} [mode="readwrite"] - The transaction mode to open the store with.
-     * @returns {Promise<IDBObjectStore|null>} The blob object store, or null when storage is unavailable.
-     */
-    async getBlobObjectStore(mode = "readwrite") {
-        if (!this.blobStorage) return null;
-        return await this.blobStorage.getObjectStore(mode);
-    }
-
-    /**
      * Writes a single blob manifest part or chunk record into the blobs store.
      * @param {string} key - The IndexedDB key for the record.
      * @param {*} value - The value to persist for that record.
      * @returns {Promise<void>}
      */
     async putBlobEntry(key, value) {
-        const objectStore = await this.getBlobObjectStore();
-        if (!objectStore) return;
-        return await new Promise(resolve => {
-            const request = objectStore.put(value, key);
-            request.onsuccess = () => resolve();
-            request.onerror = () => resolve();
-        });
+        await this.blobStorage.put(key, value);
     }
 
     /**
@@ -428,13 +399,7 @@ class EJS_Cache {
      * @returns {Promise<*|null>} The stored value, or null if it is missing.
      */
     async getBlobEntry(key) {
-        const objectStore = await this.getBlobObjectStore("readonly");
-        if (!objectStore) return null;
-        return await new Promise(resolve => {
-            const request = objectStore.get(key);
-            request.onsuccess = () => resolve(request.result ?? null);
-            request.onerror = () => resolve(null);
-        });
+        return (await this.blobStorage.get(key)) ?? null;
     }
 
     /**
@@ -467,13 +432,7 @@ class EJS_Cache {
      * @returns {Promise<void>}
      */
     async removeBlobEntry(key) {
-        const objectStore = await this.getBlobObjectStore();
-        if (!objectStore) return;
-        return await new Promise(resolve => {
-            const request = objectStore.delete(key);
-            request.onsuccess = () => resolve();
-            request.onerror = () => resolve();
-        });
+        await this.blobStorage.remove(key);
     }
 
     /**
@@ -595,24 +554,19 @@ class EJS_Cache {
         // ensure database is created
         await this.createCacheDatabase();
 
-        // clean up cache on first get if not already done
-        if (!this.startupCleanupCompleted) {
-            await this.cleanup();
-            this.startupCleanupCompleted = true;
-        }
-
         const item = await this.storage.get(key, indexName);
         // if the item exists, update its lastAccessed time and return cache item
         if (item) {
             item.lastAccessed = Date.now();
-            await this.storage.put(item.key, item);
+            // A cache hit must not wait for writes or full-cache maintenance.
+            void this.storage.put(item.key, { ...item }).catch(error => {
+                if (this.debug) console.warn("Could not update download cache access time", error);
+            });
 
             if (!metadataOnly) {
                 // get the blob from cache-blobs
                 item.files = await this.getBlobFiles(item.key);
                 if (!item.files) {
-                    await this.delete(item.key);
-                    await this.cleanup();
                     return null;
                 }
             }
@@ -633,6 +587,14 @@ class EJS_Cache {
     async put(item) {
         if (!this.enabled) return;
 
+        const write = (this.writeQueue || Promise.resolve()).then(() => this.storeItem(item));
+        this.writeQueue = write.catch(() => {});
+        return write;
+    }
+
+    async storeItem(item) {
+        if (!this.enabled) return;
+
         // ensure database is created
         await this.createCacheDatabase();
 
@@ -641,14 +603,20 @@ class EJS_Cache {
             throw new Error("Item must be an instance of EJS_CacheItem");
         }
 
+        item.fileSize = item.size();
+        if (item.fileSize > this.maxSizeMB * 1024 * 1024) return;
+        if (!this.startupCleanupCompleted) {
+            await this.cleanup();
+            this.startupCleanupCompleted = true;
+        }
+
         // check if the item exists, if so remove the existing item
-        const existingItem = await this.get(item.key);
+        const existingItem = await this.storage.get(item.key);
         if (existingItem) {
             await this.delete(item.key);
         }
-
-        // add file size attribute
-        item.fileSize = item.size();
+        const previousUrl = await this.storage.get(item.url, "url");
+        if (previousUrl && previousUrl.key !== item.key) await this.delete(previousUrl.key);
 
         // check that the size of item.files does not cause the cache to exceed maxSizeMB
         let currentSize = 0;
@@ -675,7 +643,8 @@ class EJS_Cache {
             }
         }
 
-        // store the metadata in cache
+        // Publish metadata only after every payload chunk has committed.
+        await this.storeBlobFiles(item.key, item.files);
         await this.storage.put(item.key, {
             key: item.key,
             fileSize: item.fileSize,
@@ -687,9 +656,6 @@ class EJS_Cache {
             url: item.url,
             cacheExpiry: item.cacheExpiry
         });
-
-        // store the files in cache-blobs
-        await this.storeBlobFiles(item.key, item.files);
     }
 
     /**
@@ -706,6 +672,7 @@ class EJS_Cache {
             await this.removeBlobFiles(key);
         } catch (e) {
             console.error("Failed to delete cache item:", e);
+            throw e;
         }
     }
 

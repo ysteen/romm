@@ -1,0 +1,22 @@
+{
+  "automatic": "The joining player’s running game is detected automatically.",
+  "choose-slot": "Choose a slot",
+  "connected": "Connected",
+  "connecting": "Connecting",
+  "error": "Connection error",
+  "host-game": "Host’s game",
+  "incompatible-state": "This state does not match the current games or player.",
+  "max-players": "Maximum players",
+  "no-state": "No saved state is available.",
+  "player-slot": "Player slot",
+  "ready": "Ready",
+  "restart": "Link play restarts the games from their in-game saves. Save inside your game before creating or joining a room.",
+  "saving": "Save in the game first. Only your save syncs to RomM every 10 seconds. Save and quit waits for the upload to finish.",
+  "slot-hint": "Choose consecutive slots from 1P for everyone in the room.",
+  "solo": "Link disconnected. You can keep playing on your own.",
+  "start-game": "Start game",
+  "stopped": "Stopped",
+  "supported": "GB, GBC and GBA ROMs, including ZIP files containing one game, are supported.",
+  "waiting": "Waiting for another player",
+  "your-game": "Your game"
+}

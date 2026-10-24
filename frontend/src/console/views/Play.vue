@@ -20,6 +20,7 @@ import api from "@/services/api";
 import firmwareApi from "@/services/api/firmware";
 import playSessionApi from "@/services/api/play-session";
 import romApi from "@/services/api/rom";
+import { createDirectorySaveAdapter } from "@/services/emulatorjs/directory-saves";
 import storeAuth from "@/stores/auth";
 import storeConfig from "@/stores/config";
 import storeHeartbeat from "@/stores/heartbeat";
@@ -437,6 +438,7 @@ async function boot() {
   window.EJS_core = core;
   const isDosBoxPure = ["dos", "dosbox_pure"].includes(core);
   const isAzahar = core === "azahar";
+  window.EJS_saveFileAdapter = createDirectorySaveAdapter;
   window.EJS_externalFiles =
     isDosBoxPure && selectedInitialSave?.download_path
       ? { "/data/saves/": selectedInitialSave.download_path }
@@ -712,7 +714,7 @@ async function boot() {
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
-  const ROMM_RUNTIME_REVISION = "20261005.1";
+  const ROMM_RUNTIME_REVISION = "20261024.1";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 

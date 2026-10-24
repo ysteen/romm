@@ -43,15 +43,21 @@ class EJS_GameManager {
         this.initShaders();
         this.setupPreLoadSettings();
 
-        this.EJS.on("exit", () => {
+        this.EJS.on("exit", (options) => {
+            if (this.exitInProgress) return;
+            this.exitInProgress = true;
             // Preserve upstream shutdown semantics for cores with a single
             // save file. Some cores only commit their final SRAM on restart.
-            if (!this.supportsDirectorySaveBundle()) {
+            if (!this.usesSaveDirectory()) {
                 if (!this.EJS.failedToStart) {
                     this.saveSaveFiles();
-                    this.functions.restart();
-                    this.saveSaveFiles();
+                    if (options?.restart !== false) {
+                        this.functions.restart();
+                        this.saveSaveFiles();
+                    }
                 }
+                clearInterval(this.EJS.saveSaveInterval);
+                this.EJS.saveSaveInterval = null;
                 this.toggleMainLoop(0);
                 this.FS.unmount("/data/saves");
                 setTimeout(() => {
@@ -63,9 +69,6 @@ class EJS_GameManager {
                 }, 1000);
                 return;
             }
-
-            if (this.exitInProgress) return;
-            this.exitInProgress = true;
 
             // Directory-backed cores flush their virtual save filesystem
             // directly. Avoid a synchronous core restart during navigation.
@@ -169,21 +172,16 @@ class EJS_GameManager {
         const externalFiles = this.EJS.config.externalFiles;
         if (!externalFiles || externalFiles.constructor.name !== "Object") return;
         for (const [path, url] of Object.entries(externalFiles)) {
-            const isSaveBundle = path === "/data/saves/" && this.supportsDirectorySaveBundle();
+            if (await this.getSaveFileAdapter()?.loadExternalFile(path, url)) continue;
             try {
                 const extractToDirectory = path.trim().endsWith("/");
                 const cacheItem = await this.EJS.downloadFile(
                     url, this.EJS.downloadType.support.name, null, true,
-                    { responseType: "arraybuffer" },
-                    extractToDirectory, // Legacy ZIP bundles may have a .srm extension.
+                    { responseType: "arraybuffer" }, extractToDirectory,
                     this.EJS.downloadType.support.dontCache, false
                 );
-                if (isSaveBundle) {
-                    this.writeDirectorySaveFiles(cacheItem.data.files);
-                } else if (extractToDirectory) {
-                    for (const file of cacheItem.data.files) {
-                        this.writeFile(path + file.filename, file.bytes);
-                    }
+                if (extractToDirectory) {
+                    for (const file of cacheItem.data.files) this.writeFile(path + file.filename, file.bytes);
                 } else if (cacheItem.data.files.length) {
                     this.writeFile(path, cacheItem.data.files[0].bytes);
                 }
@@ -191,8 +189,6 @@ class EJS_GameManager {
                     await new Promise((resolve, reject) => this.FS.syncfs(false, error => error ? reject(error) : resolve()));
                 }
             } catch (error) {
-                // Booting with stale browser data could overwrite the selected server save.
-                if (isSaveBundle) throw error;
                 if (this.EJS.debug) console.warn(`Failed to fetch external file '${url}'`, error);
             }
         }
@@ -588,18 +584,19 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
     getSaveFilePath() {
         return this.functions.getSaveFilePath();
     }
-    getSaveFileName(data) {
-        const name = this.getSaveFilePath().split("/").pop();
-        if (this.supportsDirectorySaveBundle() && data?.[0] === 0x50 && data?.[1] === 0x4b
-            && data?.[2] === 0x03 && data?.[3] === 0x04) {
-            return name.replace(/\.[^.]+$/, "") + ".zip";
+    getSaveFileAdapter() {
+        if (this.saveFileAdapter === undefined) {
+            this.saveFileAdapter = this.EJS.config?.saveFileAdapter?.(this) || null;
         }
-        return name;
+        return this.saveFileAdapter;
+    }
+    getSaveFileName(data) {
+        return this.getSaveFileAdapter()?.fileName(data) || this.getSaveFilePath().split("/").pop();
     }
     saveSaveFiles() {
         this.functions.saveSaveFiles();
         this.EJS.callEvent("saveSaveFiles", this.getSaveFile(false));
-        if (this.supportsDirectorySaveBundle()) this.syncSaveFileSystem();
+        if (this.usesSaveDirectory()) this.syncSaveFileSystem();
     }
     syncSaveFileSystem() {
         // IDBFS only restores files that have been flushed with syncfs(false).
@@ -684,20 +681,8 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
         if (save !== false) {
             this.saveSaveFiles();
         }
-        if (this.isDosBoxPure()) {
-            const bundle = this.createDosBoxPureSaveBundle();
-            if (bundle) return bundle;
-        }
-        if (this.isPpsspp()) {
-            const bundle = this.createPpssppSaveBundle();
-            if (bundle) return bundle;
-            return null;
-        }
-        if (this.isAzahar()) {
-            const bundle = this.createAzaharSaveBundle();
-            if (bundle) return bundle;
-            return null;
-        }
+        const adapter = this.getSaveFileAdapter();
+        if (adapter) return adapter.read();
         const exists = this.FS.analyzePath(this.getSaveFilePath()).exists;
         return (exists ? this.FS.readFile(this.getSaveFilePath()) : null);
     }
@@ -710,327 +695,8 @@ IF EXIST AUTORUN.BAT CALL AUTORUN.BAT
     isAzahar() {
         return this.EJS.getCore() === "azahar";
     }
-    supportsDirectorySaveBundle() {
+    usesSaveDirectory() {
         return this.isDosBoxPure() || this.isPpsspp() || this.isAzahar();
-    }
-    getDosBoxPureSaveFiles() {
-        const savePath = this.getSaveFilePath();
-        const saveName = savePath.split("/").pop();
-        const stem = saveName.includes(".") ? saveName.substring(0, saveName.lastIndexOf(".")) : saveName;
-        const root = "/data/saves";
-        const saveDirectory = savePath.substring(0, savePath.lastIndexOf("/")) || root;
-        const result = [];
-        if (!this.FS.analyzePath(saveDirectory).exists) return result;
-        for (const name of this.FS.readdir(saveDirectory)) {
-            if (name === "." || name === "..") continue;
-            const path = saveDirectory + "/" + name;
-            const stat = this.FS.stat(path);
-            if (!this.FS.isFile(stat.mode)) continue;
-            // DOSBox Pure uses one or more of these siblings for a title:
-            // .srm, .pure.zip, -CDRIVE.sav and -<content hash>.sav.
-            if (name === saveName || name.startsWith(stem + ".") || name.startsWith(stem + "-")) {
-                // Keep the core-specific subdirectory (usually DOSBox-pure/)
-                // so extraction recreates the exact paths the core will open.
-                result.push({ name: path.substring(root.length + 1), bytes: this.FS.readFile(path) });
-            }
-        }
-        return result;
-    }
-    getPpssppSaveFiles() {
-        const root = "/data/saves";
-        const saveRoot = root + "/PPSSPP/PSP/SAVEDATA";
-        const result = [];
-        if (!this.FS.analyzePath(saveRoot).exists) return result;
-
-        const collectFiles = (path) => {
-            const files = [];
-            for (const name of this.FS.readdir(path)) {
-                if (name === "." || name === "..") continue;
-                const child = path + "/" + name;
-                const stat = this.FS.stat(child);
-                if (this.FS.isDir(stat.mode)) {
-                    files.push(...collectFiles(child));
-                } else if (this.FS.isFile(stat.mode)) {
-                    files.push({ path: child, stat });
-                }
-            }
-            return files;
-        };
-
-        // PPSSPP stores each title in one or more top-level SAVEDATA folders.
-        // Include every file from a folder when at least one file was written
-        // during this session. This keeps companion PARAM.SFO/icon files while
-        // excluding unrelated PSP games restored from the shared browser DB.
-        const changedAfter = this.saveSessionStartedAt - 2000;
-        for (const name of this.FS.readdir(saveRoot)) {
-            if (name === "." || name === "..") continue;
-            const path = saveRoot + "/" + name;
-            const stat = this.FS.stat(path);
-            const files = this.FS.isDir(stat.mode) ? collectFiles(path) : [{ path, stat }];
-            const changed = files.some((file) => {
-                const modifiedAt = file.stat.mtime instanceof Date
-                    ? file.stat.mtime.getTime()
-                    : new Date(file.stat.mtime).getTime();
-                return modifiedAt >= changedAfter;
-            });
-            if (!changed) continue;
-            for (const file of files) {
-                result.push({
-                    name: file.path.substring(root.length + 1),
-                    bytes: this.FS.readFile(file.path)
-                });
-            }
-        }
-        return result;
-    }
-    getAzaharSaveFiles() {
-        const root = "/data/saves";
-        const portableRoots = this.getAzaharSaveRoots();
-        if (portableRoots) {
-            return Object.values(portableRoots).flatMap(directory => this.collectSaveFiles(root + "/" + directory));
-        }
-        // RetroArch gives the core /data/saves/Azahar as its save directory,
-        // then Azahar appends its own Azahar user-directory component.
-        const saveRoot = root + "/Azahar/Azahar/sdmc";
-        if (!this.FS.analyzePath(saveRoot).exists) return [];
-
-        const collectFiles = (path) => {
-            const files = [];
-            for (const name of this.FS.readdir(path)) {
-                if (name === "." || name === "..") continue;
-                const child = path + "/" + name;
-                const stat = this.FS.stat(child);
-                if (this.FS.isDir(stat.mode)) {
-                    files.push(...collectFiles(child));
-                } else if (this.FS.isFile(stat.mode)) {
-                    files.push({ path: child, stat });
-                }
-            }
-            return files;
-        };
-
-        const changedAfter = this.saveSessionStartedAt - 2000;
-        const changedFiles = collectFiles(saveRoot).filter((file) => {
-            const modifiedAt = file.stat.mtime instanceof Date
-                ? file.stat.mtime.getTime()
-                : new Date(file.stat.mtime).getTime();
-            return modifiedAt >= changedAfter;
-        });
-        const saveDirectories = new Set();
-        for (const file of changedFiles) {
-            const relativeParts = file.path.substring(saveRoot.length + 1).split("/");
-            const marker = relativeParts.findIndex((part) => part === "title" || part === "extdata");
-            if (marker >= 0 && relativeParts.length >= marker + 3) {
-                saveDirectories.add(saveRoot + "/" + relativeParts.slice(0, marker + 3).join("/"));
-            } else {
-                saveDirectories.add(file.path.substring(0, file.path.lastIndexOf("/")));
-            }
-        }
-
-        const result = [];
-        const included = new Set();
-        for (const directory of saveDirectories) {
-            for (const file of collectFiles(directory)) {
-                if (included.has(file.path)) continue;
-                included.add(file.path);
-                result.push({
-                    name: file.path.substring(root.length + 1),
-                    bytes: this.FS.readFile(file.path)
-                });
-            }
-        }
-        return result;
-    }
-    collectSaveFiles(directory) {
-        if (!this.FS.analyzePath(directory).exists) return [];
-        const result = [];
-        for (const name of this.FS.readdir(directory)) {
-            if (name === "." || name === "..") continue;
-            const path = directory + "/" + name;
-            const stat = this.FS.stat(path);
-            if (this.FS.isDir(stat.mode)) result.push(...this.collectSaveFiles(path));
-            else if (this.FS.isFile(stat.mode)) result.push({ name: path.substring("/data/saves/".length), bytes: this.FS.readFile(path) });
-        }
-        return result;
-    }
-    getAzaharSaveRoots() {
-        if (this.azaharSaveRoots) return this.azaharSaveRoots;
-        if (!this.EJS.fileName) return null;
-        const path = "/" + this.EJS.fileName.replace(/^\/+/, "");
-        if (!this.FS.analyzePath(path).exists) return null;
-        const stream = this.FS.open(path, "r");
-        try {
-            const read = (offset, size) => {
-                const bytes = new Uint8Array(size);
-                if (this.FS.read(stream, bytes, 0, size, offset) !== size) return null;
-                return new DataView(bytes.buffer);
-            };
-            // NCSD's first partition contains the executable NCCH. Only read
-            // its headers; copying a whole 3DS ROM here can exhaust WASM memory.
-            let offset = 0;
-            let header = read(offset, 0x200);
-            if (header?.getUint32(0x100, true) === 0x4453434e) {
-                offset = header.getUint32(0x120, true) * 0x200;
-                header = read(offset, 0x200);
-            }
-            if (header?.getUint32(0x100, true) !== 0x4843434e) return null;
-            const hex = value => value.toString(16).padStart(8, "0");
-            const low = header.getUint32(0x118, true);
-            const high = header.getUint32(0x11c, true);
-            if (!high && !low) return null;
-            let extdataId = BigInt(low >>> 8);
-            // Decrypted ExHeader storage information can override the common
-            // title-ID mapping, including titles with extended savedata access.
-            if ((header.getUint8(0x18f) & 4) && header.getUint32(0x180, true) >= 0x400) {
-                const caps = read(offset + 0x400, 0x50);
-                if (caps) {
-                    extdataId = caps.getBigUint64(0x30, true);
-                    if (caps.getUint8(0x4f) >> 1) {
-                        const ids = [caps.getBigUint64(0x40, true), extdataId]
-                            .flatMap(value => [40n, 20n, 0n].map(shift => (value >> shift) & 0xfffffn));
-                        extdataId = ids.find(value => value !== 0n) || 0n;
-                    }
-                }
-            }
-            const id = "00000000000000000000000000000000";
-            const root = `Azahar/Azahar/sdmc/Nintendo 3DS/${id}/${id}`;
-            const roots = { data: `${root}/title/${hex(high)}/${hex(low)}/data` };
-            if (extdataId) {
-                // Azahar's archive backend uses uppercase hex for extdata.
-                roots.extdata = `${root}/extdata/${hex(extdataId >> 32n).toUpperCase()}/${hex(extdataId & 0xffffffffn).toUpperCase()}`;
-            }
-            this.azaharSaveRoots = roots;
-            return roots;
-        } finally {
-            this.FS.close(stream);
-        }
-    }
-    crc32(data) {
-        if (!EJS_GameManager.crcTable) {
-            EJS_GameManager.crcTable = new Uint32Array(256);
-            for (let n = 0; n < 256; n++) {
-                let c = n;
-                for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-                EJS_GameManager.crcTable[n] = c >>> 0;
-            }
-        }
-        let crc = 0xffffffff;
-        for (const value of data) crc = EJS_GameManager.crcTable[(crc ^ value) & 0xff] ^ (crc >>> 8);
-        return (crc ^ 0xffffffff) >>> 0;
-    }
-    createZipSaveBundle(files, label) {
-        if (!files.length) return null;
-        const encoder = new TextEncoder();
-        const entries = files.map((file) => ({
-            ...file,
-            fileName: encoder.encode(file.name),
-            crc: this.crc32(file.bytes)
-        }));
-        const localSize = entries.reduce((sum, file) => sum + 30 + file.fileName.length + file.bytes.length, 0);
-        const centralSize = entries.reduce((sum, file) => sum + 46 + file.fileName.length, 0);
-        const output = new Uint8Array(localSize + centralSize + 22);
-        const view = new DataView(output.buffer);
-        const write16 = (offset, value) => view.setUint16(offset, value, true);
-        const write32 = (offset, value) => view.setUint32(offset, value >>> 0, true);
-        let offset = 0;
-        for (const file of entries) {
-            file.offset = offset;
-            write32(offset, 0x04034b50); write16(offset + 4, 20); write16(offset + 6, 0x0800);
-            write16(offset + 8, 0); write16(offset + 10, 0); write16(offset + 12, 33);
-            write32(offset + 14, file.crc); write32(offset + 18, file.bytes.length); write32(offset + 22, file.bytes.length);
-            write16(offset + 26, file.fileName.length); write16(offset + 28, 0);
-            output.set(file.fileName, offset + 30); output.set(file.bytes, offset + 30 + file.fileName.length);
-            offset += 30 + file.fileName.length + file.bytes.length;
-        }
-        const centralOffset = offset;
-        for (const file of entries) {
-            write32(offset, 0x02014b50); write16(offset + 4, 20); write16(offset + 6, 20); write16(offset + 8, 0x0800);
-            write16(offset + 10, 0); write16(offset + 12, 0); write16(offset + 14, 33);
-            write32(offset + 16, file.crc); write32(offset + 20, file.bytes.length); write32(offset + 24, file.bytes.length);
-            write16(offset + 28, file.fileName.length); write16(offset + 30, 0); write16(offset + 32, 0);
-            write16(offset + 34, 0); write16(offset + 36, 0); write32(offset + 38, 0); write32(offset + 42, file.offset);
-            output.set(file.fileName, offset + 46);
-            offset += 46 + file.fileName.length;
-        }
-        write32(offset, 0x06054b50); write16(offset + 4, 0); write16(offset + 6, 0);
-        write16(offset + 8, entries.length); write16(offset + 10, entries.length);
-        write32(offset + 12, centralSize); write32(offset + 16, centralOffset); write16(offset + 20, 0);
-        if (this.EJS.debug) console.log(`[${label} SAVE] Bundled files:`, entries.map((file) => `${file.name} (${file.bytes.length})`));
-        return output;
-    }
-    createDosBoxPureSaveBundle() {
-        return this.createZipSaveBundle(this.getDosBoxPureSaveFiles(), "DOSBOX");
-    }
-    createPpssppSaveBundle() {
-        const prefix = "PPSSPP/PSP/SAVEDATA/";
-        const files = this.getPpssppSaveFiles().map(file => ({ ...file, name: file.name.substring(prefix.length) }));
-        return this.createZipSaveBundle(files, "PPSSPP");
-    }
-    createAzaharSaveBundle() {
-        const roots = this.getAzaharSaveRoots();
-        const files = this.getAzaharSaveFiles().map(file => {
-            const root = roots && Object.entries(roots).find(([, path]) => file.name.startsWith(path + "/"));
-            return root ? { ...file, name: root[0] + file.name.substring(root[1].length) } : file;
-        });
-        return this.createZipSaveBundle(files, "AZAHAR");
-    }
-    writeDirectorySaveFiles(files) {
-        const prepared = new Map();
-        for (const file of files) {
-            const name = file.filename.replaceAll("\\", "/");
-            if (!name || name.startsWith("/") || name.includes(":") || name.includes("\0") || name.includes("//")
-                || name.split("/").some(part => part === ".." || part === ".")) {
-                throw new Error(`Unsafe save bundle path: ${file.filename}`);
-            }
-            if (name.endsWith("/")) continue;
-            let target = name;
-            if (this.isPpsspp()) {
-                target = name.replace(/^(?:PPSSPP\/PSP\/SAVEDATA|PSP\/SAVEDATA|SAVEDATA)\//, "");
-                if (!target.includes("/") || target.startsWith("PPSSPP/") || target.startsWith("PSP/")) continue;
-                target = "PPSSPP/PSP/SAVEDATA/" + target;
-            } else if (this.isAzahar()) {
-                if (/^(data|extdata)\//.test(name)) {
-                    const component = name.substring(0, name.indexOf("/"));
-                    const root = this.getAzaharSaveRoots()?.[component];
-                    if (!root) throw new Error("Cannot determine the Azahar save location for this ROM");
-                    target = root + name.substring(component.length);
-                } else if (!name.startsWith("Azahar/Azahar/sdmc/")) {
-                    continue;
-                }
-            }
-            if (prepared.has(target)) throw new Error(`Duplicate save bundle path: ${target}`);
-            prepared.set(target, file.bytes);
-        }
-        if (!prepared.size) throw new Error("Save bundle contained no files for this core");
-        for (const path of prepared.keys()) {
-            const parts = path.split("/");
-            while (parts.length > 1) {
-                parts.pop();
-                if (prepared.has(parts.join("/"))) throw new Error(`Conflicting save bundle path: ${path}`);
-            }
-        }
-        // Validate every entry before applying any file, including legacy bundles.
-        for (const [path, bytes] of prepared) this.writeFile("/data/saves/" + path, bytes);
-        return prepared.size;
-    }
-    async loadDirectorySaveBundle(data) {
-        if (!this.supportsDirectorySaveBundle()) {
-            throw new Error("Directory save bundles are unsupported by this core");
-        }
-        const files = await this.EJS.compression.decompress(
-            data,
-            () => {},
-            null
-        );
-        if (files["!!notCompressedData"]) {
-            throw new Error("Directory save bundle is not a supported archive");
-        }
-        const restored = this.writeDirectorySaveFiles(Object.entries(files).map(([filename, bytes]) => ({ filename, bytes })));
-        await new Promise((resolve, reject) => {
-            this.FS.syncfs(false, (error) => error ? reject(error) : resolve());
-        });
-        this.loadSaveFiles();
-        if (this.EJS.debug) console.log(`[${this.EJS.getCore().toUpperCase()} SAVE] Restored ${restored} bundled files`);
     }
     loadSaveFiles() {
         this.clearEJSResetTimer();

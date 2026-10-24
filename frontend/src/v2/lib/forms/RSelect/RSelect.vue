@@ -107,7 +107,12 @@ interface Props {
   searchPlaceholder?: string;
   /** Where to place the menu relative to the activator. */
   menuLocation?:
-    "bottom" | "top" | "bottom start" | "bottom end" | "top start" | "top end";
+    | "bottom"
+    | "top"
+    | "bottom start"
+    | "bottom end"
+    | "top start"
+    | "top end";
   /** Px gap between activator and menu. */
   menuOffset?: number;
   /** Hard cap on visible chips (defaults to ∞). Overflow is otherwise
@@ -739,7 +744,10 @@ function closeMenu() {
   if (props.searchable && internalSearch.value) setSearch("");
 }
 function toggleMenu() {
-  if (isOpen.value) closeMenu();
+  if (isOpen.value && modality.value === "pad") {
+    const item = filteredItems.value[activeIndex.value];
+    if (item) selectItem(item);
+  } else if (isOpen.value) closeMenu();
   else openMenu();
 }
 

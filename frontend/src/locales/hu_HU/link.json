@@ -1,0 +1,22 @@
+{
+  "automatic": "A csatlakozó játékos futó játékát a rendszer automatikusan felismeri.",
+  "choose-slot": "Hely választása",
+  "connected": "Csatlakoztatva",
+  "connecting": "Csatlakozás",
+  "error": "Kapcsolódási hiba",
+  "host-game": "Házigazda játéka",
+  "incompatible-state": "Ez az állapot nem egyezik az aktuális játékokkal vagy játékossal.",
+  "max-players": "Játékosok maximális száma",
+  "no-state": "Nincs elérhető mentett állapot.",
+  "player-slot": "Játékos helye",
+  "ready": "Kész",
+  "restart": "Az összekapcsolás újraindítja a játékokat a játékon belüli mentéseikből. Szoba létrehozása vagy csatlakozás előtt ments a játékban.",
+  "saving": "Először ments a játékban. Csak a saját mentésed szinkronizálódik a RomM-mel 10 másodpercenként. A mentés és kilépés megvárja a feltöltés befejezését.",
+  "slot-hint": "Válasszatok egymást követő helyeket 1P-től a szoba minden játékosának.",
+  "solo": "A kapcsolat megszakadt. Egyedül folytathatod a játékot.",
+  "start-game": "Játék indítása",
+  "stopped": "Leállítva",
+  "supported": "A GB, GBC és GBA ROM-ok, valamint az egyetlen játékot tartalmazó ZIP-fájlok támogatottak.",
+  "waiting": "Várakozás egy másik játékosra",
+  "your-game": "Saját játék"
+}

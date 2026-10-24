@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>EmulatorJS download cache regression test</title>
+<pre id="result">Running</pre>
+<script type="module">
+import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "../data/src/cache.js?v=20261018.1";
+
+window.cacheTestPromise = (async () => {
+    const database = "EmulatorJS-cache-test-" + crypto.randomUUID();
+    const checks = [];
+    const check = (condition, message) => {
+        if (!condition) throw new Error(message);
+        checks.push(message);
+    };
+    const newCache = () => new EJS_Cache(true, database, 128, 7200);
+    const download = cache => new EJS_Download(cache).downloadFile(
+        "https://cache.example.test/game.zip", "ROM", "GET", {}, null, null, null,
+        30000, "arraybuffer", false, false, true
+    );
+    const originalFetch = window.fetch;
+    let downloads = 0;
+    window.fetch = async () => {
+        downloads++;
+        return new Response(new Uint8Array([0x50, 0x4b, 7, 8]));
+    };
+    try {
+        await download(newCache());
+        const restored = await download(newCache());
+        check(downloads === 1 && restored.source === "cache", "A new launch reuses the ROM without fetching");
+
+        const bytes = new Uint8Array(51 * 1024 * 1024);
+        bytes[0] = 42;
+        bytes[bytes.length - 1] = 99;
+        const core = new EJS_CacheItem("core", [
+            new EJS_FileItem("core.wasm", bytes),
+            new EJS_FileItem("core.js", new Uint8Array([1, 2, 3]))
+        ], Date.now(), "Core", "arraybuffer", "core.data", "https://cache.example.test/core.data?v=1", Date.now() + 60000);
+        const cache = newCache();
+        await cache.put(core);
+        const cachedCore = await newCache().get(core.url, false, "url");
+        check(cachedCore.files[0].bytes.length === bytes.length && cachedCore.files[0].bytes.at(-1) === 99
+            && cachedCore.files[0].bytes[0] === 42 && cachedCore.files[1].bytes[2] === 3,
+            "A 51 MiB extracted core round-trips through real IndexedDB chunks");
+        check(!(await cache.storage.get("core")).files, "Metadata does not duplicate the core payload");
+
+        await cache.storage.put("?EJS_KEYS!", ["core"]);
+        check((await cache.storage.getAll()).length === 2, "Legacy key indexes are excluded from metadata scans");
+        await cache.blobStorage.remove("core__blob__0__chunk__1");
+        check(await newCache().get("core") === null, "Missing core chunks produce a cache miss");
+
+        await new Promise((resolve, reject) => {
+            const request = indexedDB.deleteDatabase(database);
+            request.onsuccess = resolve;
+            request.onerror = () => reject(request.error);
+            request.onblocked = () => reject(new Error("Cache connections were left open"));
+        });
+        check(true, "All download cache connections close after transactions");
+        return { passed: true, checks };
+    } catch (error) {
+        return { passed: false, checks, error: String(error), stack: error.stack };
+    } finally {
+        window.fetch = originalFetch;
+    }
+})();
+document.querySelector("#result").textContent = JSON.stringify(await window.cacheTestPromise, null, 2);
+</script>

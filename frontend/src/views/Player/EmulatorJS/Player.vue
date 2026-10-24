@@ -24,6 +24,7 @@ import pendingAssetStore, {
   pendingAssetId,
   type PendingAsset,
 } from "@/services/pending-asset";
+import { createDirectorySaveAdapter } from "@/services/emulatorjs/directory-saves";
 import storeAuth from "@/stores/auth";
 import storeConfig from "@/stores/config";
 import storeHeartbeat from "@/stores/heartbeat";
@@ -90,6 +91,8 @@ const props = defineProps<{
   saveSlot?: string | null;
   /** Load State button label; the shell names the picker it opens. */
   loadStateLabel?: string;
+  /** V2 owns document replacement and can swap players within its stage. */
+  reloadOnUnmount?: boolean;
 }>();
 const romRef = ref<DetailedRom>(props.rom);
 // The save the session booted from, and the version this session has written
@@ -351,6 +354,7 @@ const usesDirectorySaveBundle = isDosBoxPure || isPpsspp || isAzahar;
 // AUTOBOOT.DBP, ISO/CUE media, and disk images.
 window.EJS_dontExtractRom = isDosBoxPure;
 // Directory-backed cores need their RomM save bundle restored before startup.
+window.EJS_saveFileAdapter = createDirectorySaveAdapter;
 window.EJS_externalFiles =
   usesDirectorySaveBundle && props.save?.download_path
     ? { "/data/saves/": props.save.download_path }
@@ -689,7 +693,7 @@ async function loadSave(save: SaveSchema): Promise<boolean> {
     if (disposed || generation !== saveGeneration) return false;
     const bytes = new Uint8Array(data);
     if (usesDirectorySaveBundle) {
-      await window.EJS_emulator.gameManager.loadDirectorySaveBundle(bytes);
+      await window.EJS_emulator.gameManager.getSaveFileAdapter().restore(bytes);
       if (disposed || generation !== saveGeneration) return false;
     } else {
       loadEmulatorJSSave(bytes);
@@ -929,13 +933,14 @@ window.EJS_onGameStart = async () => {
     };
   }
 
-  // Wrap the bundled global `io` so netplay uses mounted socket path.
+  // Polling requests can reach different backend workers and lose the session.
   if (window.io && !window.io.__rommNetplayPatched) {
     const originalIo = window.io;
     const patchedIo = ((url: string, opts?: Record<string, unknown>) =>
       originalIo(url, {
         ...opts,
         path: "/netplay/socket.io",
+        transports: ["websocket"],
       })) as NonNullable<Window["io"]>;
     patchedIo.__rommNetplayPatched = true;
     window.io = patchedIo;
@@ -1198,7 +1203,7 @@ function immediateExit() {
 
 onUnmounted(() => {
   // Force full reload to reset COEP/COOP, so cross-origin isolation is turned off.
-  window.location.reload();
+  if (props.reloadOnUnmount !== false) window.location.reload();
 });
 </script>
 

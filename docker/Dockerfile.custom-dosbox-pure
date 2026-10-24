@@ -4,6 +4,7 @@ FROM ${ROMM_BASE_IMAGE} AS romm-base
 # Use glibc for native Vite dependencies and build static assets without emulation.
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS frontend-build
 WORKDIR /front
+ENV NODE_OPTIONS=--max-old-space-size=6144
 COPY frontend/package*.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY frontend/ ./
@@ -21,11 +22,14 @@ COPY --from=romm-base /var/www/html/assets/emulatorjs/data/cores/ /emulatorjs/da
 RUN find /emulatorjs/data/cores -type f \( -name '*.data' -o -path '*/reports/*.json' \) -print \
     | while IFS= read -r file; do \
         relative="${file#/emulatorjs/data/}"; \
-        curl -fL --retry 3 -o "${file}.download" "https://cdn.emulatorjs.org/nightly/data/${relative}"; \
+        curl -fL --connect-timeout 20 --max-time 600 --retry 3 -o "${file}.download" "https://cdn.emulatorjs.org/nightly/data/${relative}"; \
         mv "${file}.download" "${file}"; \
       done
 
 FROM ${ROMM_BASE_IMAGE}
+ARG ROMM_CUSTOM_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/ysteen/romm" \
+      org.opencontainers.image.revision="${ROMM_CUSTOM_REVISION}"
 
 COPY backend/ /backend/
 COPY --from=romm-base /backend/__version__.py /backend/__version__.py
@@ -39,8 +43,15 @@ COPY --from=emulatorjs-nightly /emulatorjs/data/ /var/www/html/assets/emulatorjs
 COPY custom-emulatorjs/data/loader.js /var/www/html/assets/emulatorjs/data/loader.js
 COPY custom-emulatorjs/data/version.json /var/www/html/assets/emulatorjs/data/version.json
 COPY custom-emulatorjs/data/src/emulator.js /var/www/html/assets/emulatorjs/data/src/emulator.js
+COPY custom-emulatorjs/data/src/cache.js custom-emulatorjs/data/src/cache-storage.js /var/www/html/assets/emulatorjs/data/src/
 COPY custom-emulatorjs/data/src/GameManager.js /var/www/html/assets/emulatorjs/data/src/GameManager.js
 COPY custom-emulatorjs/data/src/azahar-system-data.js /var/www/html/assets/emulatorjs/data/src/azahar-system-data.js
+COPY custom-emulatorjs/data/src/consts.js custom-emulatorjs/data/src/input-netplay.js custom-emulatorjs/data/src/link-core.js custom-emulatorjs/data/src/link-netplay.js custom-emulatorjs/data/src/link-lobby.js custom-emulatorjs/data/src/netplay.js /var/www/html/assets/emulatorjs/data/src/
+COPY custom-emulatorjs/input-netplay/ /var/www/html/assets/emulatorjs/input-netplay/
+COPY custom-emulatorjs/data/cores/sameboy-wasm.data /var/www/html/assets/emulatorjs/data/cores/sameboy-wasm.data
+COPY custom-emulatorjs/data/cores/reports/sameboy.json /var/www/html/assets/emulatorjs/data/cores/reports/sameboy.json
+COPY custom-emulatorjs/data/cores/mgba_splitscreen-wasm.data /var/www/html/assets/emulatorjs/data/cores/mgba_splitscreen-wasm.data
+COPY custom-emulatorjs/data/cores/reports/mgba_splitscreen.json /var/www/html/assets/emulatorjs/data/cores/reports/mgba_splitscreen.json
 COPY custom-emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-legacy-wasm.data
 COPY custom-emulatorjs/data/cores/dosbox_pure-thread-wasm.data /var/www/html/assets/emulatorjs/data/cores/dosbox_pure-thread-wasm.data
 COPY custom-emulatorjs/data/cores/reports/dosbox_pure.json /var/www/html/assets/emulatorjs/data/cores/reports/dosbox_pure.json

@@ -35,6 +35,7 @@ while (($#)); do
 done
 ENV_FILE="$(realpath -m "$ENV_FILE")"
 cd "$ROOT"
+export ROMM_CUSTOM_REVISION="${ROMM_CUSTOM_REVISION:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
 
 random_hex() {
   local bytes="$1"
@@ -71,7 +72,7 @@ ROMFORGE_ENABLED=false
 DISABLE_JSDOS=true
 EOF
   chmod 600 "$ENV_FILE"
-  echo "Generated deploy/.env with random secrets."
+  echo "Generated $ENV_FILE with random secrets."
 fi
 
 # Compose parses the env file; never execute it as shell code.
@@ -133,13 +134,14 @@ if $BUILD_IMAGES; then
 fi
 # The worker shares the application's network namespace and must be recreated with it.
 "${COMPOSE[@]}" stop romforge
-"${COMPOSE[@]}" up -d --no-build database romm
+"${COMPOSE[@]}" up -d --no-build --wait --wait-timeout 360 database romm
 if [[ "$ENABLED" == true ]]; then
   "${COMPOSE[@]}" up -d --no-build --no-deps --force-recreate romforge
 fi
 "${COMPOSE[@]}" ps
 
-echo "RomM is starting at http://localhost:$PORT"
+echo "RomM is ready on port $PORT (http://localhost:$PORT on this server)."
+echo "Source revision: $ROMM_CUSTOM_REVISION"
 echo "ROM directory: $LIBRARY_DIR/roms"
 echo "BIOS directory: $LIBRARY_DIR/bios"
 if [[ "$ENABLED" == true ]]; then

@@ -1,0 +1,22 @@
+{
+  "automatic": "Katılan oyuncunun çalıştırdığı oyun otomatik olarak algılanır.",
+  "choose-slot": "Yer seç",
+  "connected": "Bağlandı",
+  "connecting": "Bağlanıyor",
+  "error": "Bağlantı hatası",
+  "host-game": "Oda sahibinin oyunu",
+  "incompatible-state": "Bu durum mevcut oyunlarla veya oyuncuyla eşleşmiyor.",
+  "max-players": "En fazla oyuncu",
+  "no-state": "Kayıtlı durum bulunamadı.",
+  "player-slot": "Oyuncu yeri",
+  "ready": "Hazır",
+  "restart": "Bağlantılı oyun, oyunları oyun içi kayıtlarından yeniden başlatır. Oda oluşturmadan veya katılmadan önce oyun içinde kaydedin.",
+  "saving": "Önce oyun içinde kaydedin. Yalnızca kendi kaydınız her 10 saniyede bir RomM ile eşitlenir. Kaydet ve çık, yüklemenin tamamlanmasını bekler.",
+  "slot-hint": "Odadaki herkes için 1P’den başlayarak sıralı yerler seçin.",
+  "solo": "Bağlantı kesildi. Tek başına oynamaya devam edebilirsin.",
+  "start-game": "Oyunu başlat",
+  "stopped": "Durduruldu",
+  "supported": "GB, GBC ve GBA ROM dosyaları ile tek oyun içeren ZIP dosyaları desteklenir.",
+  "waiting": "Başka bir oyuncu bekleniyor",
+  "your-game": "Oyununuz"
+}

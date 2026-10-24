@@ -2,15 +2,16 @@
 
 This workspace pins EmulatorJS 4.3 nightly commit
 `cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6` on RomM 5.3.1. Nightly core files are
-downloaded during the image build, then local DOSBox Pure, PPSSPP and Azahar
-binaries replace their corresponding cores. DOSBox Pure declares a minimum
+downloaded during the image build, then the checked-in DOSBox Pure, PPSSPP,
+Azahar, melonDS, SameBoy and mGBA splitscreen binaries replace their corresponding
+cores. DOSBox Pure declares a minimum
 EmulatorJS version of 4.3.0, so RomM's bundled 4.2.3 frontend cannot run it. It
 also supports keeping one Windows 95 disk in RomM's DOS firmware and keeping
 each game as a separate ROM.
 
 ## One-command server deployment
 
-On a Linux server with Docker and the Compose plugin installed:
+On a Linux server with Git, Python 3, Docker and a recent Compose plugin installed:
 
 ```bash
 git clone -b custom/dosbox-pure-emulatorjs-4.3 \
@@ -24,6 +25,39 @@ initializes bind-mounted data directories under `deploy-data`, builds the
 custom image, and starts RomM plus MariaDB. The default URL is
 `http://localhost:8080`. Edit `deploy/.env` to change the port or timezone,
 then run the script again.
+
+This checkout contains the complete custom runtime and compiled cores. The
+server does not need this development workspace, a sibling `build/` checkout,
+Emscripten, Node.js or a pre-existing custom Docker image. Docker builds the
+frontend and combines it with the backend and emulator assets from this commit.
+Allow at least 8 GiB of available memory for the frontend build. The initial
+build needs access to GitHub, npm, the container registries and the EmulatorJS
+CDN. The matching link-core build sources are published at
+[`ysteen/build@4966f1a`](https://github.com/ysteen/build/commit/4966f1a).
+
+The script waits for the database and application heartbeat before reporting
+success. The image's `org.opencontainers.image.revision` label records the Git
+commit used by the script.
+
+For browser access from another computer, use `https://your-server-name` through
+your reverse proxy. The threaded cores require a secure browser context;
+`http://server-ip:8080` does not provide the localhost exception. Forward
+WebSockets and retain the player's `Cross-Origin-Opener-Policy` and
+`Cross-Origin-Embedder-Policy` response headers. Link play between separate
+networks may also need a reachable TURN server configured in RomM.
+
+To update an existing checkout on that server:
+
+```bash
+git switch custom/dosbox-pure-emulatorjs-4.3
+git pull --ff-only origin custom/dosbox-pure-emulatorjs-4.3
+./scripts/deploy-dosbox-pure.sh
+```
+
+Back up the existing database and data directories first. To move an existing
+installation, transfer its `deploy/.env` and persistent data together; use
+`--env-file /absolute/path/to/.env` and set `ROMM_DATA_DIR` there if the data live
+outside this checkout. The script preserves existing credentials and config.
 
 Windows and game images are intentionally excluded from Git and the Docker
 image. Copy firmware to `deploy-data/library/bios/dos/` and game packages to
@@ -54,7 +88,17 @@ change between builds and require CDN availability.
 Netplay also uses this local snapshot instead of silently switching every game
 to the mutable CDN nightly. The included GameManager flushes IDBFS every five
 seconds only for DOSBox Pure; other cores retain upstream save timing and
-shutdown behavior.
+also finish their normal shutdown when browser storage is disabled.
+
+## Save archive ownership
+
+RomM's `frontend/src/services/emulatorjs/directory-saves.ts` owns save-file
+selection, archive paths and ZIP import/export for DOSBox Pure, PPSSPP and
+Azahar. It uses `fflate` and retains existing portable and runtime-path saves.
+The custom runtime receives this adapter through `EJS_saveFileAdapter`; it
+handles core execution and filesystem persistence without implementing a ZIP
+writer or interpreting save archives. Pre-boot restoration runs after ROM
+selection and before core startup.
 
 ## RomM 5.3.1 upgrade and Azahar core
 
@@ -98,6 +142,214 @@ or migrate the running database.
 - Full Docker image verification remains incomplete: a nightly CDN core download
   stalled after the frontend stage succeeded, so that build was stopped. No
   running container, database or saved game was replaced for this upgrade.
+
+## GB/GBC link cable in the v2 player
+
+The SameBoy libretro core runs both cartridges on each peer. RomM's existing
+netplay room list, passwords and Socket.IO signaling establish an ordered WebRTC
+data channel. Startup exchanges each player's battery save and one initial
+state; gameplay exchanges inputs and state hashes. Ordinary netplay keeps its
+existing streaming path and numeric game IDs. Automatic rooms use
+`link:auto:<host-rom>`; fixed-pair `link:<rom1>:<rom2>` rooms remain supported.
+
+Enable `emulatorjs.netplay.enabled` in `config.yml` and launch a GB/GBC game
+normally in v2. Open the game's **Netplay** menu and choose **Create a Room**.
+The host keeps playing while waiting. The guest launches their own game and
+joins from its existing Netplay room list. RomM validates both cartridges from
+the library and advertises rooms for the same link system through
+`include_link=true`. The room list and join dialog show the host's game; the
+player table shows both games. The same Socket.IO room survives the core switch,
+and `link-ready` starts WebRTC only after both cores finish loading.
+Each account controls and sees its own game. `.gb`/`.gbc` ROMs, including ZIPs
+containing exactly one cartridge, must support linking to each other.
+GBA is not supported by this core.
+
+Save inside the game first. Once both players join, communication switches to
+dual SameBoy and restarts from each player's current battery RAM without
+reloading the page.
+Each account uploads only its own cartridge's
+confirmed battery RAM every ten seconds. Quit in the existing EmulatorJS menu
+waits for the final upload; there is no separate link toolbar or save button.
+New sessions create a user-owned `link` slot, preserving the selected import.
+The slot does not depend on the player number. The next launch selects its
+latest save. Peer battery data is exchanged in memory for synchronization and
+is never uploaded to another account.
+Closing the page sends a best-effort final upload. Quit through the menu to
+wait for server persistence before leaving.
+
+Leaving a room or losing the peer disconnects the emulated cable and resumes
+each player's game from its last confirmed frame, without restarting the core
+or leaving the player. Solo play continues automatic server saves. The native
+menu keeps volume, fullscreen, controls, Netplay and Quit available to both
+players during a connection. After disconnection, native offline playback
+restores the complete pre-connection button list, including Save State, Load
+Latest State, the save/state picker, cheats, cache management and Save and Quit.
+State files upload through the existing RomM endpoint and include the core build,
+cartridge hashes, player role and a checksum. They are listed under a separate
+`sameboy-link` or `mgba_splitscreen-link` emulator ID because they cannot be loaded
+by the ordinary single-console core. Restoring a mismatched state is rejected
+before touching the core. Options that
+change the paired core, screen layout or audio route stay hidden.
+Creating or joining another room repeats automatic cartridge discovery and
+the save confirmation, including when roles change. Socket creation belongs to
+the parent document so replacing a core iframe cannot close the room.
+Both ordinary and link netplay use WebSocket transport at `/netplay/socket.io`.
+This avoids HTTP polling sessions reaching different backend workers.
+
+Link input packets include an optional frame-advantage estimate. Comparing both
+peers' estimates lets the leading peer briefly wait after a late start or clock
+drift, while retaining the prediction window for network latency. The existing
+input channel and protocol version are unchanged; older packets remain valid.
+
+The native volume slider drives the player iframe's Web Audio output gain on
+every input event. Selecting a player unlocks its audio context; switching away
+silences that output without changing its remembered volume or mute setting.
+Contexts register when constructed, including drivers that wait for an audio
+resume before connecting their first buffer.
+
+For TURN, `docker/compose.link-turn.yml` runs coturn with a private configuration:
+
+```bash
+TURN_CONFIG=/absolute/path/turnserver.conf \
+  docker compose -f docker/compose.link-turn.yml up -d
+```
+
+Set authenticated `turn:` URLs in `emulatorjs.netplay.ice_servers`, with one
+string `urls` value per entry plus `username` and `credential`. Configure coturn's
+reachable listening/relay addresses and firewall ports for the deployment.
+
+Local verification used two visible Chrome profiles with separate RomM accounts,
+forced TURN relay, no media tracks, and matching synchronization checkpoints.
+Pokémon Gold/Silver traded successfully. Both server saves matched the post-trade
+RAM byte for byte and restored identically after reloading both browsers.
+Different external networks have not yet been tested.
+
+## GBA link cable in the v2 player
+
+`.gba` cartridges and ZIPs containing one `.gba` use the `mgba_splitscreen`
+libretro core. Archives with multiple cartridges or other compression formats
+are rejected. All cartridge hashes use the extracted ROM bytes.
+The same Netplay menu, room IDs, WebRTC input protocol, TURN configuration,
+per-player audio/screen routing and server saves apply. Room discovery keeps
+GBA cartridges separate from GB/GBC cartridges. Ordinary GBA play still uses
+the single-instance `mgba` core.
+
+The core is pinned to `Spuds0588/mgba-splitscreen` revision
+`88e5f1a3cc350b3a76247f2312b78d9f85afd4b4`, with RetroArch revision
+`becfa4bad25132b6cb8068a0da463f67eefee44e`. The reproducible patch loads distinct
+cartridges through `gba_link_2p`, `gba_link_3p` or `gba_link_4p` and restores
+all machines and the cable together.
+Rollback includes pending serial events, the write-only send register, scheduler
+flags, VRAM contention, PSG phase/frequency/sample state and all battery RAM.
+Audio registers restore before channel phase so rollback and confirmed-save
+extraction preserve the exact emulated state. Presentation buffers are excluded
+from synchronization hashes. The RTC advances from a fixed emulated epoch,
+independent of the browser's clock. Game-specific Four Swords assists stay off.
+Subsystem loading leaves initial audio-driver setup to RetroArch rather than
+sending `SET_SYSTEM_AV_INFO` during `retro_load_game_special`. Sending it at that
+point starts the Web Audio driver twice and disables audio on the second attempt.
+Later sample-rate changes still update AV timing. Synchronous presentation
+recalibrates the Web Audio clock while the normal frontend runloop is paused.
+
+Build from the workspace containing `build/` and `romm/`:
+
+```bash
+bash build/tools/prepare-gba-link.sh
+cd build
+docker compose -f compose.dosbox-pure.yml -f compose.gba-link.yml run --rm builder
+```
+
+Outputs under `build/output/gba-link/` include the EmulatorJS archive, its
+hash-based report, upstream license and four homebrew cartridges. Copy the archive
+to `romm/custom-emulatorjs/data/cores/`, its JSON report to `cores/reports/`, and
+the fixtures to `custom-emulatorjs/input-netplay/fixtures/`. The custom Dockerfile
+includes these runtime assets.
+
+`build/tools/test-gba-link.py` takes a native build of the patched libretro core
+and two to four fixture paths. It checks visible telemetry, distinct ROMs, battery
+imports before save-hardware detection, 1,027 exactly replayed frames with an
+active square-wave channel, nonzero audio samples, no premature AV update,
+audio selection independence, disconnection, reconnection and battery reload.
+The fixtures display local key bits, received cable data and saved A presses.
+In Chrome, click a game and use arrows and X (A). `PEER DATA` includes the other
+cartridge ID in its high nibble and its key bits in the low bits.
+Pass `--replay-only` after two local ROM paths to check 3,601 replayed frames
+without the fixture-specific assertions. Zelda: A Link to the Past
+and Four Swords cartridge passed this native replay check. Link state version 3
+requires the matching core build; battery save compatibility is unchanged.
+
+Browser verification on the 8081 test instance used separate visible Chrome
+profiles and RomM accounts. Both cartridges exchanged inputs, stayed synchronized
+with 80 ms injected input delays, and reconnected with both ICE candidates using
+the existing coturn relay. Gameplay packets contained only inputs and hashes.
+Server saves restored each cartridge's saved press count after a fresh launch.
+Channel closure restored solo playback and its menus in the same core instance.
+The existing SameBoy test also matched its offline reference after 360 frames
+with 80/140 ms asymmetric delay.
+
+The Zelda ZIP loaded into both visible Chrome profiles through the existing
+room menu without reloading the page. Both clients produced nonzero Web Audio
+buffers. Actual mouse drags at 10%, 90% and 37% matched the output gain; selecting
+the other window silenced the first and selecting it again restored 37%.
+
+During Four Swords co-op, independent frame scheduling preserved a 13-14-frame
+lead on the host, despite 0-1 ms WebRTC round trips and matching state hashes.
+With frame pacing enabled, a 12-second foreground Chrome capture measured
+0-1-frame lead estimates at 59.7 fps on both peers, without stalls or mismatched
+checkpoints. The user also reported reduced input lag. Regression tests cover
+late starts, clock drift, reordered inputs and symmetric/asymmetric transit
+delays; actual external-network latency remains unverified.
+
+Four Swords can hang on its first in-game linking attempt while the room and
+input synchronization remain connected. This reproduced with the Korean-patched
+`AZLP` cartridge: both emulated ports were in multiplayer mode, but discovery
+stayed at `FEFE`/`0088`. On the host, press B (default keyboard Z) to cancel the
+in-game attempt, then retry with A/Start. The captured state reached stage
+selection after that sequence; the user repeated it in visible Chrome and
+reached two-player co-op with both clients passing 218 synchronization checks.
+This is a workaround, not a core timing fix. The same retry is reported in
+[mGBA issue 3286](https://github.com/mgba-emu/mgba/issues/3286).
+
+The automatic-room and menu update passed a second connection without a page
+reload, with matching synchronization hashes. Both accounts restored all 15
+pre-connection menu actions after leaving or losing the channel. Server state
+uploads, Quick Load and the save/state picker restored the fixture counters.
+The room dialog was checked in both themes at 320, 768, 1440 and 3840 pixels,
+with mouse, touch, keyboard and simulated gamepad input.
+
+GBA rooms have a maximum of two, three or four players. Players enter without
+an assigned slot and choose a free player number inside the existing room menu.
+The host starts when every participant has chosen consecutive slots from 1P.
+The host can use any slot; room ownership is independent of the emulated port.
+The host can also assign any participant from the roster. Selecting an occupied
+slot swaps those participants; other players can only choose their own free slot.
+A four-player room can start with two or three participants. The server locks
+slot changes and the roster at start, rejects unauthorized changes and late joins, and
+keeps ordinary netplay on its existing signaling path. Every pair of players
+exchanges inputs directly over WebRTC. A disconnect ends the cable session for
+all participants and resumes each game in solo mode.
+
+Separate cartridges may each be at most 32 MiB.
+Import accepts standard EEPROM/SRAM/flash save sizes; the paired core exposes
+128 KiB per cartridge. The ten-second autosave and awaited Quit upload support
+this size. Page-unload keepalive cannot send a 128 KiB save, so use Quit when
+the latest changes must reach the server before closing the browser.
+Native fixture runs passed with two, three and four cartridges, including
+1,027 exactly replayed frames, SRAM reload and reconnect. The reconnect patch
+restores cartridge slot preferences before attaching drivers, since detaching
+renumbers the remaining ports. Four visible Chrome profiles connected with
+matching checkpoints and 80/140 ms injected input delays. Captured gameplay
+packets contained only inputs and hashes. Each account uploaded one 128 KiB
+battery file matching its own port, and downloaded server files matched those
+uploads. Leaving restored the offline menus without restarting the game.
+The host reassigned other participants through the roster, swapped occupied
+slots and started as 4P in four visible Chrome profiles. All peers retained
+their own battery data and matching checkpoints after the reordered start.
+Mesh setup waits for local introductions before processing queued messages,
+and every guest validates the full roster before acknowledging the initial state.
+Broader commercial game compatibility, single-cartridge multiplayer and
+four-player commercial games remain unverified. The games must support the
+chosen link mode and player count.
 
 ## Save bundle behavior
 
@@ -168,10 +420,14 @@ DOSBox Pure mounts the embedded hard disk as the guest's D: drive and reinserts
 the first CUE/ISO as the guest's E: CD-ROM. A sibling `<game>.zip.img` outside
 the archive remains supported and takes precedence.
 
-The EmulatorJS download cache is disabled for DOSBox Pure because RomM does
-not provide the 4.3 cache configuration and the default 4 GB IndexedDB
-cache can stall during core lookup after a Save & Quit reload. This does not
-disable the separate save/state databases or the `/data/saves` IDBFS mount.
+The EmulatorJS download cache is enabled for DOSBox Pure. ROMs, BIOS files and
+extracted cores persist across launches, with a default 4 GiB limit that can be
+overridden by `EJS_CACHE_LIMIT` or `EJS_cacheConfig`. Cache hits skip full-cache
+cleanup, and each IndexedDB operation has a five-second timeout. Blocked storage,
+quota errors and missing chunks fall back to downloading. Core build timestamps
+select the matching cached binary; save bundles and reports bypass this cache.
+Download cache connections close after each transaction and use separate storage
+from the save/state databases and the `/data/saves` IDBFS mount.
 After either RomM Quit action, the DOSBox Pure player clears `/data/saves` from
 IDBFS after the final server save upload. This cleanup is limited to DOSBox
 Pure so stale differencing disks from another BIOS/content combination cannot

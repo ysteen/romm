@@ -5,6 +5,26 @@ import { useInputModality } from "@/v2/composables/useInputModality";
 import RTooltip from "@/v2/lib/structural/RTooltip/RTooltip.vue";
 import RSelect from "./RSelect.vue";
 
+it("confirms the highlighted option with a gamepad activation", async () => {
+  const { setModality } = useInputModality();
+  setModality("pad");
+  const wrapper = mount(RSelect, {
+    props: { items: [2, 3, 4], modelValue: 2 },
+    attachTo: document.body,
+  });
+  try {
+    const field = wrapper.get(".r-select__field");
+    await field.trigger("click");
+    await field.trigger("keydown", { key: "ArrowDown" });
+    await field.trigger("click");
+    expect(wrapper.emitted("update:modelValue")).toEqual([[3]]);
+    expect(field.attributes("aria-expanded")).toBe("false");
+  } finally {
+    wrapper.unmount();
+    setModality("mouse");
+  }
+});
+
 describe("RSelect append label", () => {
   const { setModality } = useInputModality();
 

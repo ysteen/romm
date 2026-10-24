@@ -1,7 +1,31 @@
 import json
-from typing import Optional, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
+from handler.database import db_rom_handler
 from handler.redis_handler import async_cache
+
+
+class LinkCartridge(TypedDict):
+    id: int
+    system: Literal["gb", "gba"]
+    name: str
+
+
+def get_link_cartridge(rom_id: object) -> LinkCartridge | None:
+    if type(rom_id) is not int or not 0 < rom_id <= 2**53 - 1:
+        return None
+    rom = db_rom_handler.get_rom(rom_id)
+    if not rom:
+        return None
+    extension = rom.fs_name.lower().rsplit(".", 1)[-1]
+    system: Literal["gb", "gba"]
+    if rom.platform_slug == "gba" and extension in ("gba", "zip"):
+        system = "gba"
+    elif rom.platform_slug in ("gb", "gbc") and extension in ("gb", "gbc", "zip"):
+        system = "gb"
+    else:
+        return None
+    return LinkCartridge(id=rom.id, system=system, name=rom.name or rom.fs_name)
 
 
 class NetplayPlayerInfo(TypedDict):
@@ -9,6 +33,10 @@ class NetplayPlayerInfo(TypedDict):
     player_name: str
     userid: str | None
     playerId: str | None
+    cartridge: NotRequired[LinkCartridge]
+    link_ready: NotRequired[bool]
+    link_slot: NotRequired[int]
+    is_host: NotRequired[bool]
 
 
 class NetplayRoom(TypedDict):
@@ -17,9 +45,11 @@ class NetplayRoom(TypedDict):
     peers: list[str]
     room_name: str
     game_id: str
-    domain: Optional[str]
-    password: Optional[str]
+    domain: str | None
+    password: str | None
     max_players: int
+    link_cartridge: NotRequired[LinkCartridge]
+    link_started: NotRequired[bool]
 
 
 class NetplayHandler:
@@ -27,6 +57,11 @@ class NetplayHandler:
 
     def __init__(self):
         self.hash_name = "netplay:rooms"
+
+    def lock(self, room_id: str):
+        return async_cache.lock(
+            f"{self.hash_name}:lock:{room_id}", timeout=15, blocking_timeout=10
+        )
 
     async def get(self, room_id: str) -> NetplayRoom | None:
         """Get a room from Redis."""

@@ -1,0 +1,22 @@
+{
+  "automatic": "自動辨識加入玩家正在執行的遊戲。",
+  "choose-slot": "選擇位置",
+  "connected": "已連線",
+  "connecting": "正在連線",
+  "error": "連線錯誤",
+  "host-game": "房主的遊戲",
+  "incompatible-state": "此即時存檔與目前遊戲組合或玩家不符。",
+  "max-players": "最多玩家人數",
+  "no-state": "沒有可用的即時存檔。",
+  "player-slot": "玩家編號",
+  "ready": "已就緒",
+  "restart": "連線時會從遊戲內存檔重新啟動各個遊戲。建立或加入房間前，請先在遊戲內儲存。",
+  "saving": "請先在遊戲內儲存。僅你的存檔會每10秒同步至RomM。儲存並結束會等待上傳完成。",
+  "slot-hint": "請依參加人數從1P開始連續選擇位置。",
+  "solo": "連線已中斷。你可以繼續單人遊戲。",
+  "start-game": "開始遊戲",
+  "stopped": "已停止",
+  "supported": "支援 GB、GBC 和 GBA ROM，以及只包含一個遊戲的 ZIP 檔案。",
+  "waiting": "等待其他玩家",
+  "your-game": "我的遊戲"
+}

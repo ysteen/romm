@@ -8,6 +8,7 @@ import type { Connect, Plugin } from "vite";
 export const ISOLATED_PLAYER_URLS: readonly RegExp[] = [
   /^\/rom\/[0-9]+\/(ejs|jsdos)\/?(?:\?.*)?$/,
   /^\/console\/rom\/[0-9]+\/play\/?(?:\?.*)?$/,
+  /^\/assets\/emulatorjs\/input-netplay\/player\.html(?:\?.*)?$/,
 ];
 
 // nginx matches the request URI rather than the path, since try_files rewrites

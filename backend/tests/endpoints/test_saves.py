@@ -1,11 +1,14 @@
+import asyncio
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
 from unittest import mock
 
 import pytest
-from fastapi import status
+from fastapi import UploadFile, status
+from fastapi.testclient import TestClient
 
 from config import OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS
 from handler.auth import oauth_handler
@@ -1594,7 +1597,9 @@ class TestDatetimeTagging:
         mock_write.assert_called_once()
         call_args = mock_write.call_args
         written_filename = call_args[1].get("filename") or call_args[0][2]
-        assert re.search(r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\]", written_filename)
+        assert re.search(
+            r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{6}\]", written_filename
+        )
 
     @mock.patch("endpoints.saves.scan_screenshot", new_callable=mock.AsyncMock)
     @mock.patch(
@@ -1651,7 +1656,7 @@ class TestDatetimeTagging:
         save_stem, _ = os.path.splitext(written[0])
         screenshot_stem, _ = os.path.splitext(written[1])
         assert save_stem == screenshot_stem
-        assert re.search(r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\]$", save_stem)
+        assert re.search(r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{6}\]$", save_stem)
 
     @mock.patch(
         "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
@@ -1739,7 +1744,7 @@ class TestDatetimeTagging:
         call_args = mock_write.call_args
         written_filename = call_args[1].get("filename") or call_args[0][2]
         datetime_matches = re.findall(
-            r"\[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\]", written_filename
+            r"\[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{6}\]", written_filename
         )
         assert len(datetime_matches) == 1
         assert "2020-01-01" not in written_filename
@@ -3489,3 +3494,183 @@ class TestSaveVisibilityPropagation:
         )
         refreshed = db_screenshot_handler.get_screenshot_by_id(thumb.id)
         assert refreshed is not None and refreshed.is_public is False
+
+
+class TestSaveFilenameCollisions:
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "게임.srm",
+            "게임 [2020-01-01_00-00-00].srm",
+            "게임 [2020-01-01_00-00-00.123456].srm",
+            "게임 [2020-01-01_00-00-00] [2021-01-01_00-00-00.123456].srm",
+        ],
+    )
+    def test_datetime_tag_replaces_old_and_precise_tags(self, filename: str) -> None:
+        from endpoints.saves import _apply_datetime_tag
+
+        timestamp = datetime(2026, 10, 5, 12, 34, 56, 123456, tzinfo=timezone.utc)
+        assert _apply_datetime_tag(filename, timestamp) == (
+            "게임 [2026-10-05_12-34-56.123456].srm"
+        )
+
+    def test_frozen_clock_preserves_versions_slots_and_deduped_file(
+        self,
+        client: TestClient,
+        access_token: str,
+        rom: Rom,
+        _isolated_assets_dir: Path,
+    ) -> None:
+        from handler.filesystem import fs_asset_handler
+
+        timestamp = datetime(2026, 10, 5, 12, 34, 56, 999999, tzinfo=timezone.utc)
+        responses = []
+        with mock.patch("endpoints.saves.datetime", wraps=datetime) as clock:
+            clock.now.return_value = timestamp
+            for slot, content, overwrite in [
+                ("slot1", b"first", True),
+                ("slot1", b"second", True),
+                ("slot1", b"first", False),
+                ("slot2", b"second", False),
+            ]:
+                response = client.post(
+                    "/api/saves",
+                    params={
+                        "rom_id": rom.id,
+                        "slot": slot,
+                        "emulator": "test_emulator",
+                        "overwrite": overwrite,
+                    },
+                    files={
+                        "saveFile": (
+                            "Game.srm",
+                            BytesIO(content),
+                            "application/octet-stream",
+                        )
+                    },
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                assert response.status_code == status.HTTP_200_OK
+                responses.append(response.json())
+
+        first, second, duplicate, other_slot = responses
+        assert first["id"] == duplicate["id"]
+        assert len({first["id"], second["id"], other_slot["id"]}) == 3
+        assert first["file_name"] == "Game [2026-10-05_12-34-56.999999].srm"
+        assert second["file_name"] == "Game [2026-10-05_12-34-57.000000].srm"
+        assert other_slot["file_name"] == "Game [2026-10-05_12-34-57.000001].srm"
+        assert other_slot["slot"] == "slot2"
+        for save, content in [
+            (first, b"first"),
+            (second, b"second"),
+            (other_slot, b"second"),
+        ]:
+            path = fs_asset_handler.validate_path(save["file_path"]) / save["file_name"]
+            assert path.read_bytes() == content
+        assert len(list(_isolated_assets_dir.rglob("*.srm"))) == 3
+        assert not list(_isolated_assets_dir.rglob(".romm_tmp_*"))
+
+    async def test_parallel_uploads_with_frozen_clock_keep_every_payload(
+        self, _isolated_assets_dir: Path
+    ) -> None:
+        from endpoints.saves import _write_slotted_save
+
+        timestamp = datetime(2026, 10, 5, 12, 34, 56, tzinfo=timezone.utc)
+        contents = [b"first", b"second", b"third", b"fourth"]
+        with mock.patch("endpoints.saves.datetime", wraps=datetime) as clock:
+            clock.now.return_value = timestamp
+            names = await asyncio.gather(
+                *[
+                    _write_slotted_save(
+                        UploadFile(BytesIO(content), filename="Game.srm"),
+                        "saves",
+                        "Game.srm",
+                    )
+                    for content in contents
+                ]
+            )
+        assert len(set(names)) == len(contents)
+        for name, content in zip(names, contents, strict=True):
+            assert (_isolated_assets_dir / "saves" / name).read_bytes() == content
+        assert not await asyncio.to_thread(
+            lambda: list(_isolated_assets_dir.rglob(".romm_tmp_*"))
+        )
+
+    async def test_independent_filesystem_writers_cannot_replace_existing_file(
+        self, tmp_path: Path
+    ) -> None:
+        from handler.filesystem.base_handler import FSHandler
+
+        contents = [b"first", b"second", b"third", b"fourth"]
+        writers = [FSHandler(str(tmp_path)) for _ in contents]
+        results = await asyncio.gather(
+            *[
+                writer.write_file(content, "saves", "Game.srm", overwrite=False)
+                for writer, content in zip(writers, contents, strict=True)
+            ],
+            return_exceptions=True,
+        )
+        assert results.count(None) == 1
+        assert sum(isinstance(result, FileExistsError) for result in results) == 3
+        target = tmp_path / "saves" / "Game.srm"
+        assert target.read_bytes() == contents[results.index(None)]
+        assert not await asyncio.to_thread(lambda: list(tmp_path.rglob(".romm_tmp_*")))
+        await writers[0].write_file(b"explicit replacement", "saves", "Game.srm")
+        assert target.read_bytes() == b"explicit replacement"
+
+    async def test_collision_after_reading_rewinds_upload(
+        self, _isolated_assets_dir: Path
+    ) -> None:
+        from endpoints.saves import _write_slotted_save
+        from handler.filesystem import fs_asset_handler
+
+        write_file = fs_asset_handler.write_file
+        attempts = 0
+
+        async def collide_once(
+            file: UploadFile, path: str, filename: str, *, overwrite: bool
+        ) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                assert file.file.read() == b"complete payload"
+                raise FileExistsError(filename)
+            await write_file(file, path, filename, overwrite=overwrite)
+
+        with mock.patch.object(
+            fs_asset_handler, "write_file", side_effect=collide_once
+        ):
+            name = await _write_slotted_save(
+                UploadFile(BytesIO(b"complete payload"), filename="Game.srm"),
+                "saves",
+                "Game.srm",
+            )
+        assert attempts == 2
+        assert (
+            _isolated_assets_dir / "saves" / name
+        ).read_bytes() == b"complete payload"
+
+    @pytest.mark.parametrize(
+        "failure", [OSError("write failed"), asyncio.CancelledError()]
+    )
+    async def test_failed_publish_removes_only_its_reservation(
+        self, tmp_path: Path, failure: BaseException
+    ) -> None:
+        from handler.filesystem.base_handler import FSHandler
+
+        writer = FSHandler(str(tmp_path))
+        target = tmp_path / "saves" / "Game.srm"
+        with mock.patch(
+            "handler.filesystem.base_handler.os.replace", side_effect=failure
+        ):
+            with pytest.raises(type(failure)):
+                await writer.write_file(
+                    b"new save", "saves", "Game.srm", overwrite=False
+                )
+        assert not target.exists()
+        assert not await asyncio.to_thread(lambda: list(tmp_path.rglob(".romm_tmp_*")))
+
+        target.write_bytes(b"existing save")
+        with pytest.raises(FileExistsError):
+            await writer.write_file(b"new save", "saves", "Game.srm", overwrite=False)
+        assert target.read_bytes() == b"existing save"

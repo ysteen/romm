@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game Boy Link Lab</title>
+<link rel="stylesheet" href="style.css?v=20261018.2">
+</head>
+<body>
+<main>
+    <header><span class="tag">EMULATORJS · EXPERIMENTAL</span><h1>Game Boy Link Lab</h1>
+        <p>Two cartridges. One link cable. Both players run the games locally.</p></header>
+    <section aria-label="Cartridges" class="cards">
+        <div class="card"><h2>01 <span>Player one</span></h2>
+            <label>GB / GBC cartridge<input id="rom1" type="file" accept=".gb,.gbc"></label>
+            <label>Battery save (optional)<input id="save1" type="file" accept=".sav,.srm"></label></div>
+        <div class="card"><h2>02 <span>Player two</span></h2>
+            <label>GB / GBC cartridge<input id="rom2" type="file" accept=".gb,.gbc"></label>
+            <label>Battery save (optional)<input id="save2" type="file" accept=".sav,.srm"></label></div>
+    </section>
+    <p class="hint">Leave both slots empty to try the included link test. Different games are supported when their original link protocols are compatible. GBA is not supported in this build.</p>
+    <div class="actions"><button id="local">Play locally</button><button id="host">Host · player 1</button><button id="join">Join · player 2</button><button id="stop" disabled>Disconnect</button></div>
+    <details><summary>Network settings</summary>
+        <label>ICE servers (JSON)<textarea id="ice" rows="2">[{"urls":"stun:stun.l.google.com:19302"}]</textarea></label>
+        <p class="hint">Use a TURN server if your networks cannot connect directly. Both peers need the same two ROMs in the same order. The host supplies both starting battery saves.</p></details>
+    <section id="signaling" hidden>
+        <label>Your connection text <button id="copy" class="small">Copy</button><textarea id="outgoing" readonly rows="3"></textarea></label>
+        <label>Other player's connection text<textarea id="incoming" rows="3"></textarea></label>
+        <button id="accept">Use connection text</button>
+        <p class="hint" id="instructions"></p>
+    </section>
+    <p id="status" role="status" aria-live="polite">Ready. Choose cartridges or start the included test.</p>
+    <div id="screen"></div>
+    <p class="hint">Click the game to focus. Arrow keys: move · X: A · Z: B · Enter: Start · Shift: Select. A gamepad also works. Local player 2: WASD, G/H, T/Y.</p>
+    <div class="actions"><button id="export1" disabled>Download player 1 save</button><button id="export2" disabled>Download player 2 save</button></div>
+    <p class="hint">Save downloads are separate for each cartridge. This lab does not upload saves to your RomM library.</p>
+</main>
+<script type="module" src="lab.js?v=20261021.10"></script>
+</body>
+</html>

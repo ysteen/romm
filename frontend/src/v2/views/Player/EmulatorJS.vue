@@ -24,7 +24,7 @@ import {
   RSwitch,
   RTextField,
 } from "@v2/lib";
-import { useEventListener, useLocalStorage } from "@vueuse/core";
+import { until, useEventListener, useLocalStorage } from "@vueuse/core";
 import type { Emitter } from "mitt";
 import { storeToRefs } from "pinia";
 import {
@@ -35,6 +35,7 @@ import {
   onBeforeUnmount,
   onMounted,
   ref,
+  shallowRef,
   watch,
 } from "vue";
 import { useI18n } from "vue-i18n";
@@ -53,6 +54,16 @@ import {
   getSupportedEJSCores,
 } from "@/utils";
 import AssetPreview from "@/v2/components/Player/AssetPreview.vue";
+import LinkRoomDialog from "@/v2/components/Player/LinkRoomDialog.vue";
+import LinkStage from "@/v2/components/Player/LinkStage.vue";
+import {
+  installLinkRoomMenu,
+  isLinkRoms,
+  supportsLink,
+  type LinkLaunch,
+  type LinkRoom,
+  type NetplayMenu,
+} from "@/v2/components/Player/linkSession";
 import AssetList from "@/v2/components/shared/AssetList.vue";
 import AssetStrip from "@/v2/components/shared/AssetStrip.vue";
 import GameCover from "@/v2/components/shared/GameCover.vue";
@@ -103,7 +114,10 @@ import {
   type SlotChoice,
 } from "@/v2/utils/saveSlots";
 import { isJsResource, loadScript } from "@/v2/utils/scriptLoader";
-import { exitEmulatorOnce } from "@/views/Player/EmulatorJS/utils";
+import {
+  dumpSaveFile,
+  exitEmulatorOnce,
+} from "@/views/Player/EmulatorJS/utils";
 import { rememberCore, resolveRememberedCore } from "./coreStorage";
 import {
   isLaunchIntent,
@@ -167,15 +181,143 @@ usePlayFocus(".r-v2-ejs__play", playReady, gameRunning);
 // taken mid-load would otherwise outrun.
 let runtimeInjected = false;
 const playerRef = ref<{ flushPendingSave: () => Promise<void> } | null>(null);
+const linkStageRef = ref<{
+  flushPendingSave: () => Promise<void>;
+  battery: () => Uint8Array<ArrayBuffer> | null;
+  netplay: () => NetplayMenu | undefined;
+} | null>(null);
+const linkLaunch = shallowRef<LinkLaunch | null>(null);
+const linkStageKey = ref(0);
+const linkRoomDialog = ref(false);
+const linkJoining = shallowRef<LinkRoom | null>(null);
+const linkLaunching = ref(false);
+let removeLinkRoomMenu: (() => void) | undefined;
 const exit = usePlayerExit(
   () => runtimeInjected,
   async () => {
     // The flush also uninstalls v1's auto-save sync, which is what keeps its
     // own `beforeunload` handler from prompting on the way out.
-    await playerRef.value?.flushPendingSave();
+    if (linkStageRef.value) await linkStageRef.value.flushPendingSave();
+    else await playerRef.value?.flushPendingSave();
     endSession();
   },
 );
+
+async function showLinkRoom(join: LinkRoom | null) {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    linkJoining.value = join;
+    linkRoomDialog.value = true;
+  } catch (error) {
+    snackbar.error(
+      error instanceof Error ? error.message : t("play.stream-error-generic"),
+    );
+  }
+}
+
+watch(
+  playerRef,
+  (instance) => {
+    if (
+      !instance ||
+      !rom.value ||
+      !supportsLink(rom.value) ||
+      !configStore.config.EJS_NETPLAY_ENABLED
+    )
+      return;
+    const start = window.EJS_onGameStart;
+    window.EJS_onGameStart = () => {
+      start();
+      const menu = window.EJS_emulator?.netplay as NetplayMenu | undefined;
+      if (!menu) return;
+      removeLinkRoomMenu = installLinkRoomMenu(
+        menu,
+        romId,
+        () => {
+          void showLinkRoom(null);
+        },
+        (room) => {
+          void showLinkRoom(room);
+        },
+      );
+    };
+  },
+  { flush: "post" },
+);
+
+async function launchLinkRoom(room: LinkRoom, source?: NetplayMenu) {
+  if (
+    linkLaunching.value ||
+    !rom.value ||
+    room.roms[room.player] !== rom.value.id
+  )
+    return;
+  linkLaunching.value = true;
+  try {
+    if (room.automatic && !source) {
+      const menu =
+        linkStageRef.value?.netplay() ??
+        (window.EJS_emulator?.netplay as NetplayMenu | undefined);
+      if (!menu?.startLinkLobby)
+        throw new Error(t("play.stream-error-generic"));
+      menu.startLinkLobby({
+        romId: rom.value.id,
+        room,
+        startLabel: t("link.start-game"),
+        seatLabel: t("link.player-slot"),
+        chooseSeatLabel: t("link.choose-slot"),
+        seatHint: t("link.slot-hint"),
+        onReady: (roms, player) =>
+          launchLinkRoom({ ...room, roms, player }, menu),
+        onError: (cause) =>
+          snackbar.error(
+            cause instanceof Error
+              ? cause.message
+              : t("play.stream-error-generic"),
+          ),
+      });
+      linkRoomDialog.value = false;
+      return;
+    }
+    if (!isLinkRoms(room.roms)) throw new Error(t("link.supported"));
+    let save: Uint8Array<ArrayBuffer> | null;
+    if (linkStageRef.value) {
+      await linkStageRef.value.flushPendingSave();
+      save = linkStageRef.value.battery();
+    } else {
+      const emulator = window.EJS_emulator;
+      emulator.pause();
+      const bytes = dumpSaveFile();
+      save = bytes?.length ? new Uint8Array(bytes) : null;
+      await playerRef.value?.flushPendingSave();
+      emulator.setVolume(0);
+      emulator.netplay.updateList?.stop();
+      removeLinkRoomMenu?.();
+    }
+    const connection = source?.detachRoom?.();
+    if (!linkStageRef.value) {
+      const emulator = window.EJS_emulator;
+      // The new core receives this SRAM, so the old core needs no reset.
+      emulator.__rommExited = true;
+      emulator.callEvent("exit", { restart: false });
+    }
+    linkRoomDialog.value = false;
+    linkStageKey.value++;
+    linkLaunch.value = { ...room, roms: room.roms, save, connection };
+    await nextTick();
+    playing.value = true;
+  } catch (error) {
+    snackbar.error(
+      error instanceof Error ? error.message : t("play.stream-error-generic"),
+    );
+  } finally {
+    linkLaunching.value = false;
+  }
+}
+
+function exitLinkRoom() {
+  exit.leave(`/rom/${romId}/ejs`);
+}
 
 // A departure while a game runs is deliberate, so the unload prompt stays
 // quiet for the full navigation it turns into.
@@ -304,7 +446,7 @@ async function onPlay() {
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
-  const ROMM_RUNTIME_REVISION = "20261005.1";
+  const ROMM_RUNTIME_REVISION = "20261024.1";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 
@@ -323,6 +465,8 @@ async function onPlay() {
   }
 
   try {
+    await until(playerRef).toBeTruthy({ timeout: 15000, throwOnTimeout: true });
+    await nextTick();
     try {
       // The local image contains the pinned nightly frontend, matching cores,
       // and the custom DOSBox Pure save and archive handling.
@@ -490,6 +634,8 @@ onBeforeUnmount(() => {
   // Hand the keyboard and gamepad back to the UI; the flag otherwise
   // stays true and pad/hotkey navigation is dead until a reload.
   playing.value = false;
+  removeLinkRoomMenu?.();
+  if (!linkStageRef.value) window.EJS_emulator?.netplay?.leaveRoom();
   exitEmulatorOnce();
   emitter?.off("saveSelected", selectSave);
   emitter?.off("stateSelected", selectState);
@@ -836,13 +982,25 @@ const saveSlot = computed(() => chosenSlot(slotChoice.value, customSlot.value));
 
     <!-- Running state -->
     <div v-else-if="rom" ref="stageRef" class="r-v2-ejs__stage">
+      <LinkStage
+        v-if="linkLaunch"
+        :key="linkStageKey"
+        ref="linkStageRef"
+        :rom="rom"
+        :launch="linkLaunch"
+        @create-room="showLinkRoom(null)"
+        @join-room="showLinkRoom"
+        @exit="exitLinkRoom"
+      />
       <Player
+        v-else
         ref="playerRef"
         :rom="rom"
         :state="resume.state"
         :save="resume.save"
         :save-slot="saveSlot"
         :load-state-label="t('rom.load-save-or-state')"
+        :reload-on-unmount="false"
         :bios="selectedFirmware"
         :core="selectedCore"
         :disc="bootDiscId(selectedDisc)"
@@ -853,7 +1011,7 @@ const saveSlot = computed(() => chosenSlot(slotChoice.value, customSlot.value));
            keeps framing the game; otherwise it renders here over the stage. -->
       <Teleport :to="bezelHost" :disabled="!bezelHost">
         <img
-          v-if="bezelUrl && showBezel"
+          v-if="bezelUrl && showBezel && !linkLaunch"
           :src="bezelUrl"
           class="r-v2-ejs__bezel"
           alt=""
@@ -867,6 +1025,14 @@ const saveSlot = computed(() => chosenSlot(slotChoice.value, customSlot.value));
   <section v-else class="r-v2-ejs__loading">
     <RSpinner :size="40" :aria-label="t('common.loading')" />
   </section>
+  <LinkRoomDialog
+    v-if="rom && supportsLink(rom)"
+    v-model="linkRoomDialog"
+    :rom="rom"
+    :join="linkJoining"
+    :loading="linkLaunching"
+    @launch="launchLinkRoom"
+  />
 </template>
 
 <style scoped>

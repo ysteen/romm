@@ -1,0 +1,22 @@
+{
+  "automatic": "Uruchomiona gra dołączającego gracza jest wykrywana automatycznie.",
+  "choose-slot": "Wybierz miejsce",
+  "connected": "Połączono",
+  "connecting": "Łączenie",
+  "error": "Błąd połączenia",
+  "host-game": "Gra gospodarza",
+  "incompatible-state": "Ten stan nie pasuje do bieżących gier lub gracza.",
+  "max-players": "Maksymalna liczba graczy",
+  "no-state": "Brak dostępnego zapisanego stanu.",
+  "player-slot": "Pozycja gracza",
+  "ready": "Gotowe",
+  "restart": "Połączenie uruchamia gry ponownie z ich zapisów w grze. Zapisz grę przed utworzeniem pokoju lub dołączeniem do niego.",
+  "saving": "Najpierw zapisz grę. Tylko twój zapis jest synchronizowany z RomM co 10 sekund. Zapisz i wyjdź czeka na zakończenie przesyłania.",
+  "slot-hint": "Wybierzcie kolejne miejsca od 1P dla wszystkich graczy w pokoju.",
+  "solo": "Połączenie zostało rozłączone. Możesz kontynuować grę samodzielnie.",
+  "start-game": "Rozpocznij grę",
+  "stopped": "Zatrzymano",
+  "supported": "Obsługiwane są ROM-y GB, GBC i GBA, w tym pliki ZIP zawierające jedną grę.",
+  "waiting": "Oczekiwanie na drugiego gracza",
+  "your-game": "Twoja gra"
+}

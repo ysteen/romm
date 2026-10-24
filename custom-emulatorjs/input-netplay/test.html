@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SameBoy input netplay integration test</title>
+<link rel="stylesheet" href="style.css?v=20261018.2">
+<style>#peers{display:grid;grid-template-columns:1fr 1fr;gap:16px}#peers h2{font-size:16px}#result{font-size:12px;overflow:auto}@media(max-width:800px){#peers{grid-template-columns:1fr}}</style>
+<main><h1>SameBoy link test</h1><p id="status" role="status">Loading two peers…</p>
+<form id="cartridges" hidden>
+    <div class="cards">
+        <div class="card"><h2>Player 1</h2><label>GB / GBC cartridge<input id="rom1" type="file" accept=".gb,.gbc" required></label><label>Battery save (optional)<input id="save1" type="file" accept=".sav,.srm"></label></div>
+        <div class="card"><h2>Player 2</h2><label>GB / GBC cartridge<input id="rom2" type="file" accept=".gb,.gbc" required></label><label>Battery save (optional)<input id="save2" type="file" accept=".sav,.srm"></label></div>
+    </div>
+    <div class="actions"><button id="start" type="submit">Start both peers</button></div>
+</form>
+<p class="hint">Click Peer 1 or Peer 2 to control and hear that player's Game Boy. A green border marks the selected peer. Arrow keys: move · X/Z: A/B · Enter: Start · Shift: Select. Each peer shows both linked cartridges.</p><div id="peers"></div>
+<section id="saves" hidden><div class="actions"><button id="export1" disabled>Download player 1 save</button><button id="export2" disabled>Download player 2 save</button></div><p class="hint">Save in the game first, then download each cartridge's save before closing or refreshing this page. These saves are not uploaded to your RomM library.</p></section>
+<pre id="result"></pre></main>
+<script type="module" src="test.js?v=20261021.10"></script>
+</html>

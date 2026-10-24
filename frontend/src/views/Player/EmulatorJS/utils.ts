@@ -141,18 +141,19 @@ export async function saveState({
   rom,
   stateFile,
   screenshotFile,
+  emulator = window.EJS_core,
 }: {
   rom: DetailedRom;
   stateFile: ArrayBuffer | Uint8Array<ArrayBuffer>;
   screenshotFile?: ArrayBuffer | Uint8Array<ArrayBuffer>;
+  emulator?: string;
 }): Promise<StateUpload> {
   // A zero-length buffer means the core failed to serialize its state (a torn
   // read from a running threaded core). Refuse to upload it so a broken
   // capture can't overwrite the user's good states on the server.
   if (
     !stateFile?.byteLength ||
-    (window.EJS_core === "azahar" &&
-      stateFile.byteLength > MAX_AZAHAR_STATE_BYTES)
+    (emulator === "azahar" && stateFile.byteLength > MAX_AZAHAR_STATE_BYTES)
   ) {
     console.error("Refusing to upload empty state file");
     return { state: null, kept: false };
@@ -174,7 +175,7 @@ export async function saveState({
     cover: rom.path_cover_small,
     bytes: stateFile,
     screenshotBytes: screenshotFile,
-    emulator: window.EJS_core,
+    emulator,
     capturedAt: capturedAt.getTime(),
   });
   // Nothing gets through while the server is down; the held state goes once
@@ -184,7 +185,7 @@ export async function saveState({
   try {
     const uploadedStates = await stateApi.uploadStates({
       rom: rom,
-      emulator: window.EJS_core,
+      emulator,
       statesToUpload: [
         sessionStateFiles(rom, capturedAt, stateFile, screenshotFile),
       ],

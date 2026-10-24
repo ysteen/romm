@@ -9,6 +9,7 @@ function loadClass(file, name) {
         .replace(/^import .*;$/gm, "").replace(/^export .*;$/gm, "");
     return runInNewContext(source + "\n" + name, { Uint8Array, TextEncoder, Date, console });
 }
+const { createDirectorySaveAdapter } = require("../../frontend/src/services/emulatorjs/directory-saves.ts");
 const Manager = loadClass("GameManager.js", "EJS_GameManager");
 const Emulator = loadClass("emulator.js", "EmulatorJS");
 const sdRoot = "Azahar/Azahar/sdmc/Nintendo 3DS/" + "0".repeat(32) + "/" + "0".repeat(32);
@@ -65,7 +66,7 @@ function manager(core, rom = ncch()) {
     const exists = path => files.has(path) || [...files.keys()].some(name => name.startsWith(path + "/"));
     gm.saveSessionStartedAt = Date.now();
     gm.EJS = {
-        getCore: () => core, fileName: "game.3ds", config: {},
+        getCore: () => core, fileName: "game.3ds", config: { saveFileAdapter: createDirectorySaveAdapter },
         compression: { decompress: async bytes => unzip(bytes) },
         downloadType: { support: { name: "support", dontCache: true } }
     };
@@ -109,7 +110,7 @@ test("PSP ZIP roots match Argosy and retain all files of each changed save folde
         "ULUS12345DATA/DATA.BIN", "ULUS12345DATA/PARAM.SFO", "ULUS12345SYSTEM/PARAM.SFO"
     ]);
     const target = manager("ppsspp");
-    await target.gm.loadDirectorySaveBundle(bytes);
+    await target.gm.getSaveFileAdapter().restore(bytes);
     assert.deepEqual([...target.files.get(root + "ULUS12345DATA/DATA.BIN").bytes], [1, 2]);
 });
 
@@ -128,7 +129,7 @@ for (const cartridge of [false, true]) {
         ]);
         assert.ok(reads.every(size => size <= 512));
         const target = manager("azahar", ncch({ cartridge }));
-        await target.gm.loadDirectorySaveBundle(bytes);
+        await target.gm.getSaveFileAdapter().restore(bytes);
         assert.deepEqual([...target.files.get("/data/saves/" + titleRoot + "/00000001/main").bytes], [1, 2]);
         assert.deepEqual([...target.files.get("/data/saves/" + extRoot + "/user/progress").bytes], [4]);
     });
@@ -140,10 +141,10 @@ test("Azahar honors ExHeader extdata IDs, including extended savedata access", (
         { extdataId: 0xabcden << 20n, extended: true }
     ]) {
         const { gm } = manager("azahar", ncch(options));
-        assert.equal(gm.getAzaharSaveRoots().extdata, sdRoot + "/extdata/00000000/000ABCDE");
+        assert.equal(gm.getSaveFileAdapter().getAzaharSaveRoots().extdata, sdRoot + "/extdata/00000000/000ABCDE");
     }
-    assert.equal(manager("azahar", ncch({ extdataId: 0 })).gm.getAzaharSaveRoots().extdata, undefined);
-    assert.equal(manager("azahar", ncch({ extdataId: 0xabcdefn, encrypted: true })).gm.getAzaharSaveRoots().extdata, extRoot);
+    assert.equal(manager("azahar", ncch({ extdataId: 0 })).gm.getSaveFileAdapter().getAzaharSaveRoots().extdata, undefined);
+    assert.equal(manager("azahar", ncch({ extdataId: 0xabcdefn, encrypted: true })).gm.getSaveFileAdapter().getAzaharSaveRoots().extdata, extRoot);
 });
 
 test("Argosy DEFLATE archives with directory entries restore in both emulators", async () => {
@@ -153,7 +154,7 @@ test("Argosy DEFLATE archives with directory entries restore in both emulators",
         ["azahar", { "extdata/": [], "extdata/user/progress": [1] }, extRoot + "/user/progress"]
     ]) {
         const { gm, files } = manager(core);
-        await gm.loadDirectorySaveBundle(zip(entries));
+        await gm.getSaveFileAdapter().restore(zip(entries));
         assert.deepEqual([...files.get("/data/saves/" + expected).bytes], [1]);
     }
 });
@@ -165,7 +166,7 @@ test("legacy runtime-path ZIPs still restore, regardless of their old .srm filen
         ["dosbox_pure", "DOSBox-pure/Example.pure.zip"]
     ]) {
         const { gm, files } = manager(core);
-        await gm.loadDirectorySaveBundle(zip({ [path]: [1, 2, 3] }));
+        await gm.getSaveFileAdapter().restore(zip({ [path]: [1, 2, 3] }));
         assert.deepEqual([...files.get("/data/saves/" + path).bytes], [1, 2, 3]);
     }
 });
@@ -175,17 +176,19 @@ test("DOSBox preserves disk deltas and sibling save files in its outer ZIP", asy
     const delta = zip({ "GAME/SAVE.DAT": [7] });
     add("/data/saves/DOSBox-pure/Example.pure.zip", delta);
     add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [8]);
-    add("/data/saves/DOSBox-pure/Example-1234.sav", [6]);
+    add("/data/saves/DOSBox-pure/Example-1234ABCD.sav", [6]);
     add("/data/saves/DOSBox-pure/Another.pure.zip", [9]);
+    add("/data/saves/DOSBox-pure/Example-other-CDRIVE.sav", [9]);
+    add("/data/saves/DOSBox-pure/Example.2.pure.zip", [9]);
     const bundle = gm.getSaveFile(false);
     const entries = unzip(bundle);
     assert.equal(gm.getSaveFileName(bundle), "Example.zip");
     assert.deepEqual(Object.keys(entries).sort(), [
-        "DOSBox-pure/Example-1234.sav", "DOSBox-pure/Example-CDRIVE.sav", "DOSBox-pure/Example.pure.zip"
+        "DOSBox-pure/Example-1234ABCD.sav", "DOSBox-pure/Example-CDRIVE.sav", "DOSBox-pure/Example.pure.zip"
     ]);
     assert.deepEqual(entries["DOSBox-pure/Example.pure.zip"], delta);
     const target = manager("dosbox_pure");
-    await target.gm.loadDirectorySaveBundle(bundle);
+    await target.gm.getSaveFileAdapter().restore(bundle);
     assert.deepEqual(target.files.get("/data/saves/DOSBox-pure/Example.pure.zip").bytes, delta);
 });
 
@@ -201,7 +204,7 @@ test("ordinary SRAM filenames and bytes stay unchanged", () => {
 test("unsafe or colliding paths are rejected before any save is written", () => {
     for (const bad of ["../file", "data/../../file", "/data/file", "C:\\file", "data//file", "data/./file", "data/\0file"]) {
         const { gm, writes } = manager("azahar");
-        assert.throws(() => gm.writeDirectorySaveFiles([
+        assert.throws(() => gm.getSaveFileAdapter().writeDirectorySaveFiles([
             { filename: "data/main", bytes: new Uint8Array([1]) },
             { filename: bad, bytes: new Uint8Array([2]) }
         ]), /Unsafe/);
@@ -212,7 +215,7 @@ test("unsafe or colliding paths are rejected before any save is written", () => 
         ["ULUS12345/main", "PPSSPP/PSP/SAVEDATA/ULUS12345/main"],
         ["ULUS12345/main", "ULUS12345/main/child"]
     ]) {
-        assert.throws(() => gm.writeDirectorySaveFiles(paths.map(filename => ({ filename, bytes: new Uint8Array([1]) }))), /Duplicate|Conflicting/);
+        assert.throws(() => gm.getSaveFileAdapter().writeDirectorySaveFiles(paths.map(filename => ({ filename, bytes: new Uint8Array([1]) }))), /Duplicate|Conflicting/);
         assert.equal(writes.length, 0);
     }
 });
@@ -221,23 +224,27 @@ test("unidentified Azahar ROMs retain legacy bundles and reject ambiguous portab
     const { gm, writes, add } = manager("azahar", new Uint8Array(8));
     add("/data/saves/" + titleRoot + "/00000001/main", [1]);
     assert.ok(Object.hasOwn(unzip(gm.getSaveFile(false)), titleRoot + "/00000001/main"));
-    await assert.rejects(gm.loadDirectorySaveBundle(zip({ "data/main": [2] })), /Cannot determine/);
+    await assert.rejects(gm.getSaveFileAdapter().restore(zip({ "data/main": [2] })), /Cannot determine/);
     assert.equal(writes.length, 0);
 });
 
-test("pre-boot imports use the same portable mapping and surface save failures", async () => {
+test("pre-boot imports use RomM archive handling and surface restore failures", async t => {
+    const originalFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = originalFetch; });
+    const bytes = zip({ "data/00000001/main": [1] });
     const { gm, files } = manager("azahar");
     gm.EJS.config.externalFiles = { "/data/saves/": "/api/saves/1/content/old.srm" };
-    gm.EJS.downloadFile = async (...args) => {
-        assert.equal(args[5], true);
-        return { data: { files: [{ filename: "data/00000001/main", bytes: new Uint8Array([1]) }] } };
-    };
+    gm.EJS.downloadFile = () => { throw Error("EJS must not download save archives"); };
     gm.loadSaveFiles = () => { throw Error("core must not be refreshed before boot"); };
+    globalThis.fetch = async url => {
+        assert.equal(url, "/api/saves/1/content/old.srm");
+        return { ok: true, arrayBuffer: async () => bytes.buffer };
+    };
     await gm.loadExternalFiles();
     assert.deepEqual([...files.get("/data/saves/" + titleRoot + "/00000001/main").bytes], [1]);
     gm.FS.syncfs = (_, done) => done(Error("quota"));
     await assert.rejects(gm.loadExternalFiles(), /quota/);
-    gm.EJS.downloadFile = async () => { throw Error("download failed"); };
+    globalThis.fetch = async () => { throw Error("download failed"); };
     await assert.rejects(gm.loadExternalFiles(), /download failed/);
 });
 
@@ -247,7 +254,7 @@ test("startup waits for portable save restoration after selecting the ROM", asyn
     emulator.getCore = () => "azahar";
     emulator.selectRomFile = names => { emulator.fileName = names[0]; events.push("select"); };
     emulator.gameManager = {
-        supportsDirectorySaveBundle: () => true,
+        usesSaveDirectory: () => true,
         async loadExternalFiles() { assert.equal(emulator.fileName, "game.3ds"); events.push("restore"); }
     };
     emulator.startGame = () => events.push("boot");
@@ -256,4 +263,32 @@ test("startup waits for portable save restoration after selecting the ROM", asyn
     emulator.gameManager.loadExternalFiles = async () => { throw Error("invalid save"); };
     await assert.rejects(emulator.startGameFromDownload({ files: [{ filename: "game.3ds" }] }), /invalid save/);
     assert.equal(events.filter(event => event === "boot").length, 1);
+});
+
+test("identical directory saves produce stable archives for autosave deduplication", () => {
+    const { gm, add } = manager("dosbox_pure");
+    add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [1, 2]);
+    const first = gm.getSaveFile(false);
+    add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [1, 2], Date.now() + 5000);
+    assert.deepEqual(gm.getSaveFile(false), first);
+});
+
+test("the runtime retains raw SRAM when no host save adapter is installed", () => {
+    const { gm, add } = manager("dosbox_pure");
+    gm.EJS.config.saveFileAdapter = undefined;
+    add(gm.getSaveFilePath(), [1, 2, 3]);
+    add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [8]);
+    assert.deepEqual([...gm.getSaveFile(false)], [1, 2, 3]);
+    assert.equal(gm.getSaveFileAdapter(), null);
+    assert.equal(typeof gm.createZipSaveBundle, "undefined");
+    assert.equal(typeof gm.loadDirectorySaveBundle, "undefined");
+});
+
+test("DOSBox imports reject another core's paths before writing any files", () => {
+    const { gm, writes } = manager("dosbox_pure");
+    assert.throws(() => gm.getSaveFileAdapter().writeDirectorySaveFiles([
+        { filename: "DOSBox-pure/Example-CDRIVE.sav", bytes: new Uint8Array([1]) },
+        { filename: "OtherCore/progress.sav", bytes: new Uint8Array([2]) }
+    ]), /Not a DOSBox Pure save path/);
+    assert.equal(writes.length, 0);
 });

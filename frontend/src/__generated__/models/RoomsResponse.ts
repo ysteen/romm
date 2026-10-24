@@ -8,5 +8,9 @@ export type RoomsResponse = {
     max: number;
     player_name: string;
     hasPassword: boolean;
+    link_roms?: any[];
+    link_host_rom?: number;
+    link_game_name?: string;
+    link_manual_start?: boolean;
 };
 

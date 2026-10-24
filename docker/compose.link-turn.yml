@@ -1,0 +1,10 @@
+services:
+  coturn:
+    image: coturn/coturn:4.18.0-r0
+    network_mode: host
+    restart: unless-stopped
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    volumes:
+      - ${TURN_CONFIG:?Set TURN_CONFIG to an absolute turnserver.conf path}:/etc/coturn/turnserver.conf:ro
+    tmpfs:
+      - /var/lib/coturn

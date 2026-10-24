@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linked consoles</title>
+<style>html,body,#game{margin:0;width:100%;height:100%;background:#111827} body:not(.romm-player) .ejs_menu_bar,.romm-link-disabled{display:none!important}</style>
+<div id="game"></div>
+<script type="module">
+import { LibretroAdapter } from "../data/src/input-netplay.js?v=20261021.10";
+import { importBattery, linkCore } from "../data/src/link-core.js?v=20261021.10";
+import { bindPlayerVolume, installPlayerAudio } from "./audio.js?v=20261021.10";
+import { LinkNetplay } from "../data/src/link-netplay.js?v=20261021.10";
+import { makeManifest } from "./lab.js?v=20261021.10";
+import { installPlayerScreen } from "./screen.js?v=20261021.10";
+import { installPlayerActions, installPlayerExit, installPlayerMenu } from "./menu.js?v=20261021.10";
+import { decodeLinkState, encodeLinkState } from "./state.js?v=20261021.10";
+
+window.audioOutput = installPlayerAudio();
+
+window.boot = (roms, options, integration = {}) => new Promise((resolve, reject) => {
+    const profile = linkCore(integration.core, roms.length);
+    const urls = roms.map(bytes => URL.createObjectURL(new Blob([bytes])));
+    const release = () => { clearTimeout(timeout); urls.forEach(url => URL.revokeObjectURL(url)); };
+    const fail = error => { release(); reject(error); };
+    const timeout = setTimeout(() => fail(new Error("EmulatorJS startup timed out")), 45000);
+    Object.assign(window, {
+        EJS_player: "#game", EJS_core: profile.core, EJS_gameUrl: urls[0], EJS_linkGameUrl: urls.slice(1),
+        EJS_gameName: "link-player-1", EJS_pathtodata: "../data/", EJS_startOnLoaded: true,
+        EJS_DEBUG_XX: true, EJS_threads: false, EJS_dontExtractRom: true,
+        EJS_disableLocalStorage: true, EJS_cacheConfig: { enabled: !!integration.onExit }, EJS_volume: 0.4,
+        EJS_noAutoFocus: true, EJS_disableRestart: true, EJS_defaultOptions: options,
+        EJS_gameID: integration.romId,
+        EJS_netplayServer: integration.romId ? location.origin : undefined,
+        EJS_netplayICEServers: integration.iceServers,
+        EJS_netplaySocketOptions: { path: "/netplay/socket.io", transports: ["websocket"] },
+        EJS_netplayRoomListUrl: "/api/netplay/list",
+        EJS_defaultControls: { 0: { 0: { value: "z" }, 8: { value: "x" }, 2: { value: "shift" } } },
+        EJS_Buttons: integration.buttons ?? {
+            saveState: false, loadState: false, saveSavFiles: false, loadSavFiles: false,
+            exitEmulation: false
+        },
+        EJS_onSaveState: integration.onSaveState,
+        EJS_onLoadState: integration.onLoadState,
+        EJS_onSaveSave: integration.onSave,
+        EJS_onGameStart: () => {
+            try {
+                const adapter = new LibretroAdapter(EJS_emulator.Module, profile.core, roms.length);
+                bindPlayerVolume(EJS_emulator, window.audioOutput);
+                window.localButtons = 0;
+                window.secondButtons = 0;
+                const simulateInput = EJS_emulator.gameManager.simulateInput.bind(EJS_emulator.gameManager);
+                EJS_emulator.gameManager.simulateInput = (port, button, value) => {
+                    if (window.link?.status === "solo") {
+                        if (port === 0) simulateInput(window.link.role, button, value);
+                        return;
+                    }
+                    if (button < 0 || button >= 16) return;
+                    const key = port === 1 ? "secondButtons" : "localButtons";
+                    if (value) window[key] |= 1 << button;
+                    else window[key] &= ~(1 << button);
+                };
+                window.addEventListener("blur", () => { window.localButtons = window.secondButtons = 0; });
+                // noAutoFocus also disables EJS's click-to-focus handler. Keep
+                // startup passive, but let the user select this player explicitly.
+                const controls = EJS_emulator.elements.parent;
+                controls.tabIndex = 0;
+                controls.setAttribute("aria-label", "Game controls: arrow keys, X, Z, Enter and Shift");
+                controls.addEventListener("pointerdown", event => {
+                    window.selectPlayer?.();
+                    if (event.target.closest?.("input, textarea, button, select, [contenteditable='true']")) return;
+                    controls.focus({ preventScroll: true });
+                });
+                window.adapter = adapter;
+                release();
+                resolve(adapter);
+            } catch (error) { fail(error); }
+        }
+    });
+    const script = document.createElement("script");
+    script.src = "../data/loader.js?v=20261021.10";
+    script.onerror = () => fail(new Error("EmulatorJS loader failed"));
+    document.body.append(script);
+});
+
+window.bootRomm = async (roms, integration) => {
+    document.body.classList.add("romm-player");
+    const profile = linkCore(integration.core, roms.length);
+    const adapter = await window.boot(roms, profile.options, integration);
+    const emulator = EJS_emulator;
+    const cartridges = ["/" + emulator.fileName, ...emulator.linkFileNames]
+        .map(path => emulator.gameManager.FS.readFile(path));
+    const manifest = { ...await makeManifest(cartridges, profile.core), batteries: "per-player" };
+    // Each account loads its selected server save before the first game frame.
+    for (const id of profile.memoryIds) {
+        const bytes = adapter.memory(id);
+        if (bytes.length) adapter.loadMemory(id, bytes.fill(255));
+    }
+    const netplay = EJS_emulator.netplay;
+    netplay.name = integration.name;
+    // Keep the room socket alive when this core iframe is replaced.
+    netplay.socketFactory = integration.createSocket;
+    const screen = installPlayerScreen(EJS_emulator, profile);
+    let updateMenu = () => {};
+    window.link = new LinkNetplay(netplay, adapter, {
+        ...integration, manifest,
+        onSolo() {
+            window.localButtons = window.secondButtons = 0;
+            const manager = EJS_emulator.gameManager;
+            for (let port = 0; port < profile.players; port++)
+                for (let button = 0; button < 16; button++)
+                    manager.functions.simulateInput(port, button, 0);
+            adapter.end();
+            manager.toggleMainLoop(1);
+        },
+        onStatus(event) {
+            screen.select(event.player);
+            updateMenu(event.status);
+            if (["connected", "solo"].includes(event.status) && netplay._menuElement) {
+                netplay._menuElement.style.display = "none";
+                netplay.updateList?.stop();
+            }
+            integration.onStatus?.(event);
+        }
+    });
+    installPlayerExit(EJS_emulator, integration.exitLabel, integration.onExit);
+    installPlayerActions(EJS_emulator, integration);
+    updateMenu = installPlayerMenu(EJS_emulator, window.link);
+    window.selectPlayer = () => window.audioOutput.setActive(true);
+    window.addEventListener("focus", window.selectPlayer);
+    window.addEventListener("blur", () => window.audioOutput.setActive(false));
+    document.addEventListener("visibilitychange", () => {
+        window.audioOutput.setActive(!document.hidden && document.hasFocus());
+    });
+    return {
+        netplay,
+        connect(room, connection) {
+            if (connection) return netplay.adoptRoom(connection);
+            if (!netplay.isMenuCreated()) netplay.createNetplayMenu();
+            netplay.openMenu();
+            if (room.player === 0) netplay.openRoom(room.name, 2, room.password);
+            else netplay.joinRoom(room.id, room.name, 2, room.password);
+        },
+        battery: () => window.link.battery(),
+        captureState() {
+            return soloState(() => encodeLinkState({ manifest, player: window.link.role }, adapter.save()));
+        },
+        restoreState(bytes) {
+            const state = decodeLinkState({ manifest, player: window.link.role }, bytes, adapter.size);
+            soloState(() => {
+                const backup = adapter.save();
+                try { adapter.load(state); }
+                catch (error) { adapter.load(backup); throw error; }
+                EJS_emulator.gameManager.setVariable(profile.linkOption, "disabled");
+            });
+        },
+        restoreBattery(bytes) {
+            soloState(() => {
+                const backup = adapter.save();
+                try {
+                    adapter.load(window.link.initial);
+                    importBattery(adapter, profile, window.link.role, bytes);
+                } catch (error) { adapter.load(backup); throw error; }
+                EJS_emulator.gameManager.setVariable(profile.linkOption, "disabled");
+                EJS_emulator.gameManager.setVariable(profile.audioOption, profile.audio[window.link.role]);
+            });
+        },
+        pause: () => EJS_emulator.pause(),
+        play: () => EJS_emulator.play(),
+        get player() { return window.link.role; },
+        get status() { return window.link.status; },
+        stop() { window.link.destroy(); },
+        destroy() { window.link.destroy(); screen.destroy(); EJS_emulator.setVolume(0); },
+        updateSave(bytes) { window.link.save = bytes; }
+    };
+    function soloState(action) {
+        if (window.link.status !== "solo") throw new Error("Disconnect link play before changing states");
+        const paused = EJS_emulator.paused;
+        adapter.begin();
+        try { return action(); }
+        finally {
+            adapter.end();
+            EJS_emulator.gameManager.toggleMainLoop(paused ? 0 : 1);
+        }
+    }
+};
+</script>
+</html>

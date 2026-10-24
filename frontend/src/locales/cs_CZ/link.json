@@ -1,0 +1,22 @@
+{
+  "automatic": "Spuštěná hra připojujícího se hráče se rozpozná automaticky.",
+  "choose-slot": "Vybrat místo",
+  "connected": "Připojeno",
+  "connecting": "Připojování",
+  "error": "Chyba připojení",
+  "host-game": "Hra hostitele",
+  "incompatible-state": "Tento stav neodpovídá aktuálním hrám nebo hráči.",
+  "max-players": "Maximální počet hráčů",
+  "no-state": "Není dostupný žádný uložený stav.",
+  "player-slot": "Pozice hráče",
+  "ready": "Připraveno",
+  "restart": "Propojení restartuje hry z jejich uložených pozic ve hře. Před vytvořením místnosti nebo připojením k ní uložte hru.",
+  "saving": "Nejprve uložte hru. Pouze vaše uložená pozice se synchronizuje s RomM každých 10 sekund. Uložit a ukončit počká na dokončení nahrávání.",
+  "slot-hint": "Vyberte pro všechny v místnosti po sobě jdoucí místa od 1P.",
+  "solo": "Spojení bylo odpojeno. Můžete pokračovat ve hře sami.",
+  "start-game": "Spustit hru",
+  "stopped": "Zastaveno",
+  "supported": "Podporovány jsou ROM pro GB, GBC a GBA, včetně ZIP archivů obsahujících jednu hru.",
+  "waiting": "Čekání na dalšího hráče",
+  "your-game": "Vaše hra"
+}

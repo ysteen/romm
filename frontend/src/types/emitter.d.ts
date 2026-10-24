@@ -19,6 +19,15 @@ export type SnackbarStatus = {
   image?: string | null;
 };
 
+export type StatePickerRequest = DetailedRom & {
+  player?: {
+    core: string;
+    loadState: (state: StateSchema) => void | Promise<void>;
+    loadSave: (save: SaveSchema) => void | Promise<void>;
+    close: () => void;
+  };
+};
+
 export type Events = {
   showDeletePlatformDialog: Platform;
   showCreateCollectionDialog: null;
@@ -104,7 +113,7 @@ export type Events = {
   // (which only ever hold SimpleRom) can trigger it too.
   showQRCodeDialog: SimpleRom;
   selectSaveDialog: DetailedRom;
-  selectStateDialog: DetailedRom;
+  selectStateDialog: StatePickerRequest;
   saveSelected: SaveSchema;
   openEmulatorJSCacheDialog: null;
   stateSelected: StateSchema;

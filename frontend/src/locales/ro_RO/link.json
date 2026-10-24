@@ -1,0 +1,22 @@
+{
+  "automatic": "Jocul pornit de jucătorul care se alătură este detectat automat.",
+  "choose-slot": "Alege un loc",
+  "connected": "Conectat",
+  "connecting": "Se conectează",
+  "error": "Eroare de conectare",
+  "host-game": "Jocul gazdei",
+  "incompatible-state": "Această stare nu corespunde jocurilor actuale sau jucătorului.",
+  "max-players": "Număr maxim de jucători",
+  "no-state": "Nu există nicio stare salvată disponibilă.",
+  "player-slot": "Poziția jucătorului",
+  "ready": "Pregătit",
+  "restart": "Conectarea repornește jocurile din salvările lor interne. Salvează în joc înainte de a crea sau de a intra într-o cameră.",
+  "saving": "Salvează mai întâi în joc. Doar salvarea ta se sincronizează cu RomM la fiecare 10 secunde. Salvare și ieșire așteaptă finalizarea încărcării.",
+  "slot-hint": "Alegeți locuri consecutive de la 1P pentru toți jucătorii din cameră.",
+  "solo": "Legătura a fost deconectată. Poți continua să joci singur.",
+  "start-game": "Pornește jocul",
+  "stopped": "Oprit",
+  "supported": "Sunt acceptate ROM-uri GB, GBC și GBA, inclusiv fișiere ZIP care conțin un singur joc.",
+  "waiting": "Se așteaptă un alt jucător",
+  "your-game": "Jocul tău"
+}

@@ -23,11 +23,13 @@ map $request_uri $coep_header {
     default        "";
     ~^/rom/[0-9]+/(ejs|jsdos)/?(?:\?.*)?$ "require-corp";
     ~^/console/rom/[0-9]+/play/?(?:\?.*)?$ "require-corp";
+    ~^/assets/emulatorjs/input-netplay/player\.html(?:\?.*)?$ "require-corp";
 }
 map $request_uri $coop_header {
     default        "";
     ~^/rom/[0-9]+/(ejs|jsdos)/?(?:\?.*)?$ "same-origin";
     ~^/console/rom/[0-9]+/play/?(?:\?.*)?$ "same-origin";
+    ~^/assets/emulatorjs/input-netplay/player\.html(?:\?.*)?$ "same-origin";
 }
 
 # Library resources under /assets/romm/resources/ are a mix. Covers (?ts=) and
@@ -87,6 +89,8 @@ server {
     # Everything else under /assets keeps a stable URL across image upgrades
     location /assets {
         add_header Cache-Control "public, max-age=3600, must-revalidate";
+        add_header Cross-Origin-Embedder-Policy $coep_header;
+        add_header Cross-Origin-Opener-Policy $coop_header;
         gzip_static on;
         try_files $uri $uri/ =404;
     }

@@ -165,6 +165,7 @@ const config = {
         : window.EJS_gameUrl,
     dataPath: scriptPath,
     system: window.EJS_core,
+    linkGameUrl: window.EJS_linkGameUrl,
     biosUrl: window.EJS_biosUrl,
     gameName: window.EJS_gameName,
     color: window.EJS_color,
@@ -182,19 +183,15 @@ const config = {
     filePaths: window.EJS_paths,
     loadState: window.EJS_loadStateURL,
     cacheLimit: window.EJS_CacheLimit,
-    // RomM does not configure EmulatorJS 4.3's download cache. Its
-    // default 4 GB IndexedDB cache can stall on a stale core transaction after
-    // Save & Quit/reload, before the core HTTP request is even issued. This is
-    // separate from the states/save-data databases, which remain enabled.
-    cacheConfig: window.EJS_cacheConfig ?? (isDosBoxPure
-        ? { enabled: false, cacheMaxSizeMB: 64, cacheMaxAgeMins: 60 }
-        : undefined),
+    cacheConfig: window.EJS_cacheConfig,
     cheats: window.EJS_cheats,
     cheatPath: window.EJS_cheatPath,
     defaultOptions: window.EJS_defaultOptions,
     gamePatchUrl: window.EJS_gamePatchUrl,
     gameParentUrl: window.EJS_gameParentUrl,
     netplayUrl: window.EJS_netplayServer,
+    netplaySocketOptions: window.EJS_netplaySocketOptions,
+    netplayRoomListUrl: window.EJS_netplayRoomListUrl,
     netplayICEServers: window.EJS_netplayICEServers,
     gameId: window.EJS_gameID,
     backgroundImg: window.EJS_backgroundImage,
@@ -208,6 +205,7 @@ const config = {
     disableRestart: window.EJS_disableRestart,
     capture: window.EJS_screenCapture,
     externalFiles: window.EJS_externalFiles,
+    saveFileAdapter: window.EJS_saveFileAdapter,
     // DOSBox Pure must receive the ZIP itself so it can parse DOS.YML,
     // AUTOBOOT.DBP and disk images. RomM does not expose this 4.3 option.
     dontExtractRom: window.EJS_dontExtractRom ?? isDosBoxPure,

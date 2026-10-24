@@ -6,8 +6,7 @@ import type { Emitter } from "mitt";
 import { computed, inject, onBeforeUnmount, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { SaveSchema, StateSchema } from "@/__generated__";
-import type { DetailedRom } from "@/stores/roms";
-import type { Events } from "@/types/emitter";
+import type { Events, StatePickerRequest } from "@/types/emitter";
 import AssetList from "@/v2/components/shared/AssetList.vue";
 import AssetStrip from "@/v2/components/shared/AssetStrip.vue";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
@@ -21,7 +20,7 @@ const { t } = useI18n();
 const { mdAndUp } = useBreakpoint();
 const confirm = useConfirm();
 const show = ref(false);
-const rom = ref<DetailedRom | null>(null);
+const rom = ref<StatePickerRequest | null>(null);
 // States apply on the fly, so they are what the button reaches for first.
 const tab = ref<AssetType>("state");
 
@@ -30,11 +29,11 @@ const states = computed(() => rom.value?.user_states ?? []);
 const { tabs, stateDisabledReason } = useSaveStateTabs(
   saves,
   states,
-  () => window.EJS_core,
+  () => rom.value?.player?.core ?? window.EJS_core,
 );
 
 const emitter = inject<Emitter<Events>>("emitter");
-const openHandler = (selectedRom: DetailedRom) => {
+const openHandler = (selectedRom: StatePickerRequest) => {
   rom.value = selectedRom;
   tab.value = "state";
   show.value = true;
@@ -59,15 +58,19 @@ async function onSelect(asset: Asset) {
         },
   );
   if (!ok) return;
-  if (isSave) emitter?.emit("saveSelected", asset as SaveSchema);
+  if (rom.value?.player) {
+    if (isSave) await rom.value.player.loadSave(asset as SaveSchema);
+    else await rom.value.player.loadState(asset as StateSchema);
+  } else if (isSave) emitter?.emit("saveSelected", asset as SaveSchema);
   else emitter?.emit("stateSelected", asset as StateSchema);
   closeDialog();
 }
 
 function closeDialog() {
+  if (rom.value?.player) rom.value.player.close();
+  else window.EJS_emulator?.play();
   show.value = false;
   rom.value = null;
-  window.EJS_emulator?.play();
 }
 </script>
 

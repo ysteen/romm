@@ -90,6 +90,7 @@ describe("playerIsolationHeaders", () => {
     // request URI, so the query string has to be allowed for explicitly.
     "/rom/1/ejs?core=snes9x",
     "/console/rom/1/play",
+    "/assets/emulatorjs/input-netplay/player.html?v=20261019.5",
   ])("isolates %s", (url) => {
     expect(headersFor(url)).toEqual(ISOLATED);
   });

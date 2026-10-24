@@ -1,16 +1,17 @@
-import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js";
+import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js?v=20261024.1";
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
-import { EJS_GameManager } from "./GameManager.js?v=20261005.1";
+import { EJS_GameManager } from "./GameManager.js?v=20261024.1";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
 import { cyrb53 } from "./utils.js";
 import { EJS_SETUP } from "./setup.js";
-import { Netplay } from "./netplay.js";
+import { Netplay } from "./netplay.js?v=20261024.1";
 import { EJS_license } from "./license.js";
-import * as CONSTS from "./consts.js";
+import * as CONSTS from "./consts.js?v=20261024.1";
+import { linkCore, selectLinkCartridge, unpackLinkCartridge } from "./link-core.js?v=20261024.1";
 
 import "./vendor/nipplejs.js";
 import "./vendor/socket.io.min.js";
@@ -1321,7 +1322,34 @@ class EmulatorJS {
             fileNames.push(file.filename);
         }
         this.selectRomFile(fileNames, this.getCore());
-        if (this.gameManager.supportsDirectorySaveBundle()) {
+        if (this.config?.linkGameUrl) {
+            const sources = Array.isArray(this.config.linkGameUrl) ? this.config.linkGameUrl : [this.config.linkGameUrl];
+            const profile = linkCore(this.getCore(), sources.length + 1);
+            const first = romData.files.length === 1
+                ? await unpackLinkCartridge(romData.files[0].bytes, profile, this.compression)
+                : selectLinkCartridge(romData.files, profile).bytes;
+            this.gameManager.FS.mkdirTree("/ejs-link-player-1");
+            this.fileName = `ejs-link-player-1/cartridge.${profile.extension}`;
+            this.gameManager.FS.writeFile("/" + this.fileName, first);
+            this.linkFileNames = [];
+            for (const [index, source] of sources.entries()) {
+                let bytes;
+                if (source instanceof Blob) bytes = new Uint8Array(await source.arrayBuffer());
+                else {
+                    const response = await fetch(source);
+                    if (!response.ok) throw new Error("Failed to download a link cartridge.");
+                    bytes = new Uint8Array(await response.arrayBuffer());
+                }
+                bytes = await unpackLinkCartridge(bytes, profile, this.compression);
+                const directory = `/ejs-link-player-${index + 2}`;
+                this.gameManager.FS.mkdirTree(directory);
+                const path = `${directory}/cartridge.${profile.extension}`;
+                this.gameManager.FS.writeFile(path, bytes);
+                this.linkFileNames.push(path);
+            }
+            this.linkFileName = this.linkFileNames[0];
+        }
+        if (this.gameManager.usesSaveDirectory()) {
             // Portable 3DS archives need the ROM's title ID to locate data and
             // extdata. Restore after ROM selection and before the core boots.
             await this.gameManager.loadExternalFiles();
@@ -1399,7 +1427,10 @@ class EmulatorJS {
         try {
             const args = [];
             if (this.debug && this.getCore() !== "azahar") args.push("-v");
+            const linkedFiles = this.linkFileNames ?? (this.linkFileName ? [this.linkFileName] : []);
+            if (linkedFiles.length) args.push("--subsystem", linkCore(this.getCore(), linkedFiles.length + 1).subsystem);
             args.push("/" + this.fileName);
+            args.push(...linkedFiles);
             if (this.debug) console.log(args);
             this.Module.callMain(args);
             if (typeof this.config.softLoad === "number" && this.config.softLoad > 0) {
@@ -2454,7 +2485,7 @@ class EmulatorJS {
             });
             if (called > 0) return;
             const filename = this.gameManager.getSaveFileName(file);
-            const blob = new Blob([file], { type: filename.endsWith(".zip") ? "application/zip" : "application/octet-stream" });
+            const blob = new Blob([file], { type: "application/octet-stream" });
             savUrl = URL.createObjectURL(blob);
             const a = this.createElement("a");
             a.href = savUrl;
@@ -2466,8 +2497,9 @@ class EmulatorJS {
             if (called > 0) return;
             const file = await this.selectFile();
             const sav = new Uint8Array(await file.arrayBuffer());
-            if (this.gameManager.supportsDirectorySaveBundle()) {
-                await this.gameManager.loadDirectorySaveBundle(sav);
+            const saveAdapter = this.gameManager.getSaveFileAdapter();
+            if (saveAdapter) {
+                await saveAdapter.restore(sav);
                 return;
             }
             const path = this.gameManager.getSaveFilePath();
