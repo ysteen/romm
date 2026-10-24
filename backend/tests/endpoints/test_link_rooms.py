@@ -278,6 +278,7 @@ async def test_concurrent_joins_and_slot_claims_are_serialized(system):
             )
             assert claims.count("This player slot is already taken") == 1
             stored = await netplay_handler.get("link-room")
+            assert stored is not None
             for name in ids:
                 if "link_slot" not in stored["players"][name]:
                     assert await link_seat(name, {"slot": 1}) is None

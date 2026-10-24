@@ -128,21 +128,33 @@ deployment command above. The deployment script preserves existing credentials
 and configuration. Updating this Git checkout alone does not restart containers
 or migrate the running database.
 
-### Upgrade verification (2026-09-21)
+### Integrated server verification (2026-10-25)
 
-- Frontend typecheck passed with a 4 GiB Node heap; the default 2 GiB heap ran
-  out of memory in this environment.
-- All 762 frontend tests across 67 files passed with `--maxWorkers=1`.
-- Production frontend build, locale completeness/sorting, runtime JavaScript
-  syntax and Git whitespace checks passed.
-- The new regression tests execute the real startup save/state branch without
-  mounting a ROM. They also cover local module cache revisions and external URLs.
-- The touched-file ESLint run still reports two existing errors in the legacy
-  console player (unused `FirmwareSchema` and a non-focusable button role).
-  Both reproduce on the pre-upgrade commit; the new regression test is lint-clean.
-- Full Docker image verification remains incomplete: a nightly CDN core download
-  stalled after the frontend stage succeeded, so that build was stopped. No
-  running container, database or saved game was replaced for this upgrade.
+- A fresh GitHub clone at `6f6085398` built through the deployment script and
+  initialized an empty MariaDB database. Both services reached healthy status.
+- The running image matched all 46 custom runtime and core files from Git.
+- All 2,363 frontend tests and 163 custom runtime tests passed. The affected
+  backend save, filesystem and room tests passed, including concurrent room
+  changes with the declared Lua test dependency.
+- Frontend and script typechecks, generated API types, touched-file ESLint,
+  repository Ruff rules, Black, isort, mypy, and locale completeness/sorting
+  checks passed.
+- Chrome 155 launched DOSBox Pure, melonDS, mGBA and Azahar from that image.
+  Azahar produced a 193,920-byte RomM ZIP save; two explicit version uploads had
+  distinct filenames and matched byte for byte after download and filesystem
+  restoration. Temporary test saves were removed afterward.
+- SameBoy's two WebRTC peers matched the offline reference for 360 frames with
+  80/140 ms injected delay. The four-player GBA core replayed 180 frames exactly
+  after restoring a snapshot and exposed separate 128 KiB battery saves.
+- Real IndexedDB checks covered a 51 MiB core, cache reuse, missing-chunk
+  recovery and connection cleanup. Failed CDN downloads were also verified to
+  stop the image build without replacing complete core files.
+- The room dialog rendered at 1440px in dark mode and 320px in light mode.
+  Mouse and keyboard capacity selection kept the form open until submission.
+
+Browser checks used the isolated port 8081 test instance. The temporary port
+8080 deployment was stopped after installation verification. External-server
+TLS, reverse-proxy and TURN routing still depend on that server's configuration.
 
 ## GB/GBC link cable in the v2 player
 
