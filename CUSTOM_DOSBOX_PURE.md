@@ -32,7 +32,8 @@ Emscripten, Node.js or a pre-existing custom Docker image. Docker builds the
 frontend and combines it with the backend and emulator assets from this commit.
 Allow at least 8 GiB of available memory for the frontend build. The initial
 build needs access to GitHub, npm, the container registries and the EmulatorJS
-CDN. The matching link-core build sources are published at
+CDN. Only cores not supplied by this checkout are downloaded, with four parallel
+requests; a failed download fails the image build. The matching link-core build sources are published at
 [`ysteen/build@4966f1a`](https://github.com/ysteen/build/commit/4966f1a).
 
 The script waits for the database and application heartbeat before reporting

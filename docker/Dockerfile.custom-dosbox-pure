@@ -19,12 +19,9 @@ RUN apk add --no-cache curl git \
     && git -C /emulatorjs checkout --detach FETCH_HEAD \
     && rm -rf /emulatorjs/.git
 COPY --from=romm-base /var/www/html/assets/emulatorjs/data/cores/ /emulatorjs/data/cores/
-RUN find /emulatorjs/data/cores -type f \( -name '*.data' -o -path '*/reports/*.json' \) -print \
-    | while IFS= read -r file; do \
-        relative="${file#/emulatorjs/data/}"; \
-        curl -fL --connect-timeout 20 --max-time 600 --retry 3 -o "${file}.download" "https://cdn.emulatorjs.org/nightly/data/${relative}"; \
-        mv "${file}.download" "${file}"; \
-      done
+COPY custom-emulatorjs/data/cores/ /custom-cores/
+COPY scripts/download-emulatorjs-cores.sh /download-emulatorjs-cores.sh
+RUN sh /download-emulatorjs-cores.sh
 
 FROM ${ROMM_BASE_IMAGE}
 ARG ROMM_CUSTOM_REVISION=unknown
