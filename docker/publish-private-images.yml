@@ -89,6 +89,12 @@ jobs:
           cache-from: type=gha,scope=custom-romm-amd64
           cache-to: type=gha,mode=max,scope=custom-romm-amd64
 
+      - name: Confirm application package is private
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: python3 backend/tools/check_private_ghcr.py "$OWNER" romm-custom-private
+
       - name: Publish matching RomForge worker
         id: worker
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

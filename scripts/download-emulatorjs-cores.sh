@@ -11,7 +11,8 @@ done < /tmp/core-files | xargs -0 -r -n 1 -P 4 sh -eu -c '
     file="$1"
     relative="${file#/emulatorjs/data/}"
     echo "Downloading $relative"
-    curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 \
+    curl -fsSL --http1.1 --connect-timeout 20 --max-time 600 \
+        --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 900 \
         -o "${file}.download" "https://cdn.emulatorjs.org/nightly/data/${relative}"
     mv "${file}.download" "$file"
 ' sh
