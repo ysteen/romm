@@ -65,8 +65,11 @@ The worker image includes the regular RomM Python dependencies, a self-contained
 .NET CLI and Linux xdelta3. It does not start Nginx, the web API, scheduled jobs or
 another Redis server. No WebAssembly build is used.
 
-The worker runs as UID/GID 1000 by default. Set `ROMFORGE_UID` and `ROMFORGE_GID`
-to the owner of your shared library and resources directories if they differ.
+The deployment script defaults the worker UID/GID to the resources directory
+owner and preserves explicit `ROMFORGE_UID` and `ROMFORGE_GID` settings. Direct
+Compose use defaults to 1000; set those values to the shared directory owner if
+it differs. The worker also needs read access to configuration and write access
+to the library.
 
 ## Disable or pause
 
