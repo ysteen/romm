@@ -1,4 +1,4 @@
-ARG ROMM_WORKER_BASE_IMAGE=ghcr.io/ysteen/romm-custom:5.4.1
+ARG ROMM_WORKER_BASE_IMAGE=ghcr.io/ysteen/romm-custom-private:5.4.1
 FROM ${ROMM_WORKER_BASE_IMAGE} AS romm-worker-base
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS core

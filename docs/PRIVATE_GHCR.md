@@ -3,8 +3,8 @@
 The custom application and optional RomForge worker are published as private GHCR
 packages for `linux/amd64`:
 
-- `ghcr.io/ysteen/romm-custom:5.4.1`
-- `ghcr.io/ysteen/romm-romforge:5.4.1`
+- `ghcr.io/ysteen/romm-custom-private:5.4.1`
+- `ghcr.io/ysteen/romm-romforge-private:5.4.1`
 
 The version tags advance only after both images pass the pull-and-boot check.
 Each build also has a `sha-<12-character-commit>` tag and an immutable digest.
@@ -62,10 +62,20 @@ to those published defaults; explicit registry references are preserved.
 
 ## Publish updates
 
-Pushing relevant changes to `custom/retroarch-dosbox-5.4.1` runs
-`.github/workflows/publish-custom.yml`. The workflow rejects an existing package
-unless its visibility is private and verifies privacy again after publishing.
-New GHCR packages default to private. Never change these packages to public.
+Source code stays public in `ysteen/romm`, branch `custom/retroarch-dosbox-5.4.1`.
+The private `ysteen/romm-image-builds` repository contains only the publishing
+workflow. It checks out that public branch and publishes packages linked to the
+private build repository. Its reviewed workflow template is also public at
+`docker/publish-private-images.yml`.
+
+After pushing source updates, start publication with:
+
+```sh
+gh workflow run publish-custom.yml --repo ysteen/romm-image-builds
+```
+
+The workflow rejects an existing package unless its visibility is private and
+verifies privacy again after publishing. Never change these packages to public.
 
 The workflow uses `contents: read` and `packages: write`, builds the app and a
 worker based on that exact image digest, and tests installation from the

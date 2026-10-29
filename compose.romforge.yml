@@ -15,7 +15,7 @@ services:
 
   romforge:
     profiles: [romforge]
-    image: ${ROMFORGE_IMAGE:-ghcr.io/ysteen/romm-romforge:5.4.1}
+    image: ${ROMFORGE_IMAGE:-ghcr.io/ysteen/romm-romforge-private:5.4.1}
     restart: unless-stopped
     init: true
     # RomM's embedded Redis listens on localhost.

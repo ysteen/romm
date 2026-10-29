@@ -1,0 +1,35 @@
+name: Remove non-private bootstrap images
+on:
+  push:
+    branches: [custom/retroarch-dosbox-5.4.1]
+    paths: [.github/workflows/remove-bootstrap-images.yml]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  cleanup:
+    if: github.repository == 'ysteen/romm'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Remove only packages created by the initial publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from urllib.request import Request, urlopen
+          expected = {
+              "romm-custom": "2026-10-29T16:09:59Z",
+              "romm-romforge": "2026-10-29T16:13:34Z",
+          }
+          headers = {"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json"}
+          for name, created in expected.items():
+              url = f"https://api.github.com/users/ysteen/packages/container/{name}"
+              with urlopen(Request(url, headers=headers), timeout=30) as response:
+                  package = json.load(response)
+              assert package["created_at"] == created and package["visibility"] == "public"
+              with urlopen(Request(url, headers=headers, method="DELETE"), timeout=30) as response:
+                  assert response.status == 204
+              print(f"Removed bootstrap package {name}")
+          PY

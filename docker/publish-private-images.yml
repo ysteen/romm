@@ -2,17 +2,8 @@ name: Publish Private Custom Images
 
 on:
   push:
-    branches: [custom/retroarch-dosbox-5.4.1]
-    paths:
-      - .github/workflows/publish-custom.yml
-      - backend/**
-      - frontend/**
-      - custom-emulatorjs/**
-      - docker/**
-      - scripts/**
-      - compose*.yml
-      - deploy/**
-      - docs/PRIVATE_GHCR.md
+    branches: [main]
+    paths: [.github/workflows/publish-custom.yml]
   workflow_dispatch:
 
 permissions:
@@ -24,7 +15,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'ysteen/romm' && github.ref == 'refs/heads/custom/retroarch-dosbox-5.4.1'
+    if: github.repository == 'ysteen/romm-image-builds' && github.event.repository.private
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -36,6 +27,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ysteen/romm
+          ref: custom/retroarch-dosbox-5.4.1
           persist-credentials: false
 
       - name: Verify package visibility before publication
@@ -43,8 +36,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
         run: |
-          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-custom --allow-missing
-          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-romforge --allow-missing
+          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-custom-private --allow-missing
+          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-romforge-private --allow-missing
 
       - name: Test deployment and privacy guards
         run: |
@@ -58,9 +51,11 @@ jobs:
         run: |
           version=$(sed -n 's/^ARG ROMM_BASE_IMAGE=.*:\([^:]*\)$/\1/p' docker/Dockerfile.custom-dosbox-pure)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          echo "app=ghcr.io/${OWNER,,}/romm-custom" >> "$GITHUB_OUTPUT"
-          echo "worker=ghcr.io/${OWNER,,}/romm-romforge" >> "$GITHUB_OUTPUT"
-          echo "tag=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "app=ghcr.io/${OWNER,,}/romm-custom-private" >> "$GITHUB_OUTPUT"
+          echo "worker=ghcr.io/${OWNER,,}/romm-romforge-private" >> "$GITHUB_OUTPUT"
+          revision=$(git rev-parse HEAD)
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${revision:0:12}" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -86,8 +81,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.images.outputs.app }}:${{ steps.images.outputs.tag }}
-          build-args: ROMM_CUSTOM_REVISION=${{ github.sha }}
+          build-args: ROMM_CUSTOM_REVISION=${{ steps.images.outputs.revision }}
           labels: |
+            org.opencontainers.image.source=https://github.com/ysteen/romm-image-builds
             org.opencontainers.image.title=Private custom RomM build
             org.opencontainers.image.description=Personal fork with custom EmulatorJS cores and directory save synchronization.
           cache-from: type=gha,scope=custom-romm-amd64
@@ -104,8 +100,9 @@ jobs:
           tags: ${{ steps.images.outputs.worker }}:${{ steps.images.outputs.tag }}
           build-args: ROMM_WORKER_BASE_IMAGE=${{ steps.images.outputs.app }}@${{ steps.app.outputs.digest }}
           labels: |
+            org.opencontainers.image.source=https://github.com/ysteen/romm-image-builds
             org.opencontainers.image.title=Private custom RomForge worker
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.images.outputs.revision }}
           cache-from: type=gha,scope=custom-romforge-amd64
           cache-to: type=gha,mode=max,scope=custom-romforge-amd64
 
@@ -114,8 +111,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OWNER: ${{ github.repository_owner }}
         run: |
-          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-custom
-          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-romforge
+          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-custom-private
+          python3 backend/tools/check_private_ghcr.py "$OWNER" romm-romforge-private
 
       - name: Pull and boot the published images
         env:
@@ -148,7 +145,7 @@ jobs:
           sleep 5
           docker compose --env-file "$RUNNER_TEMP/romm-deployment/.env" \
             -f compose.dosbox-pure.yml -f compose.romforge.yml --profile romforge \
-            exec -T romforge python -c 'import patch_worker; print("Worker imports and process startup verified")'
+            exec -T romforge python -c 'from handler.patch_jobs import HEARTBEAT_KEY; from handler.redis_handler import redis_client; assert redis_client.exists(HEARTBEAT_KEY), "Worker heartbeat missing"; print("Worker heartbeat verified")'
 
       - name: Publish verified version tags
         env:

@@ -20,7 +20,7 @@ services:
       retries: 10
 
   romm:
-    image: ${ROMM_IMAGE:-ghcr.io/ysteen/romm-custom:5.4.1}
+    image: ${ROMM_IMAGE:-ghcr.io/ysteen/romm-custom-private:5.4.1}
     restart: unless-stopped
     environment:
       DB_HOST: database

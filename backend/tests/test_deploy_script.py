@@ -43,8 +43,8 @@ if 'config' in args:
         'volumes': [{'source': str(root/'custom data'/name), 'target': '/romm/'+name}
                     for name in ['config', 'library', 'resources']],
         'ports': [{'published': '8087'}],
-        'image': env.get('ROMM_IMAGE') or 'ghcr.io/ysteen/romm-custom:5.4.1'
-    }, 'romforge': {'image': env.get('ROMFORGE_IMAGE') or 'ghcr.io/ysteen/romm-romforge:5.4.1'}}}))
+        'image': env.get('ROMM_IMAGE') or 'ghcr.io/ysteen/romm-custom-private:5.4.1'
+    }, 'romforge': {'image': env.get('ROMFORGE_IMAGE') or 'ghcr.io/ysteen/romm-romforge-private:5.4.1'}}}))
 if os.environ.get('DEPLOY_TEST_FAIL_BUILD') and args[-2:] == ['build', 'romm']:
     sys.exit(77)
 if os.environ.get('DEPLOY_TEST_FAIL_PULL') and 'pull' in args:
@@ -136,7 +136,7 @@ if os.environ.get('DEPLOY_TEST_FAIL_PULL') and 'pull' in args:
         self.assertIn("ROMM_IMAGE=\n", self.env_file.read_text())
         self.assertIn("ROMFORGE_IMAGE=\n", self.env_file.read_text())
         self.assertIn(
-            "Application image: ghcr.io/ysteen/romm-custom:5.4.1", result.stdout
+            "Application image: ghcr.io/ysteen/romm-custom-private:5.4.1", result.stdout
         )
 
     def test_explicit_registry_references_are_preserved(self):
