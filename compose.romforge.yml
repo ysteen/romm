@@ -15,12 +15,7 @@ services:
 
   romforge:
     profiles: [romforge]
-    image: romm-romforge:local
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.romforge
-      args:
-        ROMM_WORKER_BASE_IMAGE: ${ROMM_IMAGE:-romm-custom-dosbox-pure:5.3.1}
+    image: ${ROMFORGE_IMAGE:-ghcr.io/ysteen/romm-romforge:5.4.1}
     restart: unless-stopped
     init: true
     # RomM's embedded Redis listens on localhost.

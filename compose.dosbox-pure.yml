@@ -20,12 +20,7 @@ services:
       retries: 10
 
   romm:
-    image: ${ROMM_IMAGE:-romm-custom-dosbox-pure:5.4.1}
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.custom-dosbox-pure
-      args:
-        ROMM_CUSTOM_REVISION: ${ROMM_CUSTOM_REVISION:-unknown}
+    image: ${ROMM_IMAGE:-ghcr.io/ysteen/romm-custom:5.4.1}
     restart: unless-stopped
     environment:
       DB_HOST: database

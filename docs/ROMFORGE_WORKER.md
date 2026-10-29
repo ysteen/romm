@@ -26,23 +26,25 @@ the `tasks.run` scope and does not start, retry or cancel jobs.
 
 ## Enable
 
+Authenticate Docker as described in [Private GHCR deployment](PRIVATE_GHCR.md).
 The deployment script keeps existing credentials, paths and RomForge preferences:
 
 ```sh
 ./scripts/deploy-dosbox-pure.sh --romforge
-./scripts/deploy-dosbox-pure.sh --no-romforge --no-build
+./scripts/deploy-dosbox-pure.sh --no-romforge
 ```
 
 `--romforge` enables the worker and defaults scan normalization to true only if
 that setting is absent. An explicit false is preserved. With no mode flag, the
 script retains `ROMFORGE_ENABLED` (false for a new deployment). `--env-file PATH`
-selects another deployment env file; the default is `deploy/.env`. `--no-build`
-uses existing images. The script builds the app before the worker, then gracefully
-stops the worker and recreates its shared network connection after updating the
-app. It creates the key directory under the resolved configuration mount.
+selects another deployment env file; the default is `deploy/.env`. The script
+pulls the app and worker images before gracefully stopping the worker, then
+recreates its shared network connection after updating the app. A failed download
+leaves running services alone. It creates the key directory under the resolved
+configuration mount. `--build` selects local development builds from a full
+source checkout; `--no-build` is the default pull behavior.
 
-Build the updated RomM application image first. The standard `docker/Dockerfile`
-and the custom `docker/Dockerfile.custom-dosbox-pure` both include the backend.
+GitHub Actions builds the worker from the exact application image digest.
 The worker must use the same application revision, DB, configuration, library,
 resources volume, and Redis database as the API.
 
@@ -50,12 +52,7 @@ For this repository's `compose.dosbox-pure.yml` deployment, use the same env fil
 and `ROMM_DATA_DIR` as the existing deployment:
 
 ```sh
-docker compose --env-file .env -f compose.dosbox-pure.yml -f compose.romforge.yml \
-  --profile romforge build romm
-docker compose --env-file .env -f compose.dosbox-pure.yml -f compose.romforge.yml \
-  --profile romforge build romforge
-docker compose --env-file .env -f compose.dosbox-pure.yml -f compose.romforge.yml \
-  --profile romforge up -d romm romforge
+./scripts/deploy-dosbox-pure.sh --env-file .env --romforge
 ```
 
 The overlay defaults `ROMFORGE_ENABLED=true`. The worker shares RomM's network

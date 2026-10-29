@@ -4,3 +4,14 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.custom-dosbox-pure
+      args:
+        ROMM_CUSTOM_REVISION: ${ROMM_CUSTOM_REVISION:-unknown}
+
+  romforge:
+    profiles: [romforge]
+    image: romm-romforge:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.romforge
+      args:
+        ROMM_WORKER_BASE_IMAGE: romm-custom-dosbox-pure:local

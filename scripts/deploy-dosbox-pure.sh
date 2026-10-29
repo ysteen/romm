@@ -5,15 +5,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT/deploy/.env"
 COMPOSE_FILE="$ROOT/compose.dosbox-pure.yml"
 ROMFORGE_MODE="keep"
-BUILD_IMAGES=true
+BUILD_IMAGES=false
 
 usage() {
   cat <<'HELP'
-Usage: deploy-dosbox-pure.sh [--romforge | --no-romforge] [--no-build] [--env-file PATH]
+Usage: deploy-dosbox-pure.sh [--romforge | --no-romforge] [--build | --no-build] [--env-file PATH]
 
   --romforge       Enable the optional worker and automatic 3DS scan conversion.
   --no-romforge    Disable RomForge and gracefully stop its worker.
-  --no-build       Use existing application and worker images.
+  --build          Build local development images from this checkout.
+  --no-build       Pull published images without building (default).
   --env-file PATH  Use an existing or newly generated deployment env file.
 
 Without a mode flag, preserve ROMFORGE_ENABLED from the env file (default false).
@@ -24,6 +25,7 @@ while (($#)); do
   case "$1" in
     --romforge) ROMFORGE_MODE=enable ;;
     --no-romforge) ROMFORGE_MODE=disable ;;
+    --build) BUILD_IMAGES=true ;;
     --no-build) BUILD_IMAGES=false ;;
     --env-file)
       [[ $# -ge 2 && -n "$2" ]] || { echo "--env-file requires a path" >&2; exit 2; }
@@ -35,7 +37,9 @@ while (($#)); do
 done
 ENV_FILE="$(realpath -m "$ENV_FILE")"
 cd "$ROOT"
-export ROMM_CUSTOM_REVISION="${ROMM_CUSTOM_REVISION:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+if $BUILD_IMAGES; then
+  export ROMM_CUSTOM_REVISION="${ROMM_CUSTOM_REVISION:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+fi
 
 random_hex() {
   local bytes="$1"
@@ -65,7 +69,7 @@ DB_PASSWORD=$DB_PASSWORD
 ROMM_AUTH_SECRET_KEY=$ROMM_AUTH_SECRET_KEY
 ROMM_PORT=8080
 ROMM_DATA_DIR=./deploy-data
-ROMM_IMAGE=romm-custom-dosbox-pure:5.4.1
+# Set ROMM_IMAGE and ROMFORGE_IMAGE to pin a published version or digest.
 HASHEOUS_API_ENABLED=true
 TZ=Asia/Seoul
 ROMFORGE_ENABLED=false
@@ -98,24 +102,43 @@ fi
 if ! grep -Eq '^[[:space:]]*ROMFORGE_ENABLED=' "$ENV_FILE"; then
   set_env ROMFORGE_ENABLED false
 fi
+if ! $BUILD_IMAGES; then
+  for entry in 'ROMM_IMAGE:romm-custom-dosbox-pure' 'ROMFORGE_IMAGE:romm-romforge'; do
+    name="${entry%%:*}"
+    local_image="${entry#*:}"
+    if grep -Eq "^[[:space:]]*${name}=${local_image}(:[^[:space:]]+)?[[:space:]]*$" "$ENV_FILE"; then
+      set_env "$name" ""
+      echo "Using the published default for $name."
+    fi
+  done
+fi
 
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE"
-  -f "$ROOT/compose.romforge.yml" --profile romforge)
+  -f "$ROOT/compose.romforge.yml")
+if $BUILD_IMAGES; then
+  COMPOSE+=(-f "$ROOT/compose.custom-dosbox-pure.yml")
+fi
+COMPOSE+=(--profile romforge)
 # Read only non-secret resolved fields, without exposing the full Compose configuration.
 readarray -t SETTINGS < <("${COMPOSE[@]}" config --format json | python3 -c '
 import json, sys
-c = json.load(sys.stdin)["services"]["romm"]
+services = json.load(sys.stdin)["services"]
+c = services["romm"]
 print(str(c["environment"]["ROMFORGE_ENABLED"]).lower())
 for target in ("/romm/config", "/romm/library", "/romm/resources"):
     print(next(v["source"] for v in c["volumes"] if v["target"] == target))
 print(c["ports"][0]["published"])
+print(c["image"])
+print(services["romforge"]["image"])
 ')
-[[ ${#SETTINGS[@]} == 5 ]] || { echo "Could not resolve deployment configuration" >&2; exit 1; }
+[[ ${#SETTINGS[@]} == 7 ]] || { echo "Could not resolve deployment configuration" >&2; exit 1; }
 ENABLED="${SETTINGS[0]}"
 CONFIG_DIR="${SETTINGS[1]}"
 LIBRARY_DIR="${SETTINGS[2]}"
 RESOURCES_DIR="${SETTINGS[3]}"
 PORT="${SETTINGS[4]}"
+APP_IMAGE="${SETTINGS[5]}"
+WORKER_IMAGE="${SETTINGS[6]}"
 mkdir -p "$CONFIG_DIR" "$LIBRARY_DIR" "$RESOURCES_DIR"
 if [[ ! -f "$CONFIG_DIR/config.yml" ]]; then
   cp "$ROOT/deploy/config.yml" "$CONFIG_DIR/config.yml"
@@ -131,6 +154,16 @@ if $BUILD_IMAGES; then
   if [[ "$ENABLED" == true ]]; then
     "${COMPOSE[@]}" build romforge
   fi
+else
+  SERVICES=(database romm)
+  if [[ "$ENABLED" == true ]]; then
+    SERVICES+=(romforge)
+  fi
+  if ! "${COMPOSE[@]}" pull "${SERVICES[@]}"; then
+    echo "Image download failed; running services have not been changed." >&2
+    echo "For private GHCR images, run docker login ghcr.io with read:packages access." >&2
+    exit 1
+  fi
 fi
 # The worker shares the application's network namespace and must be recreated with it.
 "${COMPOSE[@]}" stop romforge
@@ -141,10 +174,11 @@ fi
 "${COMPOSE[@]}" ps
 
 echo "RomM is ready on port $PORT (http://localhost:$PORT on this server)."
-echo "Source revision: $ROMM_CUSTOM_REVISION"
+echo "Application image: $APP_IMAGE"
 echo "ROM directory: $LIBRARY_DIR/roms"
 echo "BIOS directory: $LIBRARY_DIR/bios"
 if [[ "$ENABLED" == true ]]; then
+  echo "Worker image: $WORKER_IMAGE"
   echo "RomForge keys: $CONFIG_DIR/romforge/keys (aes_keys.txt, seeddb.bin, certs.bin)"
   echo "The worker handles one job at a time; missing keys leave 3DS conversions pending."
 else
