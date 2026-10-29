@@ -72,7 +72,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Reuse published images from this source commit
+        id: existing
+        env:
+          APP_IMAGE: ${{ steps.images.outputs.app }}:${{ steps.images.outputs.tag }}
+          WORKER_IMAGE: ${{ steps.images.outputs.worker }}:${{ steps.images.outputs.tag }}
+        run: |
+          for kind in app worker; do
+            if [[ "$kind" == app ]]; then ref="$APP_IMAGE"; else ref="$WORKER_IMAGE"; fi
+            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [[ -n "$digest" ]]; then
+              [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+              echo "$kind=$digest" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
       - name: Publish application by commit
+        if: steps.existing.outputs.app == ''
         id: app
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -87,7 +103,7 @@ jobs:
             org.opencontainers.image.title=Private custom RomM build
             org.opencontainers.image.description=Personal fork with custom EmulatorJS cores and directory save synchronization.
           cache-from: type=gha,scope=custom-romm-amd64
-          cache-to: type=gha,mode=max,scope=custom-romm-amd64
+          cache-to: type=gha,mode=max,scope=custom-romm-amd64,ignore-error=true,timeout=2m
 
       - name: Confirm application package is private
         env:
@@ -96,6 +112,7 @@ jobs:
         run: python3 backend/tools/check_private_ghcr.py "$OWNER" romm-custom-private
 
       - name: Publish matching RomForge worker
+        if: steps.existing.outputs.worker == ''
         id: worker
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -104,13 +121,13 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.images.outputs.worker }}:${{ steps.images.outputs.tag }}
-          build-args: ROMM_WORKER_BASE_IMAGE=${{ steps.images.outputs.app }}@${{ steps.app.outputs.digest }}
+          build-args: ROMM_WORKER_BASE_IMAGE=${{ steps.images.outputs.app }}@${{ steps.existing.outputs.app || steps.app.outputs.digest }}
           labels: |
             org.opencontainers.image.source=https://github.com/ysteen/romm-image-builds
             org.opencontainers.image.title=Private custom RomForge worker
             org.opencontainers.image.revision=${{ steps.images.outputs.revision }}
           cache-from: type=gha,scope=custom-romforge-amd64
-          cache-to: type=gha,mode=max,scope=custom-romforge-amd64
+          cache-to: type=gha,mode=max,scope=custom-romforge-amd64,ignore-error=true,timeout=2m
 
       - name: Confirm both packages are private
         env:
@@ -122,8 +139,8 @@ jobs:
 
       - name: Pull and boot the published images
         env:
-          APP_IMAGE: ${{ steps.images.outputs.app }}@${{ steps.app.outputs.digest }}
-          WORKER_IMAGE: ${{ steps.images.outputs.worker }}@${{ steps.worker.outputs.digest }}
+          APP_IMAGE: ${{ steps.images.outputs.app }}@${{ steps.existing.outputs.app || steps.app.outputs.digest }}
+          WORKER_IMAGE: ${{ steps.images.outputs.worker }}@${{ steps.existing.outputs.worker || steps.worker.outputs.digest }}
         run: |
           python3 - <<'PY'
           import os
@@ -140,7 +157,7 @@ jobs:
               "ROMM_IMAGE": os.environ["APP_IMAGE"],
               "ROMFORGE_IMAGE": os.environ["WORKER_IMAGE"],
               "ROMFORGE_ENABLED": "true",
-              "ROMFORGE_MEMORY": "1g",
+              "ROMFORGE_MEMORY": "2g",
               "HASHEOUS_API_ENABLED": "false",
           }
           target = root / ".env"
@@ -151,14 +168,14 @@ jobs:
           sleep 5
           docker compose --env-file "$RUNNER_TEMP/romm-deployment/.env" \
             -f compose.dosbox-pure.yml -f compose.romforge.yml --profile romforge \
-            exec -T romforge python -c 'from handler.patch_jobs import HEARTBEAT_KEY; from handler.redis_handler import redis_client; assert redis_client.exists(HEARTBEAT_KEY), "Worker heartbeat missing"; print("Worker heartbeat verified")'
+            exec -T romm python -c 'from handler.patch_jobs import HEARTBEAT_KEY; from handler.redis_handler import redis_client; assert redis_client.exists(HEARTBEAT_KEY), "Worker heartbeat missing"; print("Worker heartbeat verified")'
 
       - name: Publish verified version tags
         env:
           APP_IMAGE: ${{ steps.images.outputs.app }}
           WORKER_IMAGE: ${{ steps.images.outputs.worker }}
-          APP_DIGEST: ${{ steps.app.outputs.digest }}
-          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+          APP_DIGEST: ${{ steps.existing.outputs.app || steps.app.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.existing.outputs.worker || steps.worker.outputs.digest }}
           VERSION: ${{ steps.images.outputs.version }}
         run: |
           docker buildx imagetools create --tag "$WORKER_IMAGE:$VERSION" "$WORKER_IMAGE@$WORKER_DIGEST"
