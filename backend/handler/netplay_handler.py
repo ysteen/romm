@@ -17,11 +17,10 @@ def get_link_cartridge(rom_id: object) -> LinkCartridge | None:
     rom = db_rom_handler.get_rom(rom_id)
     if not rom:
         return None
-    extension = rom.fs_name.lower().rsplit(".", 1)[-1]
     system: Literal["gb", "gba"]
-    if rom.platform_slug == "gba" and extension in ("gba", "zip"):
+    if rom.platform_slug == "gba":
         system = "gba"
-    elif rom.platform_slug in ("gb", "gbc") and extension in ("gb", "gbc", "zip"):
+    elif rom.platform_slug in ("gb", "gbc"):
         system = "gb"
     else:
         return None

@@ -106,31 +106,25 @@ describe("existing player netplay menu", () => {
   });
 });
 
-it("accepts GB, GBC and GBA cartridges or ZIPs and validates the two ROM IDs", () => {
-  expect(supportsLink({ platform_slug: "gb", fs_name: "Gold.GBC" })).toBe(true);
-  expect(supportsLink({ platform_slug: "gba", fs_name: "game.gba" })).toBe(
-    true,
-  );
-  expect(supportsLink({ platform_slug: "gb", fs_name: "game.zip" })).toBe(true);
-  expect(supportsLink({ platform_slug: "gba", fs_name: "게임.ZIP" })).toBe(
-    true,
-  );
-  expect(supportsLink({ platform_slug: "gba", fs_name: "game.7z" })).toBe(
-    false,
-  );
-  expect(supportsLink({ platform_slug: "nds", fs_name: "game.zip" })).toBe(
-    false,
-  );
-  expect(isLinkPair([19, 20])).toBe(true);
+it.each([
+  { platform: "gba", supported: true },
+  { platform: "gb", supported: true },
+  { platform: "gbc", supported: true },
+  { platform: "snes", supported: false },
+  { platform: "nds", supported: false },
+])("selects the link room menu by platform: $platform", (scenario) => {
+  for (const fs_name of ["Game folder", "game.gba", "game.zip", "game.7z", ""]) {
+    const rom = { platform_slug: scenario.platform, fs_name };
+    expect(supportsLink(rom)).toBe(scenario.supported);
+  }
+});
+
+it("selects the linked core and compatible platforms", () => {
   expect(linkCoreFor("gba")).toBe("mgba_splitscreen");
+  expect(linkCoreFor("gbc")).toBe("sameboy");
   expect(linkPlatforms("gba")).toEqual(["gba"]);
   expect(linkPlatforms("gbc")).toEqual(["gb", "gbc"]);
-  expect(supportsLink({ platform_slug: "gbc", fs_name: "game.gba" })).toBe(
-    false,
-  );
-  expect(supportsLink({ platform_slug: "gba", fs_name: "game.gbc" })).toBe(
-    false,
-  );
+  expect(isLinkPair([19, 20])).toBe(true);
   for (const pair of [[19], [19, 20, 21], [19, -1], [19, "20"], null])
     expect(isLinkPair(pair)).toBe(false);
 });

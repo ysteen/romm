@@ -53,12 +53,9 @@ export interface NetplayMenu {
 }
 
 export function supportsLink(
-  rom: Pick<SimpleRomSchema, "platform_slug" | "fs_name">,
+  rom: Pick<SimpleRomSchema, "platform_slug">,
 ): boolean {
-  return rom.platform_slug === "gba"
-    ? /\.(gba|zip)$/i.test(rom.fs_name)
-    : ["gb", "gbc"].includes(rom.platform_slug) &&
-        /\.(gb|gbc|zip)$/i.test(rom.fs_name);
+  return ["gb", "gbc", "gba"].includes(rom.platform_slug);
 }
 
 export function linkCoreFor(platform: string): "sameboy" | "mgba_splitscreen" {

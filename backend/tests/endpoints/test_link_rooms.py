@@ -28,11 +28,14 @@ def test_invalid_cartridge_ids_do_not_query_the_library(rom_id: object):
         ("gbc", "Silver.GBC", "gb"),
         ("gba", "Ruby.gba", "gba"),
         ("gba", "Ruby.zip", "gba"),
+        ("gba", "Game folder", "gba"),
+        ("gbc", "Game folder", "gb"),
+        ("snes", "Game.gba", None),
         ("gbc", "Silver.ZIP", "gb"),
-        ("gba", "Ruby.7z", None),
+        ("gba", "Ruby.7z", "gba"),
         ("nds", "Game.zip", None),
         ("nds", "Game.nds", None),
-        ("gb", "Game.gba", None),
+        ("gb", "Game.gba", "gb"),
     ],
 )
 def test_cartridge_validation_uses_library_metadata(
@@ -41,7 +44,10 @@ def test_cartridge_validation_uses_library_metadata(
     with patch(
         "handler.netplay_handler.db_rom_handler.get_rom",
         return_value=SimpleNamespace(
-            id=22, platform_slug=platform, fs_name=filename, name="Game"
+            id=22,
+            platform_slug=platform,
+            fs_name=filename,
+            name="Game",
         ),
     ):
         cartridge = get_link_cartridge(22)
