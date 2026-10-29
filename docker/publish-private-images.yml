@@ -1,10 +1,13 @@
 name: Publish Private Custom Images
 
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/publish-custom.yml]
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Public source branch or commit to publish
+        required: true
+        default: custom/retroarch-dosbox-5.4.1
+        type: string
 
 permissions:
   contents: read
@@ -28,7 +31,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ysteen/romm
-          ref: custom/retroarch-dosbox-5.4.1
+          ref: ${{ inputs.source_ref }}
           persist-credentials: false
 
       - name: Verify package visibility before publication
@@ -165,10 +168,19 @@ jobs:
           target.chmod(0o600)
           PY
           ./scripts/deploy-dosbox-pure.sh --env-file "$RUNNER_TEMP/romm-deployment/.env"
-          sleep 5
           docker compose --env-file "$RUNNER_TEMP/romm-deployment/.env" \
             -f compose.dosbox-pure.yml -f compose.romforge.yml --profile romforge \
-            exec -T romm python -c 'from handler.patch_jobs import HEARTBEAT_KEY; from handler.redis_handler import redis_client; assert redis_client.exists(HEARTBEAT_KEY), "Worker heartbeat missing"; print("Worker heartbeat verified")'
+            exec -T romm python - <<'PY'
+          import time
+          import patch_worker
+          for _ in range(90):
+              if patch_worker.redis_client.exists(patch_worker.HEARTBEAT_KEY):
+                  print("Worker heartbeat verified")
+                  break
+              time.sleep(1)
+          else:
+              raise RuntimeError("Worker heartbeat missing")
+          PY
 
       - name: Publish verified version tags
         env:
