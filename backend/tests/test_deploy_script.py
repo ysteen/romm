@@ -174,6 +174,32 @@ if os.environ.get('DEPLOY_TEST_FAIL_PULL') and 'pull' in args:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any("--force-recreate" in action for action in self.actions()))
 
+    def test_new_worker_uses_the_resources_directory_owner(self):
+        self.env.pop("ROMFORGE_UID", None)
+        self.env.pop("ROMFORGE_GID", None)
+        result = self.run_script("--romforge")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        owner = (self.root / "custom data/resources").stat()
+        settings = self.env_file.read_text().splitlines()
+        self.assertIn(f"ROMFORGE_UID={owner.st_uid}", settings)
+        self.assertIn(f"ROMFORGE_GID={owner.st_gid}", settings)
+
+    def test_explicit_worker_ids_are_preserved(self):
+        self.env_file.write_text("ROMFORGE_UID=2001\nROMFORGE_GID=2002\n")
+        result = self.run_script("--romforge")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.env_file.read_text().splitlines()
+        self.assertIn("ROMFORGE_UID=2001", settings)
+        self.assertIn("ROMFORGE_GID=2002", settings)
+
+    def test_exported_worker_ids_are_not_replaced(self):
+        self.env.update({"ROMFORGE_UID": "2003", "ROMFORGE_GID": "2004"})
+        result = self.run_script("--romforge")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.env_file.read_text()
+        self.assertNotIn("ROMFORGE_UID=", settings)
+        self.assertNotIn("ROMFORGE_GID=", settings)
+
     def test_new_install_disables_jsdos(self):
         self.env_file.unlink()
         result = self.run_script("--no-build")

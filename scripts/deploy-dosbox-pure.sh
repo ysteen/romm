@@ -144,6 +144,13 @@ if [[ ! -f "$CONFIG_DIR/config.yml" ]]; then
   cp "$ROOT/deploy/config.yml" "$CONFIG_DIR/config.yml"
 fi
 if [[ "$ENABLED" == true ]]; then
+  # Bind mounts retain the host owner's permissions, including on CI runners.
+  for entry in 'ROMFORGE_UID:%u' 'ROMFORGE_GID:%g'; do
+    name="${entry%%:*}"
+    if [[ ! -v "$name" ]] && ! grep -Eq "^[[:space:]]*${name}=" "$ENV_FILE"; then
+      set_env "$name" "$(stat -Lc "${entry#*:}" "$RESOURCES_DIR")"
+    fi
+  done
   mkdir -p "$CONFIG_DIR/romforge/keys"
   chmod 750 "$CONFIG_DIR/romforge/keys"
 fi

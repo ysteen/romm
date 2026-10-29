@@ -8,6 +8,10 @@ on:
         required: true
         default: custom/retroarch-dosbox-5.4.1
         type: string
+      verify_image_tag:
+        description: Verify an existing commit tag using the selected deployment files (no build)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +54,7 @@ jobs:
       - name: Resolve image names
         id: images
         env:
+          VERIFY_IMAGE_TAG: ${{ inputs.verify_image_tag }}
           OWNER: ${{ github.repository_owner }}
         run: |
           version=$(sed -n 's/^ARG ROMM_BASE_IMAGE=.*:\([^:]*\)$/\1/p' docker/Dockerfile.custom-dosbox-pure)
@@ -58,7 +63,9 @@ jobs:
           echo "worker=ghcr.io/${OWNER,,}/romm-romforge-private" >> "$GITHUB_OUTPUT"
           revision=$(git rev-parse HEAD)
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
-          echo "tag=sha-${revision:0:12}" >> "$GITHUB_OUTPUT"
+          tag="${VERIFY_IMAGE_TAG:-sha-${revision:0:12}}"
+          [[ "$tag" =~ ^sha-[a-f0-9]{12}$ ]]
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -78,12 +85,17 @@ jobs:
       - name: Reuse published images from this source commit
         id: existing
         env:
+          VERIFY_IMAGE_TAG: ${{ inputs.verify_image_tag }}
           APP_IMAGE: ${{ steps.images.outputs.app }}:${{ steps.images.outputs.tag }}
           WORKER_IMAGE: ${{ steps.images.outputs.worker }}:${{ steps.images.outputs.tag }}
         run: |
           for kind in app worker; do
             if [[ "$kind" == app ]]; then ref="$APP_IMAGE"; else ref="$WORKER_IMAGE"; fi
             digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [[ -n "$VERIFY_IMAGE_TAG" && -z "$digest" ]]; then
+              echo "Required existing image is missing: $ref" >&2
+              exit 1
+            fi
             if [[ -n "$digest" ]]; then
               [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
               echo "$kind=$digest" >> "$GITHUB_OUTPUT"
@@ -204,6 +216,15 @@ jobs:
           name: romm-deployment-${{ steps.images.outputs.tag }}
           path: ${{ runner.temp }}/romm-deployment.tar.gz
           retention-days: 14
+
+      - name: Show worker diagnostics on failure
+        if: failure()
+        run: |
+          if [[ -f "$RUNNER_TEMP/romm-deployment/.env" ]]; then
+            docker compose --env-file "$RUNNER_TEMP/romm-deployment/.env" \
+              -f compose.dosbox-pure.yml -f compose.romforge.yml --profile romforge \
+              logs --tail 40 romforge
+          fi
 
       - name: Remove verification containers
         if: always()
