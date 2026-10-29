@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// PlatformHead — the platform-context strip that sits above the
+// PlatformHead: the platform-context strip that sits above the
 // gallery / firmware / settings tab body. Composes the InfoPanel
 // (icon + name + stats + provider chips + action ribbon) with the
 // RTabNav. Re-used in two render branches inside Platform.vue:
 //
-//   1. Library tab — passed to `GalleryShell`'s `#header` slot so the
+//   1. Library tab: passed to `GalleryShell`'s `#header` slot so the
 //      head scrolls naturally with the cards (and the toolbar pins
 //      below it). Matches the pre-tabs experience.
 //
@@ -12,12 +12,13 @@
 //
 // All admin actions are forwarded as events; permission gating lives
 // on the parent so the bar stays in sync with `useCan`.
-import { RBtn, RChip, RIcon, RPlatformIcon, RTabNav } from "@v2/lib";
+import { RBtn, RChip, RTabNav } from "@v2/lib";
 import type { RTabNavItem } from "@v2/lib";
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { Platform } from "@/stores/platforms";
 import InfoPanel from "@/v2/components/Gallery/InfoPanel.vue";
+import PlatformIcon from "@/v2/components/shared/PlatformIcon.vue";
 import Stat from "@/v2/components/shared/Stat.vue";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
 import {
@@ -73,7 +74,7 @@ defineEmits<{
 
 // A square icon sized per breakpoint (smaller on phones). Driving the size
 // in JS keeps the box able to grow to the icon (reflow) instead of forcing
-// the icon to a fixed box height, which — for a tall icon — either overflowed
+// the icon to a fixed box height, which, for a tall icon, either overflowed
 // (overlap) or, once clipped, cut it off.
 const { xs } = useBreakpoint();
 const { t } = useI18n();
@@ -92,7 +93,7 @@ const iconSize = computed(() => (xs.value ? 116 : 148));
         class="r-v2-plat__panel-icon"
         :style="{ viewTransitionName: `platform-icon-${platform.id}` }"
       >
-        <RPlatformIcon
+        <PlatformIcon
           :slug="platform.slug"
           :fs-slug="platform.fs_slug"
           :alt="platform.display_name"
@@ -107,13 +108,11 @@ const iconSize = computed(() => (xs.value ? 116 : 148));
         size="small"
         variant="translucent"
         :rounded="20"
+        prepend-icon="mdi-play-circle"
+        class="r-v2-plat__playable"
+        :class="{ 'r-v2-plat__playable--stream': mode === 'stream' }"
         :title="playTooltip(mode, emulator, streamLabel)"
       >
-        <RIcon
-          icon="mdi-play-circle"
-          size="14"
-          :color="mode === 'stream' ? 'romm-blue' : 'success'"
-        />
         {{ t("platform.playable") }}
       </RChip>
       <RChip
@@ -137,10 +136,11 @@ const iconSize = computed(() => (xs.value ? 116 : 148));
 
     <template v-if="stats.length" #stats>
       <Stat
-        v-for="s in stats"
+        v-for="(s, i) in stats"
         :key="s.label"
         :value="s.value"
         :label="s.label"
+        :remember-as="`platform-${platform.id}:${i}`"
       />
     </template>
 
@@ -169,13 +169,13 @@ const iconSize = computed(() => (xs.value ? 116 : 148));
       </a>
     </template>
 
-    <!-- Action ribbon — Random / Upload / Scan. Edit and Delete moved
+    <!-- Action ribbon: Random / Upload / Scan. Edit and Delete moved
          inline into the Settings tab (the editable `custom_name` lives
          next to the read-only details there, and Delete sits in the
          tab's danger zone). Same circular icon-button vocabulary as
          the GameDetails action row. Random is open to anyone who can
-         view the platform — it's a navigation shortcut, not an admin
-         action — so it sits left of the gated Upload/Scan buttons. -->
+         view the platform, it's a navigation shortcut, not an admin
+         action, so it sits left of the gated Upload/Scan buttons. -->
     <template #actions>
       <RBtn
         variant="outlined"
@@ -250,11 +250,18 @@ const iconSize = computed(() => (xs.value ? 116 : 148));
 }
 
 /* Keep the platform icon prominent on phones (it's the page's identity)
-   rather than shrinking it to a thumbnail — just a touch smaller than the
+   rather than shrinking it to a thumbnail: just a touch smaller than the
    desktop size (see `iconSize`) so it leaves room for the centred title. */
 html[data-bp~="xs"] .r-v2-plat__panel-icon {
   width: 150px;
   min-height: 116px;
+}
+
+.r-v2-plat__playable :deep(.r-chip__icon--prepend) {
+  color: var(--r-color-success);
+}
+.r-v2-plat__playable--stream :deep(.r-chip__icon--prepend) {
+  color: var(--r-color-romm-blue);
 }
 
 .r-v2-plat__tabs {
@@ -265,7 +272,7 @@ html[data-bp~="xs"] .r-v2-plat__panel-icon {
 
 /* ── Provider chip cluster ───────────────────────────────────────
    Compact pill that pairs the provider's logo with its remote ID.
-   `--passive` (Flashpoint / HLTB / Libretro — no public lookup URL)
+   `--passive` (Flashpoint / HLTB / Libretro: no public lookup URL)
    drops the hover lift since clicking does nothing. */
 .r-v2-plat__provider {
   display: inline-flex;

@@ -9,4 +9,3 @@ export type DocMetaSchema = {
     author?: (string | null);
     title?: (string | null);
 };
-

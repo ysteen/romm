@@ -11,4 +11,3 @@ export type Body_token_api_token_post = {
     client_secret?: (string | null);
     refresh_token?: (string | null);
 };
-

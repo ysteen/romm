@@ -1,28 +1,25 @@
 import { mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import type { StateSchema } from "@/__generated__";
+import { stateFixture } from "@/utils/assets.fixtures";
 import AssetStrip from "./AssetStrip.vue";
 
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key, locale: "en_US" }),
-}));
+vi.mock("vue-i18n");
+vi.mock("@/stores/streaming", () => import("@/test-utils/streamingStore"));
 
 const RTag = {
   props: { text: { type: String, default: "" } },
   template: `<span class="tag">{{ text }}</span>`,
 };
-const stubs = { RTag, RIcon: true, RTooltip: true, RExpandTransition: false };
+const stubs = { RTag, RIcon: true, RExpandTransition: false };
 
 function state(id: number, emulator: string | null, updated_at: string) {
-  return {
+  return stateFixture({
     id,
-    user_id: 1,
     file_name: `state_${id}.state`,
-    file_size_bytes: 1024,
     updated_at,
     emulator,
-    screenshot: null,
-  } as StateSchema;
+  });
 }
 
 // Two snes9x states share a timestamp; mgba has one; one is core-less.
@@ -52,6 +49,29 @@ describe("AssetStrip grouped by core", () => {
     ]);
   });
 
+  it("heads a group with the emulator's display name", () => {
+    const wrapper = mountStrip({
+      groupBy: "emulator",
+      assets: [state(5, "play", "2026-09-16T10:00:00Z")],
+    });
+
+    expect(wrapper.get(".r-asset-group-head__title").text()).toBe("Play!");
+  });
+
+  it("groups an emulator configured in another case with its own", () => {
+    const wrapper = mountStrip({
+      groupBy: "emulator",
+      assets: [
+        state(5, "play", "2026-09-16T10:00:00Z"),
+        state(6, "Play", "2026-09-15T10:00:00Z"),
+      ],
+    });
+
+    expect(
+      wrapper.findAll(".r-asset-group-head__title").map((el) => el.text()),
+    ).toEqual(["Play!"]);
+  });
+
   it("tags exactly one Latest tile when timestamps tie", () => {
     const wrapper = mountStrip({ groupBy: "emulator" });
     const tagged = wrapper
@@ -59,7 +79,7 @@ describe("AssetStrip grouped by core", () => {
       .filter((tile) => tile.find(".tag").exists());
 
     expect(tagged).toHaveLength(1);
-    expect(tagged[0].get(".r-asset-strip__name").text()).toBe("state_1.state");
+    expect(tagged[0]?.get(".r-asset-strip__name").text()).toBe("state_1.state");
   });
 
   it("folds a core that nothing can load until its head is clicked", async () => {
@@ -68,7 +88,7 @@ describe("AssetStrip grouped by core", () => {
       disabledReason: (asset: StateSchema) =>
         asset.emulator === "mgba" ? "unsupported" : null,
     });
-    const mgba = wrapper.findAll(".r-asset-strip__group")[2];
+    const mgba = wrapper.findAll(".r-asset-strip__group")[2]!;
     const fold = mgba.get(".r-asset-strip__fold");
 
     expect(mgba.get(".r-asset-group-head__title").text()).toBe("mgba");
@@ -89,5 +109,26 @@ describe("AssetStrip grouped by core", () => {
       "mgba",
     ]);
     expect(wrapper.findAll(".r-asset-timestamp")).toHaveLength(4);
+  });
+});
+
+describe("AssetStrip timestamp", () => {
+  it("stacks the time only in the list layout's time column", () => {
+    expect(mountStrip().findAll(".r-asset-timestamp--stacked")).toHaveLength(0);
+    expect(
+      mountStrip({ layout: "list" }).findAll(".r-asset-timestamp--stacked"),
+    ).toHaveLength(4);
+  });
+});
+
+describe("AssetStrip roles", () => {
+  it("lists static tiles and leaves selectable tiles as toggle buttons", () => {
+    const managed = mountStrip({ selectable: false });
+    expect(managed.findAll('[role="list"]')).toHaveLength(1);
+    expect(managed.findAll('[role="listitem"]')).toHaveLength(4);
+
+    const picker = mountStrip();
+    expect(picker.findAll('[role="list"], [role="listitem"]')).toHaveLength(0);
+    expect(picker.findAll("button[aria-pressed]")).toHaveLength(4);
   });
 });

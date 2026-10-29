@@ -1,13 +1,19 @@
 import hashlib
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.factories import make_rom
 
+from adapters.services.rom_converto import (
+    RomConvertoTimeoutError,
+    rom_converto_service,
+)
 from handler.database import db_rom_handler
 from handler.filesystem import fs_rom_handler
-from handler.filesystem.roms_handler import ParsedRomFiles
+from handler.filesystem.roms_handler import ParsedRomFiles, category_for_path_parts
 from handler.rom_files import refresh_rom_files
 from models.platform import Platform
 from models.rom import (
@@ -41,13 +47,9 @@ def _folder_rom(
     platform: Platform, admin_user: User, lib: Path, files: dict[str, bytes]
 ) -> Rom:
     """A folder ROM whose rows describe the files on disk, with stored hashes."""
-    rom = Rom(
-        platform_id=platform.id,
-        name=FOLDER,
-        slug=f"{FOLDER}_slug",
-        fs_name=FOLDER,
-        fs_name_no_tags=FOLDER,
-        fs_name_no_ext=FOLDER,
+    rom = make_rom(
+        platform,
+        FOLDER,
         fs_extension="",
         fs_path=f"{platform.fs_slug}/roms",
         fs_size_bytes=sum(len(data) for data in files.values()),
@@ -55,7 +57,6 @@ def _folder_rom(
         md5_hash="stored-md5",
         sha1_hash="stored-sha1",
     )
-    rom = db_rom_handler.add_rom(rom)
     db_rom_handler.add_rom_user(rom_id=rom.id, user_id=admin_user.id)
     for rel, data in files.items():
         st = _write(lib, f"{rom.fs_path}/{FOLDER}/{rel}", data)
@@ -64,6 +65,9 @@ def _folder_rom(
                 rom_id=rom.id,
                 file_name=Path(rel).name,
                 file_path=str(Path(rom.fs_path, FOLDER, rel).parent),
+                category=category_for_path_parts(
+                    [part.lower() for part in Path(rel).parent.parts]
+                ),
                 file_size_bytes=st.st_size,
                 last_modified=st.st_mtime,
                 crc_hash="row-crc",
@@ -71,11 +75,17 @@ def _folder_rom(
                 sha1_hash="row-sha1",
             )
         )
-    return db_rom_handler.get_rom(rom.id)
+    return _reload(rom.id)
+
+
+def _reload(rom_id: int) -> Rom:
+    rom = db_rom_handler.get_rom(rom_id)
+    assert rom is not None
+    return rom
 
 
 def _files_by_name(rom_id: int) -> dict[str, RomFile]:
-    return {f.file_name: f for f in db_rom_handler.get_rom(rom_id).files}
+    return {f.file_name: f for f in _reload(rom_id).files}
 
 
 async def test_registers_new_nested_file(platform, admin_user, library):
@@ -92,7 +102,7 @@ async def test_registers_new_nested_file(platform, admin_user, library):
     assert (
         new.md5_hash == hashlib.md5(b"patch bytes", usedforsecurity=False).hexdigest()
     )
-    after = db_rom_handler.get_rom(rom.id)
+    after = _reload(rom.id)
     assert after.fs_size_bytes == len(b"game") + len(b"readme") + len(b"patch bytes")
     assert after.md5_hash == "stored-md5"
 
@@ -110,7 +120,7 @@ async def test_top_level_addition_updates_rom_hashes_and_size(
         hashlib.md5(a + b, usedforsecurity=False).hexdigest()
         for a, b in ((b"game", b"extra"), (b"extra", b"game"))
     }
-    after = db_rom_handler.get_rom(rom.id)
+    after = _reload(rom.id)
     assert after.md5_hash in either_order
     assert after.fs_size_bytes == len(b"game") + len(b"extra")
     assert (
@@ -144,18 +154,18 @@ async def test_removes_rows_for_vanished_files(platform, admin_user, library):
     assert result.removed_files == 1
     assert set(_files_by_name(rom.id)) == {"game.bin"}
     # A nested file leaves the top level, and so the rom hash, alone.
-    assert db_rom_handler.get_rom(rom.id).md5_hash == "stored-md5"
+    assert _reload(rom.id).md5_hash == "stored-md5"
 
 
 async def test_clears_missing_flag(platform, admin_user, library):
     rom = _folder_rom(platform, admin_user, library, {"game.bin": b"game"})
     db_rom_handler.update_rom(rom.id, {"missing_from_fs": True})
-    rom = db_rom_handler.get_rom(rom.id)
+    rom = _reload(rom.id)
 
     result = await refresh_rom_files(rom)
 
     assert not result.changed
-    assert db_rom_handler.get_rom(rom.id).missing_from_fs is False
+    assert _reload(rom.id).missing_from_fs is False
 
 
 async def test_empty_folder_keeps_recorded_rows(platform, admin_user, library):
@@ -176,7 +186,7 @@ async def test_edited_file_is_rehashed_in_place(platform, admin_user, library):
     result = await refresh_rom_files(rom)
 
     assert result.updated_files == 1
-    after = db_rom_handler.get_rom(rom.id)
+    after = _reload(rom.id)
     assert after.files[0].id == row_id
     assert (
         after.files[0].md5_hash
@@ -212,7 +222,7 @@ async def test_disabled_hashing_keeps_stored_rom_hashes(
     result = await refresh_rom_files(rom)
 
     assert result.new_files == 1
-    after = db_rom_handler.get_rom(rom.id)
+    after = _reload(rom.id)
     assert (after.crc_hash, after.md5_hash, after.sha1_hash) == (
         "stored-crc",
         "stored-md5",
@@ -264,9 +274,10 @@ async def test_a_newly_read_identity_is_persisted(platform, admin_user, library)
         "get_rom_files",
         AsyncMock(return_value=_unchanged_parse(rom, identity)),
     ):
-        await refresh_rom_files(rom)
+        result = await refresh_rom_files(rom)
 
-    refreshed = db_rom_handler.get_rom(rom.id)
+    assert result.changed
+    refreshed = _reload(rom.id)
     assert refreshed.title_id == "0100ABCD12340000"
     assert refreshed.save_target == "0100ABCD12340000"
     assert refreshed.save_target_layout == SaveTargetLayout.FOLDER_EXACT
@@ -277,7 +288,7 @@ async def test_a_stored_identity_survives_a_parse_that_read_none(
 ):
     rom = _folder_rom(platform, admin_user, library, {"game.bin": b"game"})
     db_rom_handler.update_rom(rom.id, {"title_id": "ULUS-10041"})
-    rom = db_rom_handler.get_rom(rom.id)
+    rom = _reload(rom.id)
 
     with patch.object(
         fs_rom_handler,
@@ -286,4 +297,132 @@ async def test_a_stored_identity_survives_a_parse_that_read_none(
     ):
         await refresh_rom_files(rom)
 
-    assert db_rom_handler.get_rom(rom.id).title_id == "ULUS-10041"
+    assert _reload(rom.id).title_id == "ULUS-10041"
+
+
+async def test_a_category_settled_on_a_reused_row_is_persisted(
+    platform, admin_user, library
+):
+    """Extraction settles a Switch file's category on the row it reused."""
+    rom = _folder_rom(platform, admin_user, library, {"game.bin": b"game"})
+
+    async def settle_category(*_args, **_kwargs) -> ParsedRomFiles:
+        parsed = _unchanged_parse(rom, RomIdentity())
+        parsed.rom_files[0].category = RomFileCategory.DLC
+        return parsed
+
+    with patch.object(fs_rom_handler, "get_rom_files", settle_category):
+        result = await refresh_rom_files(rom)
+
+    assert result.updated_files == 1
+    assert _files_by_name(rom.id)["game.bin"].category == RomFileCategory.DLC
+
+
+async def test_a_title_id_read_off_a_reused_row_is_persisted(
+    platform, admin_user, library
+):
+    """Extraction writes a file's title id onto the row it reused."""
+    rom = _folder_rom(platform, admin_user, library, {"game.bin": b"game"})
+
+    async def read_title_id(*_args, **_kwargs) -> ParsedRomFiles:
+        parsed = _unchanged_parse(rom, RomIdentity())
+        parsed.rom_files[0].title_id = "ULUS-10041"
+        parsed.rom_files[0].title_version = 1
+        return parsed
+
+    with patch.object(fs_rom_handler, "get_rom_files", read_title_id):
+        result = await refresh_rom_files(rom)
+
+    stored = _files_by_name(rom.id)["game.bin"]
+    assert result.updated_files == 1
+    assert (stored.title_id, stored.title_version) == ("ULUS-10041", 1)
+
+
+async def test_a_read_that_confirms_a_reused_rows_title_id_is_persisted(
+    platform, admin_user, library
+):
+    rom = _folder_rom(platform, admin_user, library, {"game.bin": b"game"})
+
+    async def confirm_title_id(*_args, **_kwargs) -> ParsedRomFiles:
+        parsed = _unchanged_parse(rom, RomIdentity())
+        parsed.rom_files[0].converto_read_at = datetime.now(timezone.utc)
+        return parsed
+
+    with patch.object(fs_rom_handler, "get_rom_files", confirm_title_id):
+        result = await refresh_rom_files(rom)
+
+    assert result.updated_files == 1
+    assert _files_by_name(rom.id)["game.bin"].converto_read_at is not None
+
+
+async def test_refresh_writes_a_fresh_rom_converto_read(
+    platform, admin_user, library, mocker
+):
+    rom = _folder_rom(platform, admin_user, library, {"game.bin": b"game"})
+    stored_file = rom.files[0]
+    scanned_file = RomFile(
+        rom_id=rom.id,
+        file_name=stored_file.file_name,
+        file_path=stored_file.file_path,
+        file_size_bytes=stored_file.file_size_bytes,
+        last_modified=stored_file.last_modified,
+        crc_hash=stored_file.crc_hash,
+        md5_hash=stored_file.md5_hash,
+        sha1_hash=stored_file.sha1_hash,
+        category=stored_file.category,
+        title_id="ULUS-10041",
+        converto_read_at=datetime.now(timezone.utc),
+    )
+    parsed = ParsedRomFiles(
+        rom_files=[scanned_file],
+        crc_hash=rom.crc_hash or "",
+        md5_hash=rom.md5_hash or "",
+        sha1_hash=rom.sha1_hash or "",
+        ra_hash="",
+    )
+    mocker.patch.object(fs_rom_handler, "get_rom_files", AsyncMock(return_value=parsed))
+
+    await refresh_rom_files(rom)
+
+    stored = _files_by_name(rom.id)["game.bin"]
+    assert stored.title_id == "ULUS-10041"
+    assert stored.converto_read_at is not None
+
+
+async def test_failed_info_run_keeps_stored_title_ids(platform, library, mocker):
+    file_path = f"{platform.fs_slug}/roms/{FOLDER}"
+    st = _write(library, f"{file_path}/game.iso", b"game")
+    metadata = {"title_id": "ULUS-10041", "title_version": 1}
+    rom = make_rom(
+        platform,
+        FOLDER,
+        fs_extension="",
+        fs_path=f"{platform.fs_slug}/roms",
+        fs_size_bytes=st.st_size,
+        files=[
+            RomFile(
+                file_name="game.iso",
+                file_path=file_path,
+                file_size_bytes=st.st_size,
+                last_modified=st.st_mtime,
+                **metadata,
+            )
+        ],
+    )
+    rom = _reload(rom.id)
+    file_id = rom.files[0].id
+    _write(library, f"{file_path}/new.iso", b"new-game")
+    mocker.patch.object(fs_rom_handler, "converto_active", AsyncMock(return_value=True))
+    mocker.patch.object(rom_converto_service, "_info_extensions", frozenset({".iso"}))
+    mocker.patch(
+        "adapters.services.rom_converto._run",
+        side_effect=RomConvertoTimeoutError("slow"),
+    )
+
+    result = await refresh_rom_files(rom)
+
+    stored = _files_by_name(rom.id)["game.iso"]
+    assert result.new_files == 1
+    assert stored.id == file_id
+    assert stored.file_size_bytes == st.st_size
+    assert {column: getattr(stored, column) for column in metadata} == metadata

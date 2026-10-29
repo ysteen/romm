@@ -13,4 +13,3 @@ export type RoomsResponse = {
     link_game_name?: string;
     link_manual_start?: boolean;
 };
-

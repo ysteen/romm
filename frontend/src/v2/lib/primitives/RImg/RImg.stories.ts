@@ -1,18 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
 import { onMounted, onUnmounted, ref } from "vue";
+import { CONTRAST_TODO_PARAMETERS } from "@/v2/utils/storyA11y";
 import "./RImg.stories.css";
 import RImg from "./RImg.vue";
 
 const meta: Meta<typeof RImg> = {
   title: "Primitives/RImg",
   component: RImg,
+  parameters: CONTRAST_TODO_PARAMETERS,
   argTypes: {
-    src: { control: "text" },
-    alt: { control: "text" },
     width: { control: "text" },
     height: { control: "text" },
-    cover: { control: "boolean" },
-    contain: { control: "boolean" },
     aspectRatio: { control: "text" },
   },
 };
@@ -168,12 +166,12 @@ export const LoadingSlot: Story = {
     components: { RImg },
     setup() {
       // The story controls how long the loading state lasts:
-      //   1. Start with `src` empty — RImg renders the loading slot.
+      //   1. Start with `src` empty: RImg renders the loading slot.
       //   2. After `loadingDelay` ms, set a real cache-busted src so
       //      the image fetches and `loaded` takes over.
       //   3. The "Reload" button restarts the cycle on demand.
       // This is how we make a network-fast image visibly demo the
-      // loading state — without a delay proxy we'd flash past it in
+      // loading state: without a delay proxy we'd flash past it in
       // a couple of frames.
       const src = ref<string | undefined>(undefined);
       const loadingDelay = 2500;

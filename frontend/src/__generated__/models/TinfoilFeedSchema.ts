@@ -10,4 +10,3 @@ export type TinfoilFeedSchema = {
     success?: string;
     error?: string;
 };
-

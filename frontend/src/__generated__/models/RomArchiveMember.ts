@@ -9,4 +9,3 @@ export type RomArchiveMember = {
     md5_hash: string;
     sha1_hash: string;
 };
-

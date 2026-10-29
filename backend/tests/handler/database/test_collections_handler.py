@@ -1,3 +1,7 @@
+from typing import Any
+
+from tests.factories import make_rom
+
 from handler.database import db_collection_handler, db_rom_handler
 from handler.database.collections_handler import MAX_VIRTUAL_COLLECTION_COVERS
 from handler.database.rom_filters import RomFilterParams
@@ -8,22 +12,18 @@ from models.user import User
 
 
 def _add_rom(
-    platform: Platform, index: int, manual_metadata: dict, cover: str | None = None
+    platform: Platform,
+    index: int,
+    manual_metadata: dict[str, Any],
+    cover: str | None = None,
 ) -> Rom:
-    rom = Rom(
-        platform_id=platform.id,
-        name=f"manual_rom_{index}",
-        slug=f"manual_rom_{index}",
-        fs_name=f"manual_rom_{index}.zip",
-        fs_name_no_tags=f"manual_rom_{index}",
-        fs_name_no_ext=f"manual_rom_{index}",
-        fs_extension="zip",
-        fs_path=f"{platform.slug}/roms",
+    return make_rom(
+        platform,
+        f"manual_rom_{index}",
         manual_metadata=manual_metadata,
         path_cover_s=cover or "",
         path_cover_l=cover or "",
     )
-    return db_rom_handler.add_rom(rom)
 
 
 def _criteria(smart_collection: SmartCollection) -> RomFilterParams:
@@ -157,10 +157,30 @@ def test_filter_roms_by_collection(platform: Platform, admin_user: User):
         collection.id, [rom.id for rom in in_collection]
     )
 
-    roms = db_rom_handler.get_roms_scalar(collection_id=collection.id)
+    roms = db_rom_handler.get_roms_scalar(
+        collection_id=collection.id, user_id=admin_user.id
+    )
 
     assert {rom.id for rom in roms} == {rom.id for rom in in_collection}
     assert outside.id not in {rom.id for rom in roms}
+
+
+def test_filter_roms_by_another_users_private_collection_returns_nothing(
+    platform: Platform, admin_user: User, editor_user: User
+):
+    rom = _add_rom(platform, 0, {})
+    collection = db_collection_handler.add_collection(
+        Collection(name="Shelf", description="", user_id=admin_user.id)
+    )
+    db_collection_handler.add_roms_to_collection(collection.id, [rom.id])
+
+    assert db_rom_handler.get_roms_scalar(collection_id=collection.id) == []
+    assert (
+        db_rom_handler.get_roms_scalar(
+            collection_id=collection.id, user_id=editor_user.id
+        )
+        == []
+    )
 
 
 def test_filter_roms_by_unknown_collection_returns_nothing(

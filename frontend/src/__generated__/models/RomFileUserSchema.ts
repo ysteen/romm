@@ -10,4 +10,3 @@ export type RomFileUserSchema = {
     finished?: boolean;
     last_read_at?: (string | null);
 };
-

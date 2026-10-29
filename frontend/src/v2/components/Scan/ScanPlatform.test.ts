@@ -3,9 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ScanningPlatform } from "@/stores/scanning";
 import ScanPlatform from "./ScanPlatform.vue";
 
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}));
+vi.mock("vue-i18n");
 
 function mountPlatform(overrides: Partial<ScanningPlatform> = {}) {
   const platform: ScanningPlatform = {
@@ -27,7 +25,7 @@ function mountPlatform(overrides: Partial<ScanningPlatform> = {}) {
         RCollapsible: {
           template: "<div><slot /><slot name='header-append' /></div>",
         },
-        RPlatformIcon: true,
+        PlatformIcon: true,
         RTag: {
           props: ["text"],
           template: "<span class='r-tag'>{{ text }}</span>",
@@ -53,7 +51,7 @@ describe("ScanPlatform", () => {
 
     const tags = wrapper.findAll(".r-tag");
     expect(tags).toHaveLength(2);
-    expect(tags[1].text()).toBe("2");
+    expect(tags[1]?.text()).toBe("2");
   });
 
   // The body only lists ROMs, so a firmware-only platform rendered an empty

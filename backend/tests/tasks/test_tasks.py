@@ -1,10 +1,56 @@
+import asyncio
+from dataclasses import asdict, dataclass
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
+from rq.exceptions import AbandonedJobError
+from rq.timeouts import JobTimeoutException
 
 from exceptions.task_exceptions import TaskNotFoundException
-from tasks.tasks import PeriodicTask, RemoteFilePullTask, TaskType, run_task_by_name
+from models.notification import NotificationKind, NotificationLevel
+from tasks.tasks import (
+    JobMetaStats,
+    PeriodicTask,
+    RemoteFilePullTask,
+    TaskSpec,
+    TaskType,
+    notify_task_failure,
+    report_task_failure,
+    run_task_by_name,
+)
+from utils.background_tasks import fire_and_forget
+
+
+def _spec(**overrides) -> TaskSpec:
+    fields = {
+        "implementation": "tests.tasks.test_tasks.task",
+        "title": "Test Task",
+        "description": "test task",
+        "task_type": TaskType.GENERIC,
+        **overrides,
+    }
+    return TaskSpec(**fields)
+
+
+class TestTaskSpec:
+    def test_a_manual_task_runs_by_hand_only_while_enabled(self):
+        assert _spec(manual_run=True, enabled=True).can_run_manually is True
+        assert _spec(manual_run=True, enabled=False).can_run_manually is False
+        assert _spec(manual_run=False, enabled=True).can_run_manually is False
+
+    def test_a_task_can_stay_runnable_by_hand_with_its_schedule_off(self):
+        spec = _spec(manual_run=True, enabled=False, manual_run_when_disabled=True)
+
+        assert spec.can_run_manually is True
+
+    def test_the_job_meta_names_the_key_the_task_is_registered_under(self):
+        assert _spec(task_type=TaskType.CLEANUP).job_meta("key") == {
+            "task_key": "key",
+            "task_name": "Test Task",
+            "task_type": "cleanup",
+        }
 
 
 class ConcretePeriodicTask(PeriodicTask):
@@ -17,30 +63,17 @@ class ConcretePeriodicTask(PeriodicTask):
 class TestPeriodicTask:
     @pytest.fixture
     def task(self):
-        return ConcretePeriodicTask(
-            title="Test Task",
-            description="test task",
-            task_type=TaskType.GENERIC,
-            enabled=True,
-            cron_string="0 0 * * *",
-        )
+        return ConcretePeriodicTask(_spec(enabled=True, cron_string="0 0 * * *"))
 
     @pytest.fixture
     def disabled_task(self):
-        return ConcretePeriodicTask(
-            title="Disabled Task",
-            description="disabled task",
-            task_type=TaskType.GENERIC,
-            enabled=False,
-            cron_string="0 0 * * *",
-        )
+        return ConcretePeriodicTask(_spec(enabled=False, cron_string="0 0 * * *"))
 
     def test_init(self, task):
         """Test task initialization"""
-        assert task.title == "Test Task"
-        assert task.description == "test task"
-        assert task.enabled is True
-        assert task.cron_string == "0 0 * * *"
+        assert task.spec.title == "Test Task"
+        assert task.spec.enabled is True
+        assert task.spec.cron_string == "0 0 * * *"
 
     async def test_run_abstract_method(self, task):
         """Test that run method works in concrete implementation"""
@@ -52,32 +85,29 @@ class TestRemoteFilePullTask:
     @pytest.fixture
     def task(self):
         return RemoteFilePullTask(
-            title="Remote Test Task",
-            task_type=TaskType.UPDATE,
-            description="remote test task",
-            enabled=True,
-            cron_string="0 0 * * *",
+            _spec(
+                title="Remote Test Task",
+                description="remote test task",
+                task_type=TaskType.UPDATE,
+                enabled=True,
+                cron_string="0 0 * * *",
+            ),
             url="https://example.com/data.json",
         )
 
     @pytest.fixture
     def disabled_task(self):
         return RemoteFilePullTask(
-            title="Disabled Remote Task",
-            task_type=TaskType.UPDATE,
-            description="disabled remote task",
-            enabled=False,
+            _spec(title="Disabled Remote Task", task_type=TaskType.UPDATE),
             url="https://example.com/data.json",
         )
 
     def test_init(self, task):
         """Test RemoteFilePullTask initialization"""
-        assert task.task_type == TaskType.UPDATE
-        assert task.description == "remote test task"
-        assert task.enabled is True
+        assert task.spec.task_type == TaskType.UPDATE
         assert task.url == "https://example.com/data.json"
 
-    @patch("tasks.tasks.ctx_httpx_client")
+    @patch("utils.context.ctx_httpx_client")
     @patch("tasks.tasks.log")
     async def test_run_success(self, mock_log, mock_ctx_httpx_client, task):
         """Test successful remote file pull"""
@@ -96,44 +126,36 @@ class TestRemoteFilePullTask:
         mock_log.info.assert_called_once_with("Scheduled remote test task started...")
         assert result == b"test content"
 
-    @patch("tasks.tasks.ctx_httpx_client")
-    @patch("tasks.tasks.log")
-    async def test_run_http_error(self, mock_log, mock_ctx_httpx_client, task):
-        """Test handling of HTTP errors"""
+    @patch("utils.context.ctx_httpx_client")
+    async def test_run_http_error(self, mock_ctx_httpx_client, task):
+        """A download that never lands fails the run, saying why."""
         mock_client = AsyncMock()
-        mock_client.get.side_effect = httpx.HTTPError("Connection failed")
+        mock_client.get.side_effect = httpx2.ConnectError("Connection failed")
         mock_ctx_httpx_client.get.return_value = mock_client
 
-        result = await task.run()
+        with pytest.raises(
+            RuntimeError,
+            match="Could not reach https://example.com/data.json: Connection failed",
+        ):
+            await task.run()
 
-        mock_log.error.assert_called()
-        assert result is None
-
-    @patch("tasks.tasks.ctx_httpx_client")
-    @patch("tasks.tasks.log")
-    async def test_run_response_error(self, mock_log, mock_ctx_httpx_client, task):
-        """Test handling of response status errors"""
+    @patch("utils.context.ctx_httpx_client")
+    async def test_run_response_error(self, mock_ctx_httpx_client, task):
+        """A refused download fails the run with the status."""
         mock_client = AsyncMock()
         mock_response = MagicMock()
-
-        # Create a proper HTTPStatusError
-        http_error = httpx.HTTPStatusError(
-            "404 Not Found", request=MagicMock(), response=MagicMock()
+        mock_response.raise_for_status.side_effect = httpx2.HTTPStatusError(
+            "404 Not Found", request=MagicMock(), response=MagicMock(status_code=404)
         )
-        mock_response.raise_for_status.side_effect = http_error
         mock_client.get.return_value = mock_response
         mock_ctx_httpx_client.get.return_value = mock_client
 
-        result = await task.run()
+        with pytest.raises(
+            RuntimeError, match="https://example.com/data.json answered 404"
+        ):
+            await task.run()
 
-        # Verify the specific error logging calls
-        mock_log.error.assert_any_call(
-            "Scheduled remote test task failed", exc_info=True
-        )
-        mock_log.error.assert_any_call(http_error)
-        assert result is None
-
-    @patch("tasks.tasks.ctx_httpx_client")
+    @patch("utils.context.ctx_httpx_client")
     async def test_run_disabled_still_pulls(self, mock_ctx_httpx_client, disabled_task):
         """A caller that got this far wants the pull, whatever the setting says."""
         mock_client = AsyncMock()
@@ -184,3 +206,233 @@ class TestRunTaskByName:
 
         with pytest.raises(TaskNotFoundException, match="some_task"):
             await run_task_by_name("some_task")
+
+    async def test_waits_for_what_the_task_spawned(self, mocker):
+        """RQ runs each job on a loop that never runs again once the job returns,
+        so work the task spawned and left running would be frozen partway."""
+        finished = asyncio.Event()
+
+        async def later() -> None:
+            await asyncio.sleep(0.05)
+            finished.set()
+
+        async def run() -> None:
+            fire_and_forget(later())
+
+        task = MagicMock()
+        task.run = run
+        mocker.patch("tasks.registry.get_task", return_value=task)
+
+        await run_task_by_name("some_task")
+
+        assert finished.is_set()
+
+
+@pytest.fixture
+def notify(mocker):
+    return mocker.patch("handler.notification_handler.notify", AsyncMock())
+
+
+@pytest.fixture
+def notify_admins(mocker):
+    return mocker.patch("handler.notification_handler.notify_admins", AsyncMock())
+
+
+def _task(mocker, task_type=TaskType.CLEANUP, **run_kwargs):
+    spec = _spec(title="Cleanup Missing ROMs", task_type=task_type, timeout=300)
+    task = MagicMock()
+    task.spec = spec
+    task.run = AsyncMock(**run_kwargs)
+    mocker.patch("tasks.registry.get_task", return_value=task)
+    mocker.patch("tasks.registry.get_task_spec", return_value=spec)
+    return task
+
+
+class TestRunTaskByNameNotifications:
+    """A run tells whoever ran it that it finished, and leaves failures to RQ."""
+
+    async def test_tells_the_runner_it_finished(self, mocker, notify, notify_admins):
+        _task(mocker, return_value=None)
+
+        await run_task_by_name("cleanup_missing_roms", run_by_user_id=4)
+
+        user_id, kind, level, data = notify.await_args.args
+        assert (user_id, kind, level) == (
+            4,
+            NotificationKind.TASK_COMPLETED,
+            NotificationLevel.SUCCESS,
+        )
+        assert data == {"task": "cleanup_missing_roms", "title": "Cleanup Missing ROMs"}
+        notify_admins.assert_not_awaited()
+
+    async def test_reports_success_only_once_spawned_work_is_done(self, mocker, notify):
+        """Spawned work that then overran the job timeout would read as both a
+        success and a failure."""
+        finished = asyncio.Event()
+
+        async def later() -> None:
+            await asyncio.sleep(0.05)
+            finished.set()
+
+        async def run() -> None:
+            fire_and_forget(later())
+
+        task = _task(mocker)
+        task.run = run
+        finished_when_notified: list[bool] = []
+        notify.side_effect = lambda *args: finished_when_notified.append(
+            finished.is_set()
+        )
+
+        await run_task_by_name("cleanup_missing_roms", run_by_user_id=4)
+
+        assert finished_when_notified == [True]
+
+    async def test_a_scheduled_success_stays_quiet(self, mocker, notify, notify_admins):
+        _task(mocker, return_value=None)
+
+        await run_task_by_name("cleanup_missing_roms")
+
+        notify.assert_not_awaited()
+        notify_admins.assert_not_awaited()
+
+    async def test_a_failure_is_raised_to_rq_unreported(
+        self, mocker, notify, notify_admins
+    ):
+        _task(mocker, side_effect=RuntimeError("disk full"))
+
+        with pytest.raises(RuntimeError):
+            await run_task_by_name("cleanup_missing_roms", run_by_user_id=4)
+
+        notify.assert_not_awaited()
+        notify_admins.assert_not_awaited()
+
+
+def _job(name="cleanup_missing_roms", run_by_user_id=None, **overrides):
+    fields = {
+        "id": "job-1",
+        "func_name": "tasks.tasks.run_task_by_name",
+        "kwargs": {"name": name, "task_kwargs": {}, "run_by_user_id": run_by_user_id},
+    }
+    return MagicMock(**{**fields, **overrides})
+
+
+class TestReportTaskFailure:
+    """The worker's exception handler reports every way a task can fail."""
+
+    @pytest.fixture(autouse=True)
+    def queue(self, mocker):
+        """Runs the enqueued notification inline, as a work horse would."""
+        queue = mocker.patch("tasks.tasks.default_queue")
+        queue.enqueue.side_effect = lambda func, *args, **_: asyncio.run(func(*args))
+        return queue
+
+    def test_notifies_from_a_job_of_its_own(self, mocker, queue):
+        _task(mocker)
+
+        report_task_failure(
+            _job(run_by_user_id=4), RuntimeError, RuntimeError("disk full"), None
+        )
+
+        queue.enqueue.assert_called_once_with(
+            notify_task_failure, "cleanup_missing_roms", 4, "disk full", result_ttl=0
+        )
+
+    def test_tells_the_runner_why_it_failed(self, mocker, notify, notify_admins):
+        _task(mocker)
+
+        report_task_failure(
+            _job(run_by_user_id=4), RuntimeError, RuntimeError("disk full"), None
+        )
+
+        user_id, kind, level, data = notify.await_args.args
+        assert (user_id, kind, level) == (
+            4,
+            NotificationKind.TASK_FAILED,
+            NotificationLevel.ERROR,
+        )
+        assert data == {
+            "task": "cleanup_missing_roms",
+            "title": "Cleanup Missing ROMs",
+            "error": "disk full",
+        }
+        notify_admins.assert_not_awaited()
+
+    def test_a_scheduled_failure_goes_to_the_admins(
+        self, mocker, notify, notify_admins
+    ):
+        _task(mocker)
+
+        report_task_failure(_job(), RuntimeError, RuntimeError("disk full"), None)
+
+        kind, level, data = notify_admins.await_args.args
+        assert (kind, level) == (NotificationKind.TASK_FAILED, NotificationLevel.ERROR)
+        assert data["error"] == "disk full"
+        notify.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "exc_type,reason",
+        [
+            (JobTimeoutException, "It ran past its 300s timeout"),
+            (AbandonedJobError, "The worker running it stopped unexpectedly"),
+        ],
+    )
+    def test_words_a_death_the_task_never_saw(
+        self, mocker, notify, notify_admins, exc_type, reason
+    ):
+        _task(mocker)
+
+        report_task_failure(_job(run_by_user_id=4), exc_type, exc_type(), None)
+
+        assert notify.await_args.args[3]["error"] == reason
+
+    def test_a_scan_is_left_to_report_itself(self, mocker, notify, notify_admins):
+        _task(mocker, task_type=TaskType.SCAN)
+
+        report_task_failure(
+            _job("scan_library", 4), RuntimeError, RuntimeError("boom"), None
+        )
+
+        notify.assert_not_awaited()
+        notify_admins.assert_not_awaited()
+
+    def test_ignores_a_job_that_is_not_a_task(self, mocker, notify, notify_admins):
+        get_task_spec = mocker.patch("tasks.registry.get_task_spec")
+
+        report_task_failure(
+            _job(func_name="endpoints.sockets.scan.scan_platforms"),
+            RuntimeError,
+            RuntimeError("boom"),
+            None,
+        )
+
+        get_task_spec.assert_not_called()
+        notify.assert_not_awaited()
+
+    def test_never_raises_into_the_worker(self, mocker, queue):
+        _task(mocker)
+        queue.enqueue.side_effect = RuntimeError("redis gone")
+
+        report_task_failure(_job(), RuntimeError, RuntimeError("boom"), None)
+
+
+@dataclass
+class _CountStats(JobMetaStats):
+    meta_key: ClassVar[str] = "count_stats"
+
+    found: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return asdict(self)
+
+
+class TestJobMetaStats:
+    def test_update_sets_known_fields_and_publishes_under_meta_key(self):
+        stats = _CountStats()
+
+        with patch("tasks.tasks.update_job_meta") as update_job_meta:
+            stats.update(found=3, unknown=1)
+
+        assert stats.found == 3
+        assert not hasattr(stats, "unknown")
+        update_job_meta.assert_called_once_with({"count_stats": {"found": 3}})

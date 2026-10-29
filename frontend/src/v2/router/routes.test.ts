@@ -4,7 +4,7 @@ import { notFoundComponent, v2RouteComponents } from "./routes";
 
 function leafRouteFor(path: string) {
   const matched = router.resolve(path).matched;
-  return matched[matched.length - 1];
+  return matched[matched.length - 1]!;
 }
 
 describe("v2 route resolution", () => {
@@ -28,5 +28,13 @@ describe("v2 route resolution", () => {
     expect(leaf.name).toBe(ROUTES.ROMFORGE);
     expect(leaf.components?.v2).toBe(v2RouteComponents[ROUTES.ROMFORGE]);
     expect(route.matched.at(-2)?.components?.v2).toBeDefined();
+  });
+
+  it("renders the v2 pair shell for /pair", () => {
+    const leaf = leafRouteFor("/pair?code=ABC123");
+
+    expect(leaf.name).toBe(ROUTES.PAIR);
+    expect(v2RouteComponents[ROUTES.PAIR]).toBeDefined();
+    expect(leaf.components?.v2).toBe(v2RouteComponents[ROUTES.PAIR]);
   });
 });

@@ -11,6 +11,7 @@
 // file zipped with a generated .m3u, which EmulatorJS boots with its in-game
 // disc switcher (issue #3985). That choice is stored as `ALL_DISCS`.
 import type { RomFileCategory } from "@/__generated__";
+import { userStorage } from "@/composables/useUserLocalStorage";
 
 export const ALL_DISCS = "all";
 
@@ -87,10 +88,19 @@ export function selectableDiscFiles<T extends DiscFile>(
   return bootableFiles(files).filter((f) => !isM3uFile(f));
 }
 
-// A set shipping its own .m3u is a curated multi-disc release, so boot it whole;
-// anything else boots one file to avoid pulling hundreds of unused MB.
+// Sheets that point at sibling track files, so neither the sheet nor a track
+// boots alone (issue #4209). Kept in step with backend/utils/m3u.py.
+const DESCRIPTOR_EXTENSIONS: readonly string[] = ["cue", "gdi", "ccd", "mds"];
+
+function isDescriptorFile(file: DiscFile): boolean {
+  const extension = file.file_name.toLowerCase().split(".").pop() ?? "";
+  return isM3uFile(file) || DESCRIPTOR_EXTENSIONS.includes(extension);
+}
+
+// A set carrying a playlist or disc sheet only boots whole; anything else boots
+// one file to avoid pulling hundreds of unused MB.
 export function defaultDisc(files: readonly DiscFile[]): DiscSelection {
-  if (files.length > 1 && files.some(isM3uFile)) return ALL_DISCS;
+  if (files.length > 1 && files.some(isDescriptorFile)) return ALL_DISCS;
   return bootableFiles(files)[0]?.id ?? null;
 }
 
@@ -115,18 +125,18 @@ export function resolveRememberedDisc(
   files: readonly DiscFile[],
 ): DiscSelection {
   const { disc, stale } = resolveStoredDisc(
-    localStorage.getItem(discKey(romId)) ??
-      localStorage.getItem(v1DiscKey(romId)),
+    userStorage.getItem(discKey(romId)) ??
+      userStorage.getItem(v1DiscKey(romId)),
     files,
   );
-  if (stale) localStorage.removeItem(discKey(romId));
+  if (stale) userStorage.removeItem(discKey(romId));
   return disc;
 }
 
 /** Remember `disc` for the game, or forget it when there is nothing to boot. */
 export function rememberDisc(romId: number, disc: DiscSelection): void {
-  if (disc === null) localStorage.removeItem(discKey(romId));
-  else localStorage.setItem(discKey(romId), disc.toString());
+  if (disc === null) userStorage.removeItem(discKey(romId));
+  else userStorage.setItem(discKey(romId), disc.toString());
 }
 
 function isM3uFile(file: DiscFile): boolean {

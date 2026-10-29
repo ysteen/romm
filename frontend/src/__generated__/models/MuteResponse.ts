@@ -7,4 +7,3 @@ export type MuteResponse = {
     mute?: (boolean | null);
     platform: string;
 };
-

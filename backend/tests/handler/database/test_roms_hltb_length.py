@@ -7,7 +7,10 @@ is what keeps it out of a filtered result. The sort's query shape is pinned
 with the other metadata sorts in `test_roms_metadata_sort.py`.
 """
 
+from typing import Any
+
 import pytest
+from tests.factories import make_rom
 
 from handler.database import db_collection_handler, db_rom_handler
 from models.collection import SmartCollection
@@ -21,25 +24,14 @@ LONG_SECONDS = 40 * 3600
 
 
 def _make_rom(platform: Platform, fs_name: str, **metadata) -> Rom:
-    rom = db_rom_handler.add_rom(
-        Rom(
-            platform_id=platform.id,
-            name=fs_name,
-            slug=fs_name,
-            fs_name=f"{fs_name}.zip",
-            fs_name_no_tags=fs_name,
-            fs_name_no_ext=fs_name,
-            fs_extension="zip",
-            fs_path=f"{platform.slug}/roms",
-        )
-    )
+    rom = make_rom(platform, fs_name)
     if metadata:
         rom = db_rom_handler.update_rom(rom.id, metadata)
     return rom
 
 
 def _filtered_names(**kwargs) -> set[str]:
-    return {rom.name for rom in db_rom_handler.get_roms_scalar(**kwargs)}
+    return {rom.name or "" for rom in db_rom_handler.get_roms_scalar(**kwargs)}
 
 
 @pytest.fixture
@@ -63,7 +55,7 @@ class TestGeneratedColumn:
         ],
     )
     def test_derives_the_main_story_seconds(
-        self, platform: Platform, metadata: dict, expected: int | None
+        self, platform: Platform, metadata: dict[str, Any], expected: int | None
     ):
         rom = _make_rom(platform, "derived", hltb_metadata=metadata)
 
@@ -96,7 +88,7 @@ class TestLengthSort:
             page = db_rom_handler.get_roms_scalar(order_by="hltb_main_story")[
                 offset : offset + 3
             ]
-            paged.extend(rom.name for rom in page)
+            paged.extend(rom.name or "" for rom in page)
 
         assert sorted(paged) == sorted(f"tied-{i}" for i in range(10))
 

@@ -6,4 +6,3 @@ export type MobyMetadataPlatform = {
     moby_id: number;
     name: string;
 };
-

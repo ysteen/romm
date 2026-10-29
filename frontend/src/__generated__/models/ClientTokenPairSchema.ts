@@ -6,4 +6,3 @@ export type ClientTokenPairSchema = {
     code: string;
     expires_in: number;
 };
-

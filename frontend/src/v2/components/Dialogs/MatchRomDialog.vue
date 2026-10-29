@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// MatchRomDialog — manual metadata match flow. The shell owns search +
+// MatchRomDialog: manual metadata match flow. The shell owns search +
 // filters + the update API call; the actual "pick a match → pick a
 // cover → optional rename" step is delegated to one of two body
 // variants (see `components/MatchRom/`): grid (cards + overlay) or
@@ -15,14 +15,11 @@ import {
   RSpinner,
   RTextField,
 } from "@v2/lib";
-import type { Emitter } from "mitt";
-import { computed, inject, onBeforeUnmount, ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRoute } from "vue-router";
 import romApi from "@/services/api/rom";
 import storeHeartbeat from "@/stores/heartbeat";
-import storeRoms, { type SimpleRom, type SearchRom } from "@/stores/roms";
-import type { Events } from "@/types/emitter";
+import type { SimpleRom, SearchRom } from "@/stores/roms";
 import MatchRomBodyGrid from "@/v2/components/MatchRom/MatchRomBodyGrid.vue";
 import MatchRomBodyList from "@/v2/components/MatchRom/MatchRomBodyList.vue";
 import MatchRomProviderFilter from "@/v2/components/MatchRom/MatchRomProviderFilter.vue";
@@ -31,6 +28,7 @@ import type {
   MatchVariant,
 } from "@/v2/components/MatchRom/types";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
+import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
 import { useIsAlive } from "@/v2/composables/useIsAlive";
 import { useRomSync } from "@/v2/composables/useRomSync";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
@@ -58,7 +56,6 @@ const { t } = useI18n();
 const { lgAndUp } = useBreakpoint();
 const show = ref(false);
 const rom = ref<SimpleRom | null>(null);
-const romsStore = storeRoms();
 const searching = ref(false);
 // In-flight flag for the post-pick `updateRom` call. v1 leaned on the
 // global `showLoadingDialog` event for feedback, but v2 has no listener
@@ -66,17 +63,15 @@ const searching = ref(false);
 // idea the network call was running. Keeping the dialog open with a
 // spinner overlay matches the v2 pattern (inline loading, §VI.B).
 const matching = ref(false);
-const route = useRoute();
 const searchText = ref("");
 const searchBy = ref<"Name" | "ID">("Name");
 const searched = ref(false);
 const matchedRoms = ref<SearchRom[]>([]);
-const emitter = inject<Emitter<Events>>("emitter");
 const snackbar = useSnackbar();
 const heartbeat = storeHeartbeat();
 const { applyRomWrite } = useRomSync();
 
-// Active body variant — the toolbar selector toggles between the
+// Active body variant: the toolbar selector toggles between the
 // gallery-style grid and the master/detail list, mirroring the
 // gallery's own layout switcher vocabulary.
 const variant = ref<MatchVariant>("grid");
@@ -204,8 +199,7 @@ const openHandler = (romToSearch: SimpleRom) => {
     ? (romToSearch.name ?? "")
     : romToSearch.fs_name_no_tags;
 };
-emitter?.on("showMatchRomDialog", openHandler);
-onBeforeUnmount(() => emitter?.off("showMatchRomDialog", openHandler));
+useEmitterEvent("showMatchRomDialog", openHandler);
 
 // Only the latest search of the open session may apply its response.
 let searchSeq = 0;
@@ -283,7 +277,6 @@ async function onBodyConfirm(payload: ConfirmPayload) {
       icon: "mdi-check-bold",
     });
     applyRomWrite(data as SimpleRom);
-    if (route.name === "rom") romsStore.currentRom = data;
   } catch (error: unknown) {
     const axiosErr = error as { response?: { data?: { detail?: string } } };
     snackbar.error(axiosErr.response?.data?.detail ?? t("rom.update-failed"), {
@@ -326,7 +319,7 @@ function closeDialog() {
         <span v-if="rom" class="r-v2-match__header-file" :title="rom.fs_name">
           {{ rom.fs_name }}
         </span>
-        <!-- Layout switcher — grid vs list, mirroring the gallery's own
+        <!-- Layout switcher: grid vs list, mirroring the gallery's own
              toggle. It lives up here because the header is the one row that
              never reflows as the filters or the search state change. -->
         <RSliderBtnGroup
@@ -439,7 +432,7 @@ function closeDialog() {
 </template>
 
 <style scoped>
-/* Header — dialog title plus the ROM's file name, which truncates to a
+/* Header: dialog title plus the ROM's file name, which truncates to a
    single line and keeps the full name in the hover title. */
 .r-v2-match__header {
   display: flex;

@@ -1,18 +1,22 @@
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from decorators.auth import protected_route
+from endpoints.responses.base import PAGE_QUERY, PageParams
 from endpoints.responses.play_session import (
     PlaySessionIngestResponse,
     PlaySessionIngestResult,
     PlaySessionSchema,
 )
 from handler.auth.constants import Scope
+from handler.auth.dependencies import get_permissions
 from handler.database import db_play_session_handler
 from handler.play_session_handler import ingest_play_sessions as _ingest
 from logger.logger import log
+from utils.auth import token_device_id
 from utils.router import APIRouter
 
 router = APIRouter(
@@ -62,11 +66,12 @@ def ingest_play_sessions(
             detail=f"Batch size exceeds maximum of {MAX_BATCH_SIZE}",
         )
 
-    device_id = payload.device_id or getattr(request.state, "device_id", None)
+    device_id = payload.device_id or token_device_id(request)
 
     summary = _ingest(
         user_id=request.user.id,
         username=request.user.username,
+        perms=get_permissions(request),
         entries=[
             {
                 "rom_id": s.rom_id,
@@ -98,22 +103,25 @@ def ingest_play_sessions(
 @protected_route(router.get, "", [Scope.ROMS_USER_READ])
 def get_play_sessions(
     request: Request,
+    page: Annotated[PageParams, Depends(PAGE_QUERY)],
     rom_id: int | None = None,
     device_id: str | None = None,
     start_after: datetime | None = None,
     end_before: datetime | None = None,
-    limit: int = 50,
-    offset: int = 0,
 ) -> list[PlaySessionSchema]:
-    effective_device_id = device_id or getattr(request.state, "device_id", None)
+    # A device-bound client may read its own device with roms.user.read alone.
+    if (
+        device_id is None or device_id != token_device_id(request)
+    ) and Scope.DEVICES_READ not in request.auth.scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     sessions = db_play_session_handler.get_sessions(
         user_id=request.user.id,
         rom_id=rom_id,
-        device_id=effective_device_id,
+        device_id=device_id,
         start_after=start_after,
         end_before=end_before,
-        limit=limit if start_after is None and end_before is None else None,
-        offset=offset,
+        limit=page.limit if start_after is None and end_before is None else None,
+        offset=page.offset,
     )
     return [PlaySessionSchema.model_validate(s) for s in sessions]
 

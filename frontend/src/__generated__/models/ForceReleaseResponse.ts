@@ -6,4 +6,3 @@ export type ForceReleaseResponse = {
     status: string;
     platforms: Array<string>;
 };
-

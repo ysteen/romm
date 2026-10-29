@@ -25,11 +25,12 @@ These tests pin the split gate:
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
+from tests.factories import make_rom
 
 from endpoints.roms import (
     build_unscoped_filter_values_cache_key,
@@ -103,14 +104,14 @@ def _seed_rom_id_index(cache_key: str, ids: list[int]) -> str:
     return redis_key
 
 
-def _get_roms(client: TestClient, access_token: str, **params: Any) -> dict:
+def _get_roms(client: TestClient, access_token: str, **params: Any) -> dict[str, Any]:
     response = client.get(
         "/api/roms",
         headers={"Authorization": f"Bearer {access_token}"},
         params=params,
     )
     assert response.status_code == status.HTTP_200_OK
-    return response.json()
+    return cast(dict[str, Any], response.json())
 
 
 def test_row_filter_reads_unscoped_filter_values_cache(
@@ -236,6 +237,33 @@ def test_unfiltered_request_still_reads_unscoped_char_index_cache(
     body = _get_roms(client, access_token)
 
     assert body["char_index"] == {"Z": 41}
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        # Relevance leads, so the rows run in no letter order.
+        ({"search_term": "final fantasy"}, {}),
+        ({"search_term": "final fantasy", "order_by": "name"}, {"f": 0}),
+        ({"search_term": "fantasy"}, {}),
+        # Too short to rank, so the name order stands.
+        ({"search_term": "fa"}, {"f": 0}),
+        ({}, {"f": 0}),
+    ],
+)
+def test_char_index_follows_whether_relevance_leads(
+    client: TestClient,
+    access_token: str,
+    platform: Platform,
+    params: dict[str, str],
+    expected: dict[str, int],
+):
+    make_rom(platform, "Final Fantasy")
+    make_rom(platform, "Final Fantasy VII")
+
+    body = _get_roms(client, access_token, **params)
+
+    assert body["char_index"] == expected
 
 
 def _put_props(

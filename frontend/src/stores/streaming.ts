@@ -10,6 +10,7 @@ import type {
   StreamingConfig,
   StreamingContainer,
 } from "@/services/api/streaming";
+import { emulatorLabelFrom } from "@/v2/utils/assets";
 
 export type {
   LaunchingSession,
@@ -39,13 +40,10 @@ export const useStreamingStore = defineStore("streaming", () => {
   const config = ref<StreamingConfig>({
     enabled: false,
     containers: [],
+    emulator_labels: {},
   });
-  const launchingSession = ref<LaunchingSession | null>(null);
-  const loading = ref(false);
-  // `loading` is false both before and after the fetch, so consumers that must
-  // not act on an unresolved config need this instead.
+  // Consumers that must not act on an unresolved config wait on this.
   const configLoaded = ref(false);
-  const error = ref<string | null>(null);
 
   const isEnabled = computed(() => config.value.enabled);
 
@@ -79,6 +77,11 @@ export const useStreamingStore = defineStore("streaming", () => {
     return container.label || container.emulator || null;
   }
 
+  /** The backend's display name for an emulator id, else the id as it stands. */
+  function emulatorLabel(emulator: string | null | undefined): string {
+    return emulatorLabelFrom(config.value.emulator_labels, emulator);
+  }
+
   /**
    * Returns per-platform save-state capabilities for the streaming player UI,
    * sourced from the container config the backend ships in /config (the single
@@ -98,7 +101,14 @@ export const useStreamingStore = defineStore("streaming", () => {
     supportsDiscSwap: boolean;
     hasManualDiscSwap: boolean;
   } {
-    const caps = containerForPlatform(slug)?.capabilities;
+    return containerCapabilities(containerForPlatform(slug));
+  }
+
+  /** The same capability set for a container already in hand. */
+  function containerCapabilities(
+    container: StreamingContainer | null | undefined,
+  ): ReturnType<typeof platformCapabilities> {
+    const caps = container?.capabilities;
     if (!caps) return { ...NO_CAPABILITIES };
     return {
       maxSlots: caps.max_slots,
@@ -109,26 +119,47 @@ export const useStreamingStore = defineStore("streaming", () => {
     };
   }
 
+  let configRequest: Promise<void> | null = null;
+  // Bumped by reset(), so a reply asked for as the last account is dropped.
+  let configGeneration = 0;
+
   /**
-   * Fetch streaming config from the backend once on app load.
-   * If it fails, streaming stays disabled and no buttons appear.
+   * Fetch streaming config from the backend, on app load and again when the
+   * Stream page mounts. Concurrent callers share the one in-flight request, so
+   * an older answer can't land last. If it fails, streaming stays disabled and
+   * no buttons appear.
    */
   async function fetchConfig(): Promise<void> {
-    loading.value = true;
-    error.value = null;
-    try {
-      const { data } = await streamingApi.fetchConfig();
-      config.value = {
-        enabled: data.enabled ?? false,
-        containers: data.containers ?? [],
-      };
-    } catch (err) {
-      error.value = String(err);
-      console.warn("[streaming] Could not fetch config:", err);
-    } finally {
-      loading.value = false;
-      configLoaded.value = true;
-    }
+    if (configRequest) return configRequest;
+    const generation = configGeneration;
+    const request = (async () => {
+      try {
+        const { data } = await streamingApi.fetchConfig();
+        if (generation !== configGeneration) return;
+        config.value = {
+          enabled: data.enabled ?? false,
+          containers: data.containers ?? [],
+          emulator_labels: data.emulator_labels ?? {},
+        };
+      } catch (err) {
+        console.warn("[streaming] Could not fetch config:", err);
+      } finally {
+        if (generation === configGeneration) {
+          configLoaded.value = true;
+          configRequest = null;
+        }
+      }
+    })();
+    configRequest = request;
+    return request;
+  }
+
+  /** Forget the config on logout; the next account asks for its own. */
+  function reset(): void {
+    configGeneration++;
+    configRequest = null;
+    config.value = { enabled: false, containers: [], emulator_labels: {} };
+    configLoaded.value = false;
   }
 
   /**
@@ -167,7 +198,6 @@ export const useStreamingStore = defineStore("streaming", () => {
       cardImport,
       multiplayer,
     );
-    launchingSession.value = data;
     return data;
   }
 
@@ -191,6 +221,8 @@ export const useStreamingStore = defineStore("streaming", () => {
    * the user is about to act on.
    */
   async function fetchJoinableSessions(force = false): Promise<void> {
+    // Streaming is off for this user, so there is nothing to join.
+    if (configLoaded.value && !isEnabled.value) return;
     if (joinableRequest) return joinableRequest;
     if (!force && Date.now() - joinableFetchedAt < JOINABLE_MAX_AGE_MS) return;
 
@@ -252,11 +284,18 @@ export const useStreamingStore = defineStore("streaming", () => {
   async function releaseSession(
     platform: string,
     save = true,
+    container?: string | null,
+    claimedAt?: string | null,
   ): Promise<boolean> {
     if (!platform) return false;
     try {
-      await streamingApi.releaseSession(platform, undefined, undefined, save);
-      launchingSession.value = null;
+      await streamingApi.releaseSession(
+        platform,
+        undefined,
+        container,
+        save,
+        claimedAt,
+      );
       return true;
     } catch (err) {
       console.warn("[streaming] Could not release session:", err);
@@ -278,12 +317,19 @@ export const useStreamingStore = defineStore("streaming", () => {
     platform: string,
     slot = 0,
     wait = true,
+    container?: string | null,
+    claimedAt?: string | null,
   ): Promise<{ released: boolean; saved: boolean }> {
     if (!platform) return { released: false, saved: false };
     try {
-      const { data } = await streamingApi.saveAndExit(platform, slot, wait);
+      const { data } = await streamingApi.saveAndExit(
+        platform,
+        slot,
+        wait,
+        container,
+        claimedAt,
+      );
       const released = data.released ?? true;
-      if (released) launchingSession.value = null;
       return { released, saved: data.saved ?? false };
     } catch (err) {
       console.warn("[streaming] Could not save-and-exit:", err);
@@ -302,11 +348,16 @@ export const useStreamingStore = defineStore("streaming", () => {
    */
   async function heartbeatSession(
     platform: string,
-    container?: string,
+    container?: string | null,
+    claimedAt?: string | null,
   ): Promise<SessionStatus | null> {
     if (!platform) return null;
     try {
-      const { data } = await streamingApi.heartbeatSession(platform, container);
+      const { data } = await streamingApi.heartbeatSession(
+        platform,
+        container,
+        claimedAt,
+      );
       return data;
     } catch (err) {
       console.warn("[streaming] Could not heartbeat session:", err);
@@ -321,10 +372,11 @@ export const useStreamingStore = defineStore("streaming", () => {
    */
   async function fetchSessionStatus(
     platform: string,
+    claimedAt?: string,
   ): Promise<SessionStatus | null> {
     if (!platform) return null;
     try {
-      const { data } = await streamingApi.sessionStatus(platform);
+      const { data } = await streamingApi.sessionStatus(platform, claimedAt);
       return data;
     } catch (err) {
       console.warn("[streaming] Could not fetch session status:", err);
@@ -338,39 +390,50 @@ export const useStreamingStore = defineStore("streaming", () => {
    * is gone (wait=false; the backend forces a blocking save for card-sync
    * containers anyway). Best-effort, never throws.
    */
-  function saveAndExitKeepalive(platform: string, slot = 0): void {
+  function saveAndExitKeepalive(
+    platform: string,
+    slot = 0,
+    container?: string | null,
+    claimedAt?: string | null,
+  ): void {
     if (!platform) return;
-    launchingSession.value = null;
     // The caller is unloading and cannot await, so the rejection is caught on
     // the promise itself; try/catch here would only see a synchronous throw.
-    streamingApi.saveAndExitKeepalive(platform, slot).catch((err) => {
-      console.warn("[streaming] Could not save-and-exit (keepalive):", err);
-    });
+    streamingApi
+      .saveAndExitKeepalive(platform, slot, container, claimedAt)
+      .catch((err) => {
+        console.warn("[streaming] Could not save-and-exit (keepalive):", err);
+      });
   }
 
   /**
    * releaseSession for the pagehide path. Fire-and-forget via fetch
    * keepalive. Best-effort, never throws.
    */
-  function releaseSessionKeepalive(platform: string): void {
+  function releaseSessionKeepalive(
+    platform: string,
+    container?: string | null,
+    claimedAt?: string | null,
+  ): void {
     if (!platform) return;
-    launchingSession.value = null;
-    streamingApi.releaseSessionKeepalive(platform).catch((err) => {
-      console.warn("[streaming] Could not release session (keepalive):", err);
-    });
+    streamingApi
+      .releaseSessionKeepalive(platform, container, claimedAt)
+      .catch((err) => {
+        console.warn("[streaming] Could not release session (keepalive):", err);
+      });
   }
 
   return {
     config,
-    launchingSession,
-    loading,
     configLoaded,
-    error,
     isEnabled,
     containerForPlatform,
     containerLabelForPlatform,
+    emulatorLabel,
     platformCapabilities,
+    containerCapabilities,
     fetchConfig,
+    reset,
     claimSession,
     joinableSessions,
     fetchJoinableSessions,

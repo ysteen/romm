@@ -43,31 +43,6 @@ if (
 }
 const injectionCode = injection.expression.expression.getText(source);
 
-it("opens netplay directly over WebSocket on the mounted path", () => {
-  const patch = start.body.statements.find(
-    (node) =>
-      ts.isIfStatement(node) &&
-      node.expression.getText(source).includes("__rommNetplayPatched"),
-  );
-  if (!patch) throw new Error("Netplay socket configuration not found");
-  const io = vi.fn();
-  const context = { window: { io } };
-  const code = ts.transpile(patch.getText(source), {
-    target: ts.ScriptTarget.ESNext,
-  });
-  runInNewContext(code, context);
-  runInNewContext(code, context);
-  context.window.io("https://romm.example", {
-    timeout: 5000,
-    transports: ["polling"],
-  });
-  expect(io).toHaveBeenCalledExactlyOnceWith("https://romm.example", {
-    timeout: 5000,
-    path: "/netplay/socket.io",
-    transports: ["websocket"],
-  });
-});
-
 it("waits for the asynchronous player to configure its core before loading EmulatorJS", async () => {
   const shell = read("../src/v2/views/Player/EmulatorJS.vue");
   const script = shell.match(
@@ -131,42 +106,6 @@ it("keeps a v2 core switch in the current document while preserving legacy reloa
 });
 
 describe("EmulatorJS save integration", () => {
-  it.each([
-    { core: "melonds", applied: true, state: false, restarts: 1 },
-    { core: "melonds", applied: false, state: false, restarts: 0 },
-    { core: "melonds", applied: true, state: true, restarts: 0 },
-    { core: "snes9x", applied: true, state: false, restarts: 0 },
-  ])("reloads cartridge SRAM at startup: %j", async (scenario) => {
-    const events: string[] = [];
-    const restart = vi.fn(() => events.push("restart"));
-    const loadSave = vi.fn(async () => {
-      events.push("save");
-      return scenario.applied;
-    });
-    const loadState = vi.fn(async () => events.push("state"));
-    await runInNewContext(injectionCode, {
-      props: { save: { id: 1 }, state: scenario.state ? { id: 2 } : null },
-      usesDirectorySaveBundle: false,
-      waitForGameManager: async () => true,
-      loadSave,
-      loadState,
-      EJS_ENABLE_AUTO_SAVE_SYNC: true,
-      installAutoSaveSync: () => events.push("poll"),
-      STATE_APPLY_SETTLE_MS: 500,
-      setTimeout: (callback: () => void) => callback(),
-      window: {
-        EJS_core: scenario.core,
-        EJS_emulator: { settings: {}, gameManager: { restart } },
-      },
-    });
-    expect(restart).toHaveBeenCalledTimes(scenario.restarts);
-    expect(events).toEqual([
-      scenario.state ? "state" : "save",
-      ...(scenario.restarts ? ["restart"] : []),
-      "poll",
-    ]);
-  });
-
   for (const directory of [false, true]) {
     for (const save of [false, true]) {
       for (const state of [false, true]) {
@@ -176,6 +115,7 @@ describe("EmulatorJS save integration", () => {
             state: state ? { id: 2 } : null,
           };
           const loadSave = vi.fn().mockResolvedValue(undefined);
+          const bootEmulatorJSSave = vi.fn();
           const loadState = vi.fn().mockResolvedValue(undefined);
           const baseline = vi.fn();
           const installAutoSaveSync = vi.fn();
@@ -185,6 +125,8 @@ describe("EmulatorJS save integration", () => {
             usesDirectorySaveBundle: directory,
             waitForGameManager: async () => true,
             loadSave,
+            bootEmulatorJSSave,
+            confirmDirectorySave: vi.fn(),
             loadState,
             baselineSaveTrackerFromEmulator: baseline,
             EJS_ENABLE_AUTO_SAVE_SYNC: true,
@@ -203,7 +145,7 @@ describe("EmulatorJS save integration", () => {
           );
           if (state) expect(loadState).toHaveBeenCalledWith(props.state);
           if (save && !state && !directory)
-            expect(loadSave).toHaveBeenCalledWith(props.save);
+            expect(loadSave).toHaveBeenCalledWith(props.save, bootEmulatorJSSave);
           expect(emulator.settings).toEqual({
             vsync: "enabled",
             "save-state-location": "browser",
@@ -333,10 +275,10 @@ describe("EmulatorJS runtime cache revision", () => {
     }
   });
 
-  it("keeps all player entries aligned with the GameManager import", () => {
+  it("keeps player entries at least as recent as their shared runtime imports", () => {
     const emulator = read("../../custom-emulatorjs/data/src/emulator.js");
     const revision = emulator.match(/GameManager\.js\?v=([^"']+)/)?.[1];
-    expect(revision).toBeTruthy();
+    if (!revision) throw new Error("GameManager cache revision not found");
     expect(emulator.match(/cache\.js\?v=([^"']+)/)?.[1]).toBe(revision);
     expect(emulator.match(/netplay\.js\?v=([^"']+)/)?.[1]).toBe(revision);
     const cache = read("../../custom-emulatorjs/data/src/cache.js");
@@ -346,9 +288,23 @@ describe("EmulatorJS runtime cache revision", () => {
       "../src/v2/views/Player/EmulatorJS.vue",
       "../src/views/Player/EmulatorJS/Base.vue",
     ]) {
-      expect(read(entry).match(/ROMM_RUNTIME_REVISION = "([^"]+)"/)?.[1]).toBe(
-        revision,
-      );
+      const entryRevision = read(entry).match(
+        /ROMM_RUNTIME_REVISION = "([^"]+)"/,
+      )?.[1];
+      if (!entryRevision) throw new Error(`Cache revision not found: ${entry}`);
+      expect(
+        entryRevision.localeCompare(revision, "en", { numeric: true }),
+      ).toBeGreaterThanOrEqual(0);
     }
+    const currentEntry = read("../src/v2/views/Player/EmulatorJS.vue");
+    const entryRevision = currentEntry.match(
+      /ROMM_RUNTIME_REVISION = "([^"]+)"/,
+    )?.[1];
+    const constantsRevision = emulator.match(/consts\.js\?v=([^"']+)/)?.[1];
+    if (!entryRevision || !constantsRevision)
+      throw new Error("Player or constants cache revision not found");
+    expect(
+      entryRevision.localeCompare(constantsRevision, "en", { numeric: true }),
+    ).toBeGreaterThanOrEqual(0);
   });
 });

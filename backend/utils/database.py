@@ -1,15 +1,15 @@
-import json
 from datetime import date
+from functools import reduce
+from operator import getitem
 from typing import Any, Sequence
 from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as sa_pg
-from sqlalchemy.orm import Session
-from sqlalchemy.sql import ColumnElement, func
+from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.sql import ColumnElement
 
-# What `Session.get_bind()` returns; these helpers only read `.engine`, which
-# an Engine answers with itself.
+# These helpers only read `.engine`, which an Engine answers with itself.
 type DatabaseBind = sa.Engine | sa.Connection
 
 # Single-column foreign keys that MariaDB/MySQL index implicitly but PostgreSQL
@@ -24,7 +24,6 @@ POSTGRESQL_FK_INDEXES: tuple[tuple[str, str, str], ...] = (
     ("music_favorite_tracks", "ix_music_favorite_tracks_rom_file_id", "rom_file_id"),
     ("play_sessions", "ix_play_sessions_rom_id", "rom_id"),
     ("play_sessions", "ix_play_sessions_device_id", "device_id"),
-    ("play_sessions", "ix_play_sessions_sync_session_id", "sync_session_id"),
     ("saves", "ix_saves_user_id", "user_id"),
     ("states", "ix_states_user_id", "user_id"),
     ("screenshots", "ix_screenshots_user_id", "user_id"),
@@ -37,12 +36,64 @@ POSTGRESQL_FK_INDEXES: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
+HLTB_MAIN_STORY_COLUMN = "generated_hltb_main_story"
+SEARCH_TITLES_COLUMN = "search_titles"
+MIN_AGE_COLUMN = "min_age"
+
+# The nullable `roms` columns the gallery sorts on. MariaDB and MySQL have no
+# NULLS LAST and cannot index the `IS NULL` term emulating it, so each column
+# gets a materialized `_unset` flag the ascending sort leads with instead.
+# Named here rather than in `utils.roms_columns`, which imports this module.
+SORTABLE_NULLABLE_ROM_COLUMNS = (
+    "generated_first_release_date",
+    "generated_average_rating",
+    HLTB_MAIN_STORY_COLUMN,
+)
+
+
+def rom_unset_flag_column(column: str) -> str:
+    """The generated flag column recording whether `column` is unset."""
+    return f"{column}_unset"
+
+
+def rom_sort_index_name(column: str) -> str:
+    """The composite index the ascending gallery sort on `column` walks."""
+    return f"idx_roms_{column}_sort"
+
+
+def rom_desc_index_name(column: str) -> str:
+    """The PostgreSQL-only index the descending gallery sort on `column` walks."""
+    return f"idx_roms_{column}_desc"
+
+
+# The gallery search's FULLTEXT index on MySQL/MariaDB, whose columns a MATCH
+# must list exactly, and PostgreSQL's pg_trgm index over the titles.
+ROMS_SEARCH_FULLTEXT_INDEX = "idx_roms_search_fulltext"
+ROMS_SEARCH_FULLTEXT_COLUMNS = ("name", "fs_name", SEARCH_TITLES_COLUMN)
+ROMS_SEARCH_TITLES_TRGM_INDEX = "idx_roms_search_titles_trgm"
+
+# PostgreSQL-only, for RetroArch Cloud Sync's case-insensitive ROM lookup.
+ROMS_FS_NAME_NO_EXT_LOWER_INDEX = "idx_roms_fs_name_no_ext_lower"
+
 # Indexes that exist in some databases but cannot be declared on a model.
-AUTOGENERATE_EXEMPT_INDEX_NAMES = frozenset(
-    # Search indexes built per dialect in 0084: FULLTEXT on MySQL/MariaDB,
-    # pg_trgm GIN on PostgreSQL. No portable model declaration exists.
-    {"idx_roms_name_fs_name_fulltext", "idx_roms_name_trgm", "idx_roms_fs_name_trgm"}
-) | frozenset(name for _, name, _ in POSTGRESQL_FK_INDEXES)
+AUTOGENERATE_EXEMPT_INDEX_NAMES = (
+    frozenset(
+        # Search indexes built per dialect: FULLTEXT on MySQL/MariaDB, pg_trgm
+        # GIN on PostgreSQL. No portable model declaration exists.
+        {
+            ROMS_SEARCH_FULLTEXT_INDEX,
+            ROMS_SEARCH_TITLES_TRGM_INDEX,
+            "idx_roms_name_trgm",
+            "idx_roms_fs_name_trgm",
+        }
+    )
+    | frozenset(name for _, name, _ in POSTGRESQL_FK_INDEXES)
+    # `DESC NULLS LAST` is the only spelling that matches what the descending
+    # gallery sort asks for, and no other engine parses it.
+    | frozenset(rom_desc_index_name(c) for c in SORTABLE_NULLABLE_ROM_COLUMNS)
+    # An expression index, which MariaDB has no use for: its collation ignores case.
+    | {ROMS_FS_NAME_NO_EXT_LOWER_INDEX}
+)
 
 
 def CustomJSON(**kwargs: Any) -> sa.JSON:
@@ -50,35 +101,75 @@ def CustomJSON(**kwargs: Any) -> sa.JSON:
     return sa.JSON(**kwargs).with_variant(sa_pg.JSONB(**kwargs), "postgresql")
 
 
-def is_db_version_compatible(
-    conn: DatabaseBind,
-    min_version: tuple[int, ...] | None = None,
-) -> bool:
-    """Check if the database server version complies with the given version constraints."""
-    if min_version is None:
-        return True
-    server_version = conn.engine.dialect.server_version_info
-    return bool(server_version and server_version >= min_version)
+# Byte for byte and NO PAD, so case, accents and trailing spaces all count.
+MARIADB_EXACT_COLLATION = "utf8mb4_nopad_bin"
+MYSQL_EXACT_COLLATION = "utf8mb4_0900_bin"
 
 
-def is_postgresql(
-    conn: DatabaseBind, min_version: tuple[int, ...] | None = None
-) -> bool:
-    if conn.engine.name != "postgresql":
-        return False
-    return is_db_version_compatible(conn, min_version=min_version)
+class ExactString(sa.types.TypeDecorator[str]):
+    """A VARCHAR that MariaDB and MySQL compare exactly, as PostgreSQL and Python do."""
+
+    impl = sa.String
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect: sa.Dialect) -> sa.types.TypeEngine[Any]:
+        return dialect.type_descriptor(
+            sa.String(self.length, collation=_exact_collation(dialect))
+        )
 
 
-def is_mysql(conn: DatabaseBind, min_version: tuple[int, ...] | None = None) -> bool:
-    if conn.engine.name != "mysql":
-        return False
-    return is_db_version_compatible(conn, min_version=min_version)
+def exact_collation(conn: DatabaseBind) -> str | None:
+    """The collation `ExactString` needs on this server, None on PostgreSQL."""
+    return _exact_collation(conn.engine.dialect)
 
 
-def is_mariadb(conn: DatabaseBind, min_version: tuple[int, ...] | None = None) -> bool:
-    if conn.engine.name != "mariadb":
-        return False
-    return is_db_version_compatible(conn, min_version=min_version)
+def _exact_collation(dialect: sa.Dialect) -> str | None:
+    if dialect.name == "postgresql":
+        return None
+    # The dialect is named `mysql` when the MySQL driver reaches a MariaDB server.
+    if getattr(dialect, "is_mariadb", False):
+        return MARIADB_EXACT_COLLATION
+    return MYSQL_EXACT_COLLATION
+
+
+def is_postgresql(conn: DatabaseBind) -> bool:
+    return conn.engine.name == "postgresql"
+
+
+def is_mysql(conn: DatabaseBind) -> bool:
+    return conn.engine.name == "mysql"
+
+
+def is_mariadb(conn: DatabaseBind) -> bool:
+    return conn.engine.name == "mariadb"
+
+
+# Queries use JSON_OVERLAPS (MariaDB 10.9, MySQL 8.0.17); 10.11 is the oldest
+# MariaDB LTS still receiving fixes.
+MIN_MARIADB_VERSION = (10, 11)
+MIN_MYSQL_VERSION = (8, 0, 17)
+
+
+def unsupported_server_version(dialect: sa.Dialect) -> str | None:
+    """Why the connected server is too old for RomM, or None when it is supported."""
+    if dialect.name not in ("mysql", "mariadb") or not dialect.server_version_info:
+        return None
+
+    # A MariaDB server reached through the mysql driver still reports as MariaDB.
+    engine, minimum = (
+        ("MariaDB", MIN_MARIADB_VERSION)
+        if getattr(dialect, "is_mariadb", False)
+        else ("MySQL", MIN_MYSQL_VERSION)
+    )
+    version = tuple(p for p in dialect.server_version_info if isinstance(p, int))
+    if version >= minimum:
+        return None
+
+    return (
+        f"RomM needs {engine} {'.'.join(map(str, minimum))} or newer, but the "
+        f"database server runs {'.'.join(map(str, version))}. Upgrade the server, "
+        "then start RomM again. See https://docs.romm.app/latest/install/databases/"
+    )
 
 
 # Error 1419, which MariaDB and MySQL raise for every trigger statement while
@@ -161,91 +252,6 @@ def full_path_digest_sql(conn: sa.Connection) -> str:
     return "SHA2(CONCAT(COALESCE(fs_path, ''), '/', COALESCE(fs_name, '')), 256)"
 
 
-def json_array_contains_value(
-    column: sa.Column | Any, value: str | int, *, session: Session
-) -> ColumnElement:
-    """Check if a JSON array column contains the given value."""
-    conn = session.get_bind()
-    if is_postgresql(conn):
-        # In PostgreSQL, string values can be checked for containment using the `?` operator.
-        # For other types, we use the `@>` operator.
-        if isinstance(value, str):
-            return sa.type_coerce(column, sa_pg.JSONB).has_key(value)
-        return sa.type_coerce(column, sa_pg.JSONB).contains(
-            func.cast(sa.literal(value, sa_pg.JSONB), sa_pg.JSONB)
-        )
-    elif is_mysql(conn) or is_mariadb(conn):
-        # In MySQL and MariaDB, JSON_CONTAINS requires a JSON-formatted string (even if it's an int).
-        return func.json_contains(column, json.dumps(value))
-
-    raise NotImplementedError(
-        f"json_array_contains_value is not implemented for engine: {conn.engine.name}"
-    )
-
-
-def json_array_contains_any(
-    column: sa.Column | Any, values: Sequence[str] | Sequence[int], *, session: Session
-) -> ColumnElement:
-    """Check if a JSON array column contains any of the given values."""
-    if not values:
-        return sa.false()
-
-    # Optimize for single value case
-    if len(values) == 1:
-        return json_array_contains_value(column, values[0], session=session)
-
-    conn = session.get_bind()
-    if is_postgresql(conn):
-        # In PostgreSQL, string arrays can be checked for overlap using the `?|` operator.
-        # For other types, we combine element-wise checks with OR.
-        if isinstance(values[0], str):
-            return sa.type_coerce(column, sa_pg.JSONB).has_any(
-                sa.type_coerce(values, sa_pg.ARRAY(sa_pg.TEXT))
-            )
-        return sa.or_(
-            *[json_array_contains_value(column, v, session=session) for v in values]
-        )
-    elif is_mysql(conn) or is_mariadb(conn, min_version=(10, 9)):
-        # In MySQL and MariaDB, JSON_OVERLAPS requires a JSON-formatted string (even if it's an int).
-        return func.json_overlaps(column, json.dumps(values))
-    elif is_mariadb(conn):
-        # MariaDB before 10.9 does not have JSON_OVERLAPS, so we fall back to element-wise checks.
-        return sa.or_(
-            *[json_array_contains_value(column, v, session=session) for v in values]
-        )
-
-    raise NotImplementedError(
-        f"json_array_contains_any is not implemented for engine: {conn.engine.name}"
-    )
-
-
-def json_array_contains_all(
-    column: sa.Column | Any, values: Sequence[Any], *, session: Session
-) -> ColumnElement:
-    """Check if a JSON array column contains all of the given values."""
-    if not values:
-        return sa.false()
-
-    conn = session.get_bind()
-    if is_postgresql(conn):
-        # In PostgreSQL, string arrays can be checked for containment using the `?&` operator.
-        # For other types, we combine element-wise checks with AND.
-        if isinstance(values[0], str):
-            return sa.type_coerce(column, sa_pg.JSONB).has_all(
-                sa.type_coerce(values, sa_pg.ARRAY(sa_pg.TEXT))
-            )
-        return sa.and_(
-            *[json_array_contains_value(column, v, session=session) for v in values]
-        )
-    elif is_mysql(conn) or is_mariadb(conn):
-        # In MySQL and MariaDB, JSON_CONTAINS requires a JSON-formatted string (even if it's an int).
-        return func.json_contains(column, json.dumps(values))
-
-    raise NotImplementedError(
-        f"json_array_contains_all is not implemented for engine: {conn.engine.name}"
-    )
-
-
 MS_PER_DAY = 86_400_000
 
 # Tennis for Two (1958) predates the epoch, so the oldest ranges are negative.
@@ -308,26 +314,14 @@ def release_day_ranges(
 
 
 def epoch_ms_in_ranges(
-    column: sa.Column | Any, ranges: Sequence[tuple[int, int]]
-) -> ColumnElement:
+    column: sa.Column[Any] | Any, ranges: Sequence[tuple[int, int]]
+) -> ColumnElement[Any]:
     """Match an epoch-millisecond column against any of the given half-open ranges."""
     if not ranges:
         return sa.false()
 
     return sa.or_(
         *[sa.and_(column >= start, column < end) for start, end in sorted(ranges)]
-    )
-
-
-LIKE_ESCAPE_CHAR = "\\"
-
-
-def escape_like(term: str) -> str:
-    """Escape LIKE wildcards so a search term matches literally (pass escape=LIKE_ESCAPE_CHAR to like())."""
-    return (
-        term.replace(LIKE_ESCAPE_CHAR, LIKE_ESCAPE_CHAR * 2)
-        .replace("%", f"{LIKE_ESCAPE_CHAR}%")
-        .replace("_", f"{LIKE_ESCAPE_CHAR}_")
     )
 
 
@@ -339,17 +333,23 @@ def safe_str_to_bool(value: Any, default: bool = False) -> bool:
         return default
 
 
-def safe_float(value: Any, default: float = 0.0) -> float:
-    """Safely convert a value to float, returning default if conversion fails."""
-    try:
-        return float(value)
-    except ValueError, TypeError:
-        return default
-
-
 def safe_int(value: Any, default: int = 0) -> int:
     """Safely convert a value to int, returning default if conversion fails."""
     try:
         return int(value)
     except ValueError, TypeError:
         return default
+
+
+def get_nested(obj: Any, path: str, default: Any = None) -> Any:
+    """Read a dot-separated key path from nested dicts, returning default if any step is missing."""
+    try:
+        return reduce(getitem, path.split("."), obj)
+    except KeyError, TypeError:
+        return default
+
+
+def is_non_blank(column: InstrumentedAttribute[Any]) -> ColumnElement[bool]:
+    """Whether `column` holds a value other than NULL or its type's blank (0 or "")."""
+    blank: int | str = "" if isinstance(column.type, sa.String) else 0
+    return sa.and_(column.isnot(None), column != blank)

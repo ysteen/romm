@@ -5,6 +5,8 @@
 import type { DeviceSyncSchema } from './DeviceSyncSchema';
 import type { ScreenshotSchema } from './ScreenshotSchema';
 export type SaveSchema = {
+    is_favorite?: boolean;
+    labels?: Array<string>;
     id: number;
     rom_id: number;
     user_id: number;
@@ -27,4 +29,3 @@ export type SaveSchema = {
     origin_device_id?: (string | null);
     device_syncs?: Array<DeviceSyncSchema>;
 };
-

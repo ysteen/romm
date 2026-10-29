@@ -7,4 +7,3 @@ export type ConversionStats = {
     errors: number;
     total: number;
 };
-

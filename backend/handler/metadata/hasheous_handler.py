@@ -1,26 +1,33 @@
 import json
-from datetime import datetime
-from typing import Any, NotRequired, TypedDict
+from collections.abc import Callable
+from typing import Any, Final, NotRequired, TypedDict
 
-import httpx
+import httpx2
 import pydash
 import yarl
 from fastapi import status
 
+from adapters.services.provider_http import unavailable
+from adapters.services.response_validation import parse_response
 from config import DEV_MODE, HASHEOUS_API_ENABLED, HASHEOUS_API_URL
+from handler.filesystem.base_handler import (
+    normalize_provider_values,
+    provider_language_name,
+    provider_region_name,
+)
 from logger.logger import log
 from models.rom import RomFile
 from utils import get_version
 from utils.context import ctx_httpx_client
+from utils.datetime import parse_utc_timestamp
 from utils.platform_slugs import UniversalPlatformSlug as UPS
 
-from .base_handler import BaseRom, MetadataHandler, unavailable
+from .base_handler import BaseRom, MetadataHandler
 from .igdb_handler import (
     IGDB_AGE_RATINGS,
     IGDBMetadata,
     IGDBMetadataPlatform,
 )
-from .ra_handler import RAMetadata
 
 
 class HasheousMetadata(TypedDict):
@@ -34,6 +41,10 @@ class HasheousMetadata(TypedDict):
     ra_match: bool
     fbneo_match: bool
     puredos_match: bool
+    # What the dump our hashes matched says of itself, kept by the scan.
+    dump_regions: NotRequired[list[str]]
+    dump_languages: NotRequired[list[str]]
+    dump_tags: NotRequired[list[str]]
 
 
 class HasheousPlatform(TypedDict):
@@ -47,16 +58,84 @@ class HasheousPlatform(TypedDict):
 
 class HasheousRom(BaseRom):
     hasheous_id: int | None
+    regions: NotRequired[list[str]]
+    languages: NotRequired[list[str]]
     igdb_id: NotRequired[int | None]
     slug: NotRequired[str]
     igdb_metadata: NotRequired[IGDBMetadata]
-    ra_id: NotRequired[int | None]
-    ra_metadata: NotRequired[RAMetadata]
     tgdb_id: NotRequired[int | None]
     hasheous_metadata: NotRequired[HasheousMetadata]
 
 
 ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG = {UPS.DC: ["bin", "chd", "cue"]}
+
+# Signature sources whose region data is preferred, as Hasheous spells them.
+# The curated per-region dumps describe one release; the rest lump variants
+# together or, for ScreenScraper, carry the game's whole release spread.
+PREFERRED_SIGNATURE_SOURCES: Final = ("NoIntros", "Redump")
+
+# Codes Hasheous prints as ISO-3166 that a filename shortcode claims for
+# somewhere else: CH is Switzerland here and China in a No-Intro name, AS is
+# American Samoa and Asia. The name printed beside them decides instead.
+_AMBIGUOUS_COUNTRY_CODES: Final = frozenset({"ch", "as"})
+
+
+def _country_name(code: str) -> str | None:
+    if code.strip().lower() in _AMBIGUOUS_COUNTRY_CODES:
+        return None
+    return provider_region_name(code)
+
+
+def _tags_from_signatures(
+    signatures: dict[str, Any],
+    field: str,
+    resolve: Callable[[str], str | None],
+) -> list[str]:
+    """Read one dump's countries or languages out of the matched signatures.
+
+    Only `rom` is read, never the `game` beside it, which spans every release
+    of the title. A resolved code wins over the name Hasheous printed.
+    """
+    if not isinstance(signatures, dict):
+        return []
+
+    ordered_sources = [
+        source for source in PREFERRED_SIGNATURE_SOURCES if source in signatures
+    ] + [source for source in signatures if source not in PREFERRED_SIGNATURE_SOURCES]
+
+    # Every field below comes straight off the wire, so none of its shapes are
+    # assumed: a raise here would abort the scan of the rom.
+    for source in ordered_sources:
+        entries = signatures.get(source)
+        for entry in entries if isinstance(entries, list) else []:
+            tags = pydash.get(entry, ["rom", field])
+            if not isinstance(tags, dict):
+                continue
+
+            values = normalize_provider_values(
+                (
+                    resolve(code) or (name if isinstance(name, str) else "")
+                    for code, name in tags.items()
+                    if isinstance(code, str)
+                ),
+                resolve,
+            )
+            if values:
+                return values
+
+    return []
+
+
+def _numeric_id(value: object) -> int | None:
+    """A provider id Hasheous maps to, or None for a slug or anything else."""
+    if value is None:
+        return None
+    # Hasheous is slowly replacing IGDB slugs with ids.
+    try:
+        return int(str(value))
+    except ValueError:
+        log.debug("Hasheous mapped a slug instead of an id: %s", value)
+        return None
 
 
 def _involved_company_names(rom: dict[str, Any], role: str) -> list[str]:
@@ -82,21 +161,23 @@ def extract_metadata_from_igdb_rom(rom: dict[str, Any]) -> IGDBMetadata:
             "total_rating": str(round(rom.get("total_rating", 0.0), 2)),
             "total_rating_count": rom.get("total_rating_count"),
             "aggregated_rating": str(round(rom.get("aggregated_rating", 0.0), 2)),
-            "first_release_date": (
-                int(
-                    datetime.fromisoformat(
-                        rom["first_release_date"].replace("Z", "+00:00")
-                    ).timestamp()
-                )
-                if rom.get("first_release_date")
-                else None
+            "first_release_date": parse_utc_timestamp(
+                rom.get("first_release_date"), iso=True
             ),
             "genres": pydash.map_(rom.get("genres", {}), "name"),
             "franchises": pydash.compact(
                 [rom.get("franchise.name", None)]
                 + pydash.map_(rom.get("franchises", {}), "name")
             ),
-            "alternative_names": pydash.map_(rom.get("alternative_names", {}), "name"),
+            "alternative_names": pydash.uniq(
+                pydash.compact(
+                    [
+                        rom.get("name"),
+                        *pydash.map_(rom.get("alternative_names", {}), "name"),
+                        *pydash.map_(rom.get("game_localizations", {}), "name"),
+                    ]
+                )
+            ),
             "collections": pydash.map_(rom.get("collections", {}), "name"),
             "game_modes": pydash.map_(rom.get("game_modes", {}), "name"),
             # Not in `expandColumns`, so the proxy returns bare ids with no names.
@@ -148,7 +229,6 @@ class HasheousHandler(MetadataHandler):
         self.games_endpoint = f"{self.BASE_URL}/Lookup/ByHash"
         self.proxy_igdb_game_endpoint = f"{self.BASE_URL}/MetadataProxy/IGDB/Game"
         self.proxy_igdb_cover_endpoint = f"{self.BASE_URL}/MetadataProxy/IGDB/Cover"
-        self.proxy_ra_game_endpoint = f"{self.BASE_URL}/MetadataProxy/RA/Game"
         self.app_api_key = (
             "UUvh9ef_CddMM4xXO1iqxl9FqEt764v33LU-UiGFc0P34odXjMP9M6MTeE4JZRxZ"
             if DEV_MODE
@@ -161,26 +241,20 @@ class HasheousHandler(MetadataHandler):
         return HASHEOUS_API_ENABLED
 
     async def heartbeat(self) -> bool:
-        if not self.is_enabled():
-            return False
-
-        httpx_client = ctx_httpx_client.get()
-        try:
-            response = await httpx_client.get(self.healthcheck_endpoint)
+        async def probe() -> bool:
+            response = await ctx_httpx_client.get().get(self.healthcheck_endpoint)
             response.raise_for_status()
-        except Exception as e:
-            log.error("Error checking Hasheous API: %s", e)
-            return False
+            return True
 
-        return bool(response)
+        return await self._heartbeat("Hasheous API", probe)
 
     async def _request(
         self,
         url: str,
         method: str = "POST",
-        params: dict | None = None,
-        data: dict | list | None = None,
-    ) -> dict:
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | list[Any] | None = None,
+    ) -> dict[str, Any]:
         httpx_client = ctx_httpx_client.get()
 
         # Normalize method to uppercase
@@ -215,8 +289,8 @@ class HasheousHandler(MetadataHandler):
 
             res = await httpx_client.request(method, **request_kwargs)
             res.raise_for_status()
-            return res.json()
-        except httpx.HTTPStatusError as exc:
+            return parse_response(dict[str, Any], res.content, source="Hasheous") or {}
+        except httpx2.HTTPStatusError as exc:
             # Check if its a 404 error
             if exc.response.status_code == status.HTTP_404_NOT_FOUND:
                 log.debug("Game not found in Hasheous API")
@@ -228,16 +302,16 @@ class HasheousHandler(MetadataHandler):
                 exc.response.text,
             )
             raise unavailable("Hasheous") from exc
-        except httpx.NetworkError as exc:
+        except httpx2.TimeoutException as exc:
+            log.error("Hasheous API timed out: %s", exc)
+            raise unavailable("Hasheous") from exc
+        except httpx2.TransportError as exc:
             log.critical("Connection error: can't connect to Hasheous")
             raise unavailable("Hasheous") from exc
         except json.decoder.JSONDecodeError as exc:
             # Log the error and return an empty dict if the response is not valid JSON
             log.error(exc)
             return {}
-        except httpx.TimeoutException as exc:
-            log.error("Hasheous API timed out: %s", exc)
-            raise unavailable("Hasheous") from exc
 
     def get_platform(self, slug: str) -> HasheousPlatform:
         if slug not in HASHEOUS_PLATFORM_LIST:
@@ -251,6 +325,18 @@ class HasheousHandler(MetadataHandler):
             igdb_id=platform["igdb_id"],
             tgdb_id=platform["tgdb_id"],
             ra_id=platform["ra_id"],
+        )
+
+    async def _lookup_by_hashes(
+        self, data: list[dict[str, str | None]]
+    ) -> dict[str, Any]:
+        return await self._request(
+            self.games_endpoint,
+            params={
+                "returnAllSources": "true",
+                "returnFields": "Signatures, Metadata, Attributes",
+            },
+            data=data,
         )
 
     async def lookup_rom(
@@ -267,9 +353,7 @@ class HasheousHandler(MetadataHandler):
         an answer (disabled, no hashes to send, or the request failed). Only the
         former is safe to treat as "this ROM is not in any database".
         """
-        fallback_rom = HasheousRom(
-            hasheous_id=None, igdb_id=None, tgdb_id=None, ra_id=None
-        )
+        fallback_rom = HasheousRom(hasheous_id=None, igdb_id=None, tgdb_id=None)
 
         if not self.is_enabled():
             return fallback_rom, False
@@ -279,6 +363,7 @@ class HasheousHandler(MetadataHandler):
             for file in files
             if file.file_size_bytes > 0
             and file.is_top_level
+            and file.file_extension.lower() != "m3u"
             and (
                 UPS(platform_slug) not in ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG
                 or file.file_extension
@@ -286,10 +371,9 @@ class HasheousHandler(MetadataHandler):
             )
         ]
 
-        # The lookup endpoint accepts the hashes of all top-level files, which
-        # increases the accuracy of metadata lookups by letting Hasheous match
-        # against any of them.
-        data: list[dict] = []
+        # One request carries every top-level file's hashes, but Hasheous only
+        # answers it when it knows all of them.
+        data: list[dict[str, Any]] = []
         for file in filtered_files:
             hashes = file.lookup_hashes
             file_hashes: dict[str, str | None] = {
@@ -311,57 +395,71 @@ class HasheousHandler(MetadataHandler):
             return fallback_rom, False
 
         try:
-            hasheous_game = await self._request(
-                self.games_endpoint,
-                params={
-                    "returnAllSources": "true",
-                    "returnFields": "Signatures, Metadata, Attributes",
-                },
-                data=data,
-            )
+            hasheous_game = await self._lookup_by_hashes(data)
+            # A sidecar file or an off-set disc hides the match the rest would
+            # make, so each file is asked alone and every answer must agree.
+            per_file_games: dict[Any, dict[str, Any]] = {}
+            if not hasheous_game and len(data) > 1:
+                for file_hashes in data:
+                    game = await self._lookup_by_hashes([file_hashes])
+                    if game:
+                        per_file_games[game.get("id")] = game
+                    if len(per_file_games) > 1:
+                        break
         except Exception as exc:
             log.error("Hasheous hash lookup failed, skipping: %s", exc)
             return fallback_rom, False
 
+        if len(per_file_games) > 1:
+            log.warning(
+                "Hasheous matched files of one rom to different games %s, skipping",
+                list(per_file_games),
+            )
+            return fallback_rom, False
+        if per_file_games:
+            hasheous_game = next(iter(per_file_games.values()))
+
         if not hasheous_game:
             return fallback_rom, True
 
-        metadata = hasheous_game.get("metadata", [])
-        attributes = hasheous_game.get("attributes", [])
-        signatures = hasheous_game.get("signatures", {}).keys()
+        # A raise here would abort the scan.
+        metadata = hasheous_game.get("metadata")
+        attributes = hasheous_game.get("attributes")
+        signatures = hasheous_game.get("signatures")
+        if not isinstance(signatures, dict):
+            signatures = {}
 
         igdb_id = None
         tgdb_id = None
-        ra_id = None
 
-        for meta in metadata:
-            if meta["source"] == "IGDB":
-                try:
-                    # TEMP: Hasheous is slowly replacing slugs with IDs
-                    igdb_id = int(meta["immutableId"])
-                except ValueError, TypeError:
-                    log.debug(
-                        f"Found an IGDB slug instead of an ID: {meta['immutableId']}"
-                    )
-                    pass
-            elif meta["source"] == "TheGamesDB":
-                tgdb_id = meta["immutableId"]
-            elif meta["source"] == "RetroAchievements":
-                ra_id = meta["immutableId"]
+        for meta in metadata if isinstance(metadata, list) else []:
+            if not isinstance(meta, dict):
+                continue
+            if meta.get("source") == "IGDB":
+                igdb_id = _numeric_id(meta.get("immutableId")) or igdb_id
+            elif meta.get("source") == "TheGamesDb":
+                tgdb_id = _numeric_id(meta.get("immutableId")) or tgdb_id
 
         url_cover = ""
-        for attr in attributes:
-            if attr["attributeName"] == "Logo":
+        for attr in attributes if isinstance(attributes, list) else []:
+            if (
+                isinstance(attr, dict)
+                and attr.get("attributeName") == "Logo"
+                and attr.get("link")
+            ):
                 url_cover = f"{self.BASE_ORIGIN}{attr['link']}"
                 break
 
         return (
             HasheousRom(
-                hasheous_id=hasheous_game["id"],
+                hasheous_id=hasheous_game.get("id"),
                 name=hasheous_game.get("name", ""),
-                igdb_id=int(igdb_id) if igdb_id else None,
-                tgdb_id=int(tgdb_id) if tgdb_id else None,
-                ra_id=int(ra_id) if ra_id else None,
+                regions=_tags_from_signatures(signatures, "country", _country_name),
+                languages=_tags_from_signatures(
+                    signatures, "language", provider_language_name
+                ),
+                igdb_id=igdb_id,
+                tgdb_id=tgdb_id,
                 url_cover=url_cover,
                 # Keys are Hasheous' SignatureSourceType names, spelled exactly
                 # as its API returns them.
@@ -395,7 +493,7 @@ class HasheousHandler(MetadataHandler):
             self.proxy_igdb_game_endpoint,
             params={
                 "Id": igdb_id,
-                "expandColumns": "age_ratings, alternative_names, collections, cover, dlcs, expanded_games, franchise, franchises, game_modes, genres, involved_companies, platforms, ports, remakes, screenshots, similar_games, videos",
+                "expandColumns": "age_ratings, alternative_names, collections, cover, dlcs, expanded_games, franchise, franchises, game_localizations, game_modes, genres, involved_companies, platforms, ports, remakes, screenshots, similar_games, videos",
             },
             method="GET",
         )
@@ -424,28 +522,6 @@ class HasheousHandler(MetadataHandler):
                 "igdb_metadata": extract_metadata_from_igdb_rom(igdb_game),
             }
         )
-
-    async def get_ra_game(self, hasheous_rom: HasheousRom) -> HasheousRom:
-        if not self.is_enabled():
-            return hasheous_rom
-
-        ra_id = hasheous_rom.get("ra_id", None)
-
-        if ra_id is None:
-            log.info("No RA ID provided for Hasheous RA game lookup.")
-            return hasheous_rom
-
-        ra_game = await self._request(
-            self.proxy_ra_game_endpoint,
-            params={"Id": ra_id},
-            method="GET",
-        )
-
-        if not ra_game:
-            log.debug(f"No Hasheous game found for RA ID {ra_id}.")
-            return hasheous_rom
-
-        return hasheous_rom
 
 
 class SlugToHasheousId(TypedDict):

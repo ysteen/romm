@@ -1,4 +1,4 @@
-// useGlobalHotkeys — app-wide keyboard shortcuts. Kept intentionally
+// useGlobalHotkeys: app-wide keyboard shortcuts. Kept intentionally
 // narrow so it doesn't fight with input fields or rich-text editors.
 //
 // Current bindings:
@@ -11,24 +11,14 @@
 // Two-key sequences (Gmail-style) have a 1.2s idle timeout. Everything is
 // guarded against input fields, contenteditable, and a running game
 // (the playing store flag), so hotkeys never fire mid-session.
+import { useEventListener } from "@vueuse/core";
 import { onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import { ROUTES } from "@/plugins/router";
 import storePlaying from "@/stores/playing";
+import { isEditable } from "@/v2/utils/editable";
 
 let installed = false;
-
-function isEditable(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement)) return false;
-  if (
-    el.tagName === "INPUT" ||
-    el.tagName === "TEXTAREA" ||
-    el.tagName === "SELECT"
-  ) {
-    return true;
-  }
-  return el.isContentEditable;
-}
 
 export function useGlobalHotkeys() {
   function install() {
@@ -55,9 +45,9 @@ export function useGlobalHotkeys() {
         pendingPrefix = null;
       }
 
-      // Slash / ? — jump to search.
+      // Slash / ?: jump to search.
       if ((e.key === "/" || e.key === "?") && !pendingPrefix) {
-        router.push({ name: ROUTES.SEARCH });
+        void router.push({ name: ROUTES.SEARCH });
         e.preventDefault();
         return;
       }
@@ -71,22 +61,21 @@ export function useGlobalHotkeys() {
       if (pendingPrefix === "g") {
         pendingPrefix = null;
         if (e.key === "h") {
-          router.push({ name: ROUTES.HOME });
+          void router.push({ name: ROUTES.HOME });
           e.preventDefault();
         } else if (e.key === "p") {
-          router.push({ name: ROUTES.PLATFORMS_INDEX });
+          void router.push({ name: ROUTES.PLATFORMS_INDEX });
           e.preventDefault();
         } else if (e.key === "c") {
-          router.push({ name: ROUTES.COLLECTIONS_INDEX });
+          void router.push({ name: ROUTES.COLLECTIONS_INDEX });
           e.preventDefault();
         }
       }
     }
 
-    window.addEventListener("keydown", onKey);
+    useEventListener(window, "keydown", onKey);
 
     onBeforeUnmount(() => {
-      window.removeEventListener("keydown", onKey);
       installed = false;
     });
   }

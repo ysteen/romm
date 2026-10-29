@@ -5,4 +5,3 @@
 export type OIDCLogoutResponse = {
     oidc_logout_url: string;
 };
-

@@ -14,6 +14,28 @@ function tap() {
   window.dispatchEvent(new Event("touchstart"));
 }
 
+describe("isNavigationKey", () => {
+  it.each([
+    "ArrowUp",
+    "Tab",
+    "Enter",
+    " ",
+    "Escape",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+  ])("counts %j as keyboard navigation", async (key) => {
+    const { isNavigationKey } = await import("./index");
+    expect(isNavigationKey(key)).toBe(true);
+  });
+
+  it.each(["a", "Shift", "Control", "F5"])("ignores %j", async (key) => {
+    const { isNavigationKey } = await import("./index");
+    expect(isNavigationKey(key)).toBe(false);
+  });
+});
+
 describe("useInputModality", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -64,5 +86,20 @@ describe("useInputModality", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
 
     expect(modality.value).toBe("pad");
+  });
+
+  it("ignores every input while pinned, and resumes tracking once unpinned", async () => {
+    const { modality, pin } = await loadFresh();
+
+    pin("key");
+    expect(document.documentElement.dataset.input).toBe("key");
+
+    tap();
+    window.dispatchEvent(new Event("gamepadconnected"));
+    expect(modality.value).toBe("key");
+
+    pin(null);
+    tap();
+    expect(modality.value).toBe("touch");
   });
 });

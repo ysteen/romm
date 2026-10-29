@@ -6,4 +6,3 @@ export type MetadataCoverageItem = {
     source: string;
     matched: number;
 };
-

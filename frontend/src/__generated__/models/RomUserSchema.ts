@@ -18,5 +18,5 @@ export type RomUserSchema = {
     difficulty: number;
     completion: number;
     status: (RomUserStatus | null);
+    pinned_media: (Array<string> | null);
 };
-

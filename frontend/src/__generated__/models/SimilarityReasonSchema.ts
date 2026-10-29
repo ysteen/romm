@@ -13,4 +13,3 @@ export type SimilarityReasonSchema = {
     facet: Facet;
     value: string;
 };
-

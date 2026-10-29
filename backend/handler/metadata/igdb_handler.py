@@ -1,15 +1,17 @@
-import re
 from collections.abc import Sequence
-from typing import Any, Final, NotRequired, TypedDict
+from typing import Any, Final, NotRequired, TypedDict, cast
 
-import httpx
+import httpx2
 import pydash
 from fastapi import status
 
 from adapters.services.igdb import (
+    IGDB_PLATFORM_FAMILIES,
     IGDB_PLATFORM_LIST,
     IGDB_PLATFORM_VERSIONS,
+    IGDB_SIBLING_PLATFORMS,
     IGDBService,
+    SlugToIGDB,
 )
 from adapters.services.igdb_types import (
     Game,
@@ -27,11 +29,11 @@ from utils.context import ctx_httpx_client
 from utils.platform_slugs import UniversalPlatformSlug as UPS
 
 from .base_handler import (
-    PS2_OPL_REGEX,
-    SONY_SERIAL_REGEX,
-    SWITCH_TITLEDB_REGEX,
     BaseRom,
+    IndexedFormatPlatforms,
     MetadataHandler,
+    provider_tag_regex,
+    tag_id_from_filename,
 )
 
 PS1_IGDB_ID: Final = IGDB_PLATFORM_LIST[UPS.PSX]["id"]
@@ -43,6 +45,14 @@ ARCADE_IGDB_IDS: Final = [
     IGDB_PLATFORM_LIST[UPS.NEOGEOAES]["id"],
     IGDB_PLATFORM_LIST[UPS.NEOGEOMVS]["id"],
 ]
+IGDB_INDEXED_FORMAT_PLATFORMS: Final = IndexedFormatPlatforms(
+    ps1=PS1_IGDB_ID,
+    ps2=PS2_IGDB_ID,
+    psp=PSP_IGDB_ID,
+    switch=SWITCH_IGDB_ID,
+    arcade=ARCADE_IGDB_IDS,
+    scummvm=IGDB_PLATFORM_LIST[UPS.SCUMMVM]["id"],
+)
 
 # IGDB catalogues a console and its regional twin as two separate platforms.
 # A game released in only one region is filed under just one of the pair,
@@ -62,7 +72,7 @@ IGDB_REGIONAL_TWIN_PLATFORMS: Final[dict[int, int]] = {
 }
 
 # Regex to detect IGDB ID tags in filenames like (igdb-12345)
-IGDB_TAG_REGEX = re.compile(r"\(igdb-(\d+)\)", re.IGNORECASE)
+IGDB_TAG_REGEX = provider_tag_regex("igdb")
 
 # Jaro-Winkler score of an exact (post-normalization) title match. Only a first
 # pass hitting this may be trusted without widening the search.
@@ -187,6 +197,7 @@ def extract_metadata_from_igdb_rom(
 ) -> IGDBMetadata:
     age_ratings = rom.get("age_ratings", [])
     alternative_names = rom.get("alternative_names", [])
+    game_localizations = rom.get("game_localizations", [])
     collections = rom.get("collections", [])
     dlcs = rom.get("dlcs", [])
     expanded_games = rom.get("expanded_games", [])
@@ -210,6 +221,7 @@ def extract_metadata_from_igdb_rom(
     assert mark_expanded(franchise)
     assert mark_list_expanded(age_ratings)
     assert mark_list_expanded(alternative_names)
+    assert mark_list_expanded(game_localizations)
     assert mark_list_expanded(collections)
     assert mark_list_expanded(dlcs)
     assert mark_list_expanded(expanded_games)
@@ -280,7 +292,17 @@ def extract_metadata_from_igdb_rom(
                     ]
                 )
             ),
-            "alternative_names": _expanded_names(alternative_names),
+            # The canonical name too, so it stays searchable when a localized
+            # title is displayed.
+            "alternative_names": pydash.uniq(
+                pydash.compact(
+                    [
+                        rom.get("name"),
+                        *_expanded_names(alternative_names),
+                        *_expanded_names(game_localizations),
+                    ]
+                )
+            ),
             "collections": _expanded_names(collections),
             "game_modes": _expanded_names(game_modes),
             "companies": [
@@ -606,10 +628,7 @@ class IGDBHandler(MetadataHandler):
     @staticmethod
     def extract_igdb_id_from_filename(fs_name: str) -> int | None:
         """Extract IGDB ID from filename tag like (igdb-12345)."""
-        match = IGDB_TAG_REGEX.search(fs_name)
-        if match:
-            return int(match.group(1))
-        return None
+        return tag_id_from_filename(IGDB_TAG_REGEX, fs_name)
 
     def _is_prefix_superset_match(self, search_term: str, candidate_name: str) -> bool:
         """Whether one title's words are a proper prefix of the other's.
@@ -752,19 +771,10 @@ class IGDBHandler(MetadataHandler):
         return None
 
     async def heartbeat(self) -> bool:
-        if not self.is_enabled():
-            return False
+        async def probe() -> bool:
+            return bool(await self.igdb_service.list_games(fields=["id"], limit=1))
 
-        try:
-            roms = await self.igdb_service.list_games(
-                fields=["id"],
-                limit=1,
-            )
-        except Exception as e:
-            log.error("Error checking IGDB API: %s", e)
-            return False
-
-        return bool(roms)
+        return await self._heartbeat("IGDB API", probe)
 
     def get_platform(self, slug: str) -> IGDBPlatform:
         if slug in IGDB_PLATFORM_LIST:
@@ -802,7 +812,34 @@ class IGDBHandler(MetadataHandler):
                 ),
             )
 
-        return IGDBPlatform(igdb_id=None, slug=slug)
+        unlisted_platform = IGDBPlatform(igdb_id=None, slug=slug)
+        if slug in IGDB_SIBLING_PLATFORMS:
+            sibling = IGDB_PLATFORM_LIST[IGDB_SIBLING_PLATFORMS[UPS(slug)]]
+            unlisted_platform["category"] = sibling["category"]
+            unlisted_platform["family_name"] = sibling["family_name"]
+            unlisted_platform["family_slug"] = sibling["family_slug"]
+        if slug in IGDB_PLATFORM_FAMILIES:
+            family = IGDB_PLATFORM_FAMILIES[UPS(slug)]
+            unlisted_platform["family_name"] = family["family_name"]
+            unlisted_platform["family_slug"] = family["family_slug"]
+
+        return unlisted_platform
+
+    def get_platform_aliases(self, slug: str) -> tuple[str, list[str]]:
+        """The platform's abbreviation and alternative names; a version shares its main platform's."""
+        platform: SlugToIGDB
+        if slug in IGDB_PLATFORM_LIST:
+            platform = IGDB_PLATFORM_LIST[UPS(slug)]
+        elif slug in IGDB_PLATFORM_VERSIONS:
+            platform = IGDB_PLATFORM_LIST[IGDB_PLATFORM_VERSIONS[slug]["platform_slug"]]
+        else:
+            return "", []
+
+        # IGDB packs several names into one, as in "PSX, PSOne, PS".
+        alternative_names = platform.get("alternative_name", "").split(",")
+        return platform.get("abbreviation", ""), [
+            name for name in map(str.strip, alternative_names) if name
+        ]
 
     async def get_rom(self, rom: Rom, fs_name: str, platform_igdb_id: int) -> IGDBRom:
         from handler.filesystem import fs_rom_handler
@@ -830,66 +867,14 @@ class IGDBHandler(MetadataHandler):
 
         search_term = fs_rom_handler.get_file_name_with_no_tags(fs_name)
         fallback_rom = IGDBRom(igdb_id=None)
-
-        # Support for PS2 OPL filename format
-        match = PS2_OPL_REGEX.match(fs_name)
-        if platform_igdb_id == PS2_IGDB_ID and match:
-            search_term = await self._ps2_opl_format(match, search_term)
-            fallback_rom = IGDBRom(igdb_id=None, name=search_term)
-
-        # Support for sony serial filename format (PS, PS2, PSP)
-        match = SONY_SERIAL_REGEX.search(fs_name)
-        if platform_igdb_id == PS1_IGDB_ID and match:
-            search_term = await self._ps1_serial_format(match, search_term)
-            fallback_rom = IGDBRom(igdb_id=None, name=search_term)
-
-        if platform_igdb_id == PS2_IGDB_ID and match:
-            search_term = await self._ps2_serial_format(match, search_term)
-            fallback_rom = IGDBRom(igdb_id=None, name=search_term)
-
-        if platform_igdb_id == PSP_IGDB_ID and match:
-            search_term = await self._psp_serial_format(match, search_term)
-            fallback_rom = IGDBRom(igdb_id=None, name=search_term)
-
-        # Support for switch titleID filename format
-        match = SWITCH_TITLEDB_REGEX.search(fs_name)
-        if platform_igdb_id == SWITCH_IGDB_ID and match:
-            search_term, index_entry = await self._switch_titledb_format(
-                match, search_term
-            )
-            if index_entry:
-                fallback_rom = IGDBRom(
-                    igdb_id=None,
-                    name=index_entry["name"],
-                    summary=index_entry.get("description", ""),
-                    url_cover=index_entry.get("iconUrl", ""),
-                    url_screenshots=index_entry.get("screenshots", None) or [],
-                )
-
-        # Support for switch productID filename format
-        if platform_igdb_id == SWITCH_IGDB_ID:
-            search_term, index_entry = await self._switch_productid_format(
-                rom, fs_name, search_term
-            )
-            if index_entry:
-                fallback_rom = IGDBRom(
-                    igdb_id=None,
-                    name=index_entry["name"],
-                    summary=index_entry.get("description", ""),
-                    url_cover=index_entry.get("iconUrl", ""),
-                    url_screenshots=index_entry.get("screenshots", None) or [],
-                )
-
-        # Support for MAME arcade filename format
-        if platform_igdb_id in ARCADE_IGDB_IDS:
-            search_term = await self._mame_format(search_term)
-            fallback_rom = IGDBRom(igdb_id=None, name=search_term)
-
-        # Support for ScummVM filename format
-        scummvm_platform = self.get_platform(UPS.SCUMMVM)
-        if platform_igdb_id == scummvm_platform.get("igdb_id"):
-            search_term = await self._scummvm_format(search_term)
-            fallback_rom = IGDBRom(igdb_id=None, name=search_term)
+        search_term = await self._resolve_indexed_title(
+            rom,
+            fs_name,
+            search_term,
+            platform_igdb_id,
+            IGDB_INDEXED_FORMAT_PLATFORMS,
+            fallback_rom,
+        )
 
         search_term = self.normalize_search_term(search_term)
 
@@ -988,7 +973,7 @@ class IGDBHandler(MetadataHandler):
 
 
 class TwitchAuth(MetadataHandler):
-    def __init__(self):
+    def __init__(self) -> None:
         self.BASE_URL = "https://id.twitch.tv/oauth2/token"
         self.params = {
             "client_id": IGDB_CLIENT_ID,
@@ -1005,9 +990,6 @@ class TwitchAuth(MetadataHandler):
     async def _update_twitch_token(self) -> str:
         if not self.is_enabled():
             return ""
-
-        token = None
-        expires_in = 0
 
         httpx_client = ctx_httpx_client.get()
         try:
@@ -1028,17 +1010,33 @@ class TwitchAuth(MetadataHandler):
                 return ""
 
             response_json = res.json()
-            token = response_json.get("access_token", "")
-            expires_in = response_json.get("expires_in", 0)
-        except httpx.NetworkError:
+        except httpx2.HTTPError:
             log.critical("Can't connect to IGDB, check your internet connection.")
             return ""
-
-        if not token or expires_in == 0:
+        except ValueError:
+            log.error("Twitch sent a token response that isn't JSON")
             return ""
 
-        # Set token in Redis to expire some seconds before it actually expires.
-        await async_cache.set("romm:twitch_token", token, ex=expires_in - 10)
+        if not isinstance(response_json, dict):
+            log.error("Twitch sent a token response that isn't a JSON object")
+            return ""
+        token = response_json.get("access_token")
+        expires_in = response_json.get("expires_in")
+        # bool subclasses int, so a JSON `true` would otherwise pass as a lifetime.
+        if (
+            not isinstance(token, str)
+            or not isinstance(expires_in, int)
+            or isinstance(expires_in, bool)
+        ):
+            log.error("Twitch sent a token response with missing or invalid fields")
+            return ""
+
+        if not token or expires_in <= 0:
+            return ""
+
+        # Expire early so a cached token is never sent stale; Redis rejects a TTL of 0 or less.
+        if expires_in > 10:
+            await async_cache.set("romm:twitch_token", token, ex=expires_in - 10)
 
         log.info("Twitch token fetched!")
 
@@ -1053,7 +1051,7 @@ class TwitchAuth(MetadataHandler):
             return ""
 
         # Fetch the token cache
-        token = await async_cache.get("romm:twitch_token")
+        token = cast(str | None, await async_cache.get("romm:twitch_token"))
         if not token:
             log.info("Twitch token invalid: fetching a new one...")
             return await self._update_twitch_token()

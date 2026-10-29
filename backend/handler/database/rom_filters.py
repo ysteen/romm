@@ -39,7 +39,7 @@ class FilterKind(StrEnum):
 class RomFilterSpec:
     name: str
     kind: FilterKind
-    column: QueryableAttribute | None = None
+    column: QueryableAttribute[Any] | None = None
 
 
 # Order is the order the filters narrow the query, so the generated WHERE
@@ -186,7 +186,9 @@ class RomFilterParams(BaseModel):
     ] = None
     verified: Annotated[
         bool | None,
-        Field(description="Whether the rom is verified by Hasheous."),
+        Field(
+            description="Whether the rom's hash matched a known database, via Hasheous or RetroAchievements."
+        ),
     ] = None
     has_soundtrack: Annotated[
         bool | None,
@@ -370,15 +372,17 @@ class RomFilterParams(BaseModel):
     ] = None
 
     @classmethod
-    def from_stored_criteria(
-        cls, criteria: Mapping[str, Any]
-    ) -> "RomFilterParams | None":
+    def from_stored_criteria(cls, criteria: object) -> "RomFilterParams | None":
         """Build from a smart collection's stored `filter_criteria`, or None
         when a stored value cannot be honoured.
 
         `smart_collection_id` is dropped: the create dialog records the route it
         was opened from, so following it would nest (and could cycle).
         """
+        if not isinstance(criteria, Mapping):
+            log.warning("Smart collection criteria rejected: not an object")
+            return None
+
         values: dict[str, Any] = dict(criteria)
         values.pop("smart_collection_id", None)
 

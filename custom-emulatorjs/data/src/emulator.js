@@ -1,7 +1,7 @@
 import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js?v=20261024.1";
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
-// Keep this query aligned with ROMM_RUNTIME_REVISION in the three player entry points.
+// Bump changed module queries and the active player's ROMM_RUNTIME_REVISION together.
 import { EJS_GameManager } from "./GameManager.js?v=20261024.1";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
@@ -10,7 +10,7 @@ import { cyrb53 } from "./utils.js";
 import { EJS_SETUP } from "./setup.js";
 import { Netplay } from "./netplay.js?v=20261024.1";
 import { EJS_license } from "./license.js";
-import * as CONSTS from "./consts.js?v=20261024.1";
+import * as CONSTS from "./consts.js?v=20261029.1";
 import { linkCore, selectLinkCartridge, unpackLinkCartridge } from "./link-core.js?v=20261024.1";
 
 import "./vendor/nipplejs.js";
@@ -29,6 +29,21 @@ class EmulatorJS {
     }
     requiresWebGL2(core) {
         return CONSTS.requiresWebGL2.includes(core);
+    }
+    supportsNetplay() {
+        const system = this.getControlScheme();
+        return CONSTS.netplaySystems.includes(system) &&
+            this.getCores()[system]?.includes(this.getCore()) === true;
+    }
+    setAudioVolume(volume) {
+        if (this.isNetplay && this.netplay?.setVolume(volume)) return;
+        const sources = this.Module?.AL?.currentCtx?.sources;
+        if (sources) {
+            sources.forEach(source => { source.gain.gain.value = volume; });
+        } else if (typeof this.Module?._cmd_set_volume === "function") {
+            // RetroArch takes decibels; the slider and OpenAL use linear gain.
+            this.Module._cmd_set_volume(volume > 0 ? 20 * Math.log10(volume) : -Infinity);
+        }
     }
     getCore(generic) {
         const cores = this.getCores();
@@ -253,8 +268,8 @@ class EmulatorJS {
         if (this.debug || (window.location && ["localhost", "127.0.0.1"].includes(location.hostname))) {
             this.checkForUpdates();
         }
-        this.netplayEnabled = true;
         this.config = config;
+        this.netplayEnabled = this.supportsNetplay();
 
         this.setup = new EJS_SETUP(this);
         this.setup.checkDeprecatedSettings();
@@ -1449,7 +1464,7 @@ class EmulatorJS {
             this.loadSettings();
             this.updateCheatUI();
             this.updateGamepadLabels();
-            if (!this.muted) this.setVolume(this.volume);
+            this.setVolume(this.muted ? 0 : this.volume);
             if (this.config.noAutoFocus !== true) this.elements.parent.focus();
             this.textElem.remove();
             this.textElem = null;
@@ -2567,27 +2582,21 @@ class EmulatorJS {
         volumeSlider.setAttribute("aria-valuemax", 100);
 
         this.setVolume = (volume) => {
-            this.saveSettings();
             this.muted = (volume === 0);
+            this.saveSettings();
             volumeSlider.value = volume;
             volumeSlider.setAttribute("aria-valuenow", volume * 100);
             volumeSlider.setAttribute("aria-valuetext", (volume * 100).toFixed(1) + "%");
             volumeSlider.setAttribute("style", "--value: " + volume * 100 + "%;margin-left: 5px;position: relative;z-index: 2;");
 
-            const skipLocalAudio = this.isNetplay && this.netplay && this.netplay.setVolume(volume);
-
-            if (!skipLocalAudio && this.Module?.AL && this.Module.AL.currentCtx && this.Module.AL.currentCtx.sources) {
-                this.Module.AL.currentCtx.sources.forEach(e => {
-                    e.gain.gain.value = volume;
-                })
-            }
+            this.setAudioVolume(volume);
             if (!this.config.buttonOpts || this.config.buttonOpts.mute !== false) {
                 unmuteButton.style.display = (volume === 0) ? "" : "none";
                 muteButton.style.display = (volume === 0) ? "none" : "";
             }
         }
 
-        this.addEventListener(volumeSlider, "change mousemove touchmove mousedown touchstart mouseup", (e) => {
+        this.addEventListener(volumeSlider, "input change", (e) => {
             setTimeout(() => {
                 const newVal = parseFloat(volumeSlider.value);
                 if (newVal === 0 && this.muted) return;
@@ -2842,7 +2851,7 @@ class EmulatorJS {
             if (this.config.buttonOpts.gamepad.visible === false) controlMenu.style.display = "none";
             if (this.config.buttonOpts.cheat.visible === false) cheatMenu.style.display = "none";
             if (this.config.buttonOpts.cacheManager.visible === false) cache.style.display = "none";
-            if (this.config.buttonOpts.netplay.visible === false) netplay.style.display = "none";
+            if (this.config.buttonOpts.netplay.visible === false || !this.netplayEnabled) netplay.style.display = "none";
             if (this.config.buttonOpts.diskButton.visible === false) diskButton[0].style.display = "none";
             if (this.config.buttonOpts.volumeSlider.visible === false) volumeSlider.style.display = "none";
             if (this.config.buttonOpts.exitEmulation.visible === false) exitEmulation.style.display = "none";
@@ -5801,10 +5810,11 @@ class EmulatorJS {
             "hide": this.localization("hide")
         }, "hide", graphicsOptions, true);
 
+        // Azahar uses audio pacing; RAF adds idle time between alternating heavy/light frames.
         addToMenu(this.localization("VSync"), "vsync", {
             "enabled": this.localization("Enabled"),
             "disabled": this.localization("Disabled")
-        }, "enabled", graphicsOptions, true);
+        }, this.getCore() === "azahar" ? "disabled" : "enabled", graphicsOptions, true);
 
         addToMenu(this.localization("Video Rotation"), "videoRotation", {
             "0": "0 deg",

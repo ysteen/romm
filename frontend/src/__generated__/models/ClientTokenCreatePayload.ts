@@ -7,4 +7,3 @@ export type ClientTokenCreatePayload = {
     scopes: Array<string>;
     expires_in?: (string | null);
 };
-

@@ -16,4 +16,3 @@ export type CleanupTaskStatusResponse = {
     task_type: string;
     meta: CleanupTaskMeta;
 };
-

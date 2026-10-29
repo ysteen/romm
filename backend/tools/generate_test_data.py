@@ -22,6 +22,7 @@ import os
 import random
 import sys
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -29,13 +30,16 @@ from typing import Any
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from PIL import Image  # noqa: E402
+from sqlalchemy import Connection, insert  # noqa: E402
+from sqlalchemy.engine.interfaces import DBAPIConnection  # noqa: E402
+from sqlalchemy.pool import ConnectionPoolEntry  # noqa: E402
 
 from adapters.services.igdb import IGDB_PLATFORM_LIST  # noqa: E402
 from config import RESOURCES_BASE_PATH  # noqa: E402
 from handler.metadata.moby_handler import MOBYGAMES_PLATFORM_LIST  # noqa: E402
 from handler.metadata.ss_handler import SCREENSAVER_PLATFORM_LIST  # noqa: E402
 from models.assets import Save, Screenshot, State  # noqa: E402
-from models.base import compute_file_name_parts  # noqa: E402
+from models.base import BaseModel, compute_file_name_parts  # noqa: E402
 from models.client_token import ClientToken  # noqa: E402
 from models.collection import (  # noqa: E402
     Collection,
@@ -378,7 +382,9 @@ COVER_SMALL = ((132, 198), (4, 6))
 SCREENSHOT = ((320, 240), (8, 6))
 
 
-def _write_mosaic(rng: random.Random, path: str, spec: tuple) -> None:
+def _write_mosaic(
+    rng: random.Random, path: str, spec: tuple[tuple[int, int], tuple[int, int]]
+) -> None:
     (w, h), (bw, bh) = spec
     buf = bytes(rng.getrandbits(8) for _ in range(bw * bh * 3))
     img = Image.frombytes("RGB", (bw, bh), buf).resize((w, h), Image.Resampling.NEAREST)
@@ -417,7 +423,7 @@ def slugify(value: str) -> str:
 class Ids:
     """Hands out monotonically increasing integer primary keys per table."""
 
-    def __init__(self, start: dict[str, int]):
+    def __init__(self, start: dict[str, int]) -> None:
         self._next = dict(start)
 
     def take(self, table: str, count: int = 1) -> int:
@@ -706,7 +712,12 @@ def rand_past(rng: random.Random, now: datetime, max_days: int = 730) -> datetim
     return now - timedelta(days=rng.randint(0, max_days), seconds=rng.randint(0, 86400))
 
 
-def bulk_insert(conn, model, rows: list[dict[str, Any]], chunk: int = 1000) -> None:
+def bulk_insert(
+    conn: Connection,
+    model: type[BaseModel],
+    rows: list[dict[str, Any]],
+    chunk: int = 1000,
+) -> None:
     """Insert rows as multi-VALUES statements.
 
     Not `executemany`: MariaDB Connector/Python's bulk path silently drops all
@@ -716,9 +727,8 @@ def bulk_insert(conn, model, rows: list[dict[str, Any]], chunk: int = 1000) -> N
     """
     if not rows:
         return
-    table = model.__table__
     for i in range(0, len(rows), chunk):
-        conn.execute(table.insert().values(rows[i : i + chunk]))
+        conn.execute(insert(model).values(rows[i : i + chunk]))
 
 
 def main() -> int:
@@ -819,21 +829,25 @@ def main() -> int:
 
     from sqlalchemy import event, func, select
 
-    from handler.auth import auth_handler
+    from handler.auth.base_handler import auth_handler
     from handler.database.base_handler import sync_engine
+    from utils.database import is_postgresql
 
     # Pin every connection to UTC so the random historical timestamps we
     # generate never land in a local DST gap that TIMESTAMP columns reject.
+    postgresql = is_postgresql(sync_engine)
+
     @event.listens_for(sync_engine, "connect")
-    def _session_utc(dbapi_conn, _record):  # noqa: ANN001
+    def _session_utc(dbapi_conn: DBAPIConnection, _record: ConnectionPoolEntry) -> None:
         cur = dbapi_conn.cursor()
         try:
-            try:
-                cur.execute("SET time_zone = '+00:00'")  # MySQL/MariaDB
-            except Exception:
-                cur.execute("SET TIME ZONE 'UTC'")  # PostgreSQL
+            cur.execute(
+                "SET TIME ZONE 'UTC'" if postgresql else "SET time_zone = '+00:00'"
+            )
         finally:
             cur.close()
+        # PostgreSQL's SET is transactional: the pool's rollback on return would undo it.
+        dbapi_conn.commit()
 
     pw_hash = auth_handler.get_password_hash(args.password)
 
@@ -1019,6 +1033,8 @@ def main() -> int:
             bulk_insert(conn, Device, device_rows)
             bulk_insert(conn, ClientToken, token_rows)
             bulk_insert(conn, Firmware, firmware_rows)
+            if postgresql:
+                _advance_sequences(conn, (Platform, User, ClientToken, Firmware))
     counts["platforms"] = len(platform_rows)
     counts["users"] = len(user_rows)
     counts["devices"] = len(device_rows)
@@ -1438,6 +1454,10 @@ def main() -> int:
                 bulk_insert(conn, Screenshot, shot_rows)
                 bulk_insert(conn, RomNote, note_rows)
                 bulk_insert(conn, DeviceSaveSync, dss_rows)
+                if postgresql:
+                    _advance_sequences(
+                        conn, (Rom, RomFile, RomUser, Save, State, Screenshot, RomNote)
+                    )
 
         counts["roms"] += len(rom_rows)
         counts["rom_files"] += len(file_rows)
@@ -1500,7 +1520,6 @@ def main() -> int:
                 "name": f"All {genre}",
                 "description": f"Every {genre} game.",
                 "is_public": rng.random() < 0.5,
-                "rom_count": len(members),
                 "rom_ids": members,
                 "path_covers_small": [],
                 "path_covers_large": [],
@@ -1552,7 +1571,6 @@ def main() -> int:
                 "user_id": uid,
                 "device_id": dev,
                 "rom_id": rng.choice(rom_id_list),
-                "sync_session_id": None,
                 "save_slot": rng.choice(["1", "2", "auto", None]),
                 "start_time": start,
                 "end_time": start + timedelta(milliseconds=dur),
@@ -1569,6 +1587,10 @@ def main() -> int:
             bulk_insert(conn, SmartCollection, smart_rows)
             bulk_insert(conn, SyncSession, sync_rows)
             bulk_insert(conn, PlaySession, play_rows)
+            if postgresql:
+                _advance_sequences(
+                    conn, (Collection, SmartCollection, SyncSession, PlaySession)
+                )
     counts["collections"] = len(coll_rows)
     counts["collections_roms"] = len(coll_rom_rows)
     counts["smart_collections"] = len(smart_rows)
@@ -1590,7 +1612,27 @@ def main() -> int:
     return 0
 
 
-def _wipe(conn) -> None:
+def _advance_sequences(conn: Connection, models: Iterable[type[BaseModel]]) -> None:
+    """Move each PostgreSQL id sequence past the explicit ids inserted here."""
+    # Unlike AUTO_INCREMENT, a sequence ignores explicit ids. The sequence's own
+    # last value keeps this from moving it back past ids the app already drew.
+    from sqlalchemy import text
+
+    for model in models:
+        t = model.__tablename__
+        # nosec B608 - table names come from the script's own models, not user input
+        conn.execute(
+            text(
+                "SELECT setval(s.seq, GREATEST("  # nosec B608
+                f"(SELECT COALESCE(MAX(id), 0) FROM {t}),"
+                " COALESCE(pg_sequence_last_value(s.seq), 0)) + 1, false)"
+                f" FROM (SELECT CAST(pg_get_serial_sequence('{t}', 'id') AS regclass)"
+                " AS seq) AS s"
+            )
+        )
+
+
+def _wipe(conn: Connection) -> None:
     """Delete all rows from the tables this script populates (FK-safe order)."""
     from sqlalchemy import text
 

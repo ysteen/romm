@@ -8,6 +8,13 @@ from config import DISABLE_DOWNLOAD_ENDPOINT_AUTH
 from decorators.auth import protected_route
 from endpoints.responses import BulkOperationResponse
 from endpoints.responses.firmware import AddFirmwareResponse, FirmwareSchema
+from handler.audit_handler import (
+    AuditActor,
+    AuditDraft,
+    AuditTarget,
+    record,
+    record_many,
+)
 from handler.auth.constants import Scope
 from handler.auth.dependencies import (
     assert_can,
@@ -21,6 +28,7 @@ from handler.scan_handler import scan_firmware
 from logger.formatter import BLUE
 from logger.formatter import highlight as hl
 from logger.logger import log
+from models.audit_event import AuditAction
 from models.firmware import Firmware
 from models.permission import PermAction, PermEntity
 from utils.router import APIRouter
@@ -64,33 +72,47 @@ async def add_firmware(
         not_found_detail=f"Platform with ID {platform_id} not found",
     )
 
-    uploaded_firmware = []
-    firmware_path = fs_firmware_handler.get_firmware_fs_structure(db_platform.fs_slug)
-
+    # write_file stores each upload under its sanitized basename, so the lookup,
+    # scan and row must use that same name. Check them all before writing any.
+    uploads: list[tuple[UploadFile, str]] = []
     for file in files:
         if not file.filename:
             log.warning("Empty filename, skipping")
             continue
+        try:
+            file_name = fs_firmware_handler._sanitize_filename(file.filename)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid upload filename: {exc}",
+            ) from exc
+        uploads.append((file, file_name))
 
+    uploaded_firmware = []
+    firmware_path = fs_firmware_handler.get_firmware_fs_structure(db_platform.fs_slug)
+
+    for file, file_name in uploads:
         log.info(
-            f"Uploading firmware {hl(file.filename)} to {hl(db_platform.custom_name or db_platform.name, color=BLUE)}"
+            f"Uploading firmware {hl(file_name)} to {hl(db_platform.custom_name or db_platform.name, color=BLUE)}"
         )
 
-        await fs_firmware_handler.write_file(file=file, path=firmware_path)
+        await fs_firmware_handler.write_file(
+            file=file, path=firmware_path, filename=file_name
+        )
 
         db_firmware = db_firmware_handler.get_firmware_by_filename(
-            platform_id=db_platform.id, file_name=file.filename
+            platform_id=db_platform.id, file_name=file_name
         )
         # Scan or update firmware
         scanned_firmware = await scan_firmware(
             platform=db_platform,
-            file_name=file.filename,
+            file_name=file_name,
             firmware=db_firmware,
         )
 
         is_verified = Firmware.verify_file_hashes(
             platform_slug=db_platform.slug,
-            file_name=file.filename,
+            file_name=file_name,
             file_size_bytes=scanned_firmware.file_size_bytes,
             md5_hash=scanned_firmware.md5_hash,
             sha1_hash=scanned_firmware.sha1_hash,
@@ -111,6 +133,13 @@ async def add_firmware(
         scanned_firmware.is_verified = is_verified
         db_firmware_handler.add_firmware(scanned_firmware)
         uploaded_firmware.append(scanned_firmware)
+
+    record(
+        AuditAction.FIRMWARE_UPLOAD,
+        request,
+        AuditTarget.of_platform(db_platform),
+        {"file_names": [file_name for _, file_name in uploads]},
+    )
 
     return {
         "uploaded": len(files),
@@ -230,7 +259,7 @@ def _resolve_firmware_content(request: Request, id: int) -> tuple[Firmware, Path
     "/{id}/content/{file_name}",
     [] if DISABLE_DOWNLOAD_ENDPOINT_AUTH else [Scope.FIRMWARE_READ],
 )
-def head_firmware_content(request: Request, id: int, file_name: str):
+def head_firmware_content(request: Request, id: int, file_name: str) -> FileResponse:
     """Head firmware content endpoint
 
     Args:
@@ -262,7 +291,7 @@ def get_firmware_content(
     request: Request,
     id: int,
     file_name: str,
-):
+) -> FileResponse:
     """Download firmware endpoint
 
     Args:
@@ -306,6 +335,8 @@ async def delete_firmware(
     successful_items = 0
     failed_ids = []
     errors = []
+    actor = AuditActor.from_request(request)
+    audit_drafts: list[AuditDraft] = []
 
     for id in firmware:
         fw = db_firmware_handler.get_firmware(id)
@@ -315,15 +346,18 @@ async def delete_firmware(
             errors.append(f"Firmware with ID {id} not found")
             continue
 
+        deleted = removed = False
         try:
             log.info(f"Deleting {hl(fw.file_name)} from database")
             db_firmware_handler.delete_firmware(id)
+            deleted = True
 
             if id in delete_from_fs:
                 log.info(f"Deleting {hl(fw.file_name)} from filesystem")
                 try:
                     file_path = f"{fw.file_path}/{fw.file_name}"
                     await fs_firmware_handler.remove_file(file_path=file_path)
+                    removed = True
                 except FileNotFoundError:
                     error = f"Firmware file {hl(fw.file_name)} not found for platform {hl(fw.platform.slug)}"
                     log.error(error)
@@ -335,7 +369,19 @@ async def delete_firmware(
         except Exception as e:
             failed_ids.append(id)
             errors.append(f"Failed to delete firmware {id}: {str(e)}")
+        finally:
+            # The row is gone whatever became of its file.
+            if deleted:
+                audit_drafts.append(
+                    AuditDraft(
+                        AuditAction.FIRMWARE_DELETE,
+                        actor,
+                        AuditTarget.of_firmware(fw),
+                        {"deleted_from_fs": removed},
+                    )
+                )
 
+    record_many(audit_drafts)
     return {
         "successful_items": successful_items,
         "failed_ids": failed_ids,

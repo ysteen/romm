@@ -25,4 +25,3 @@ export type RomDemozooMetadata = {
     collections?: Array<string>;
     download_urls?: Array<string>;
 };
-

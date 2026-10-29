@@ -8,4 +8,3 @@ export type Body_refresh_retro_achievements_api_users__id__ra_refresh_post = {
      */
     incremental?: boolean;
 };
-

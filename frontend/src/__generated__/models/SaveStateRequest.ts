@@ -5,4 +5,3 @@
 export type SaveStateRequest = {
     slot?: number;
 };
-

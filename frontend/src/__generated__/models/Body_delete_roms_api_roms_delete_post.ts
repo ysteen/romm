@@ -12,4 +12,3 @@ export type Body_delete_roms_api_roms_delete_post = {
      */
     delete_from_fs?: Array<number>;
 };
-

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from itertools import batched
+from itertools import batched, chain
 from typing import Any, NamedTuple
 
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
-from decorators.database import begin_session
+from decorators.database import INJECTED_SESSION, begin_session
 from models.collection import CollectionRom
 from models.play_session import PlaySession
 from models.recommendation import RomSimilarity
@@ -79,7 +79,7 @@ class DBRecommendationsHandler(DBBaseHandler):
 
     @begin_session
     def get_feature_rows(
-        self, session: Session = None  # type: ignore
+        self, session: Session = INJECTED_SESSION
     ) -> list[RomFeatureRow]:
         """Every ROM's facet values, for building the library-wide IDF.
 
@@ -108,21 +108,23 @@ class DBRecommendationsHandler(DBBaseHandler):
             .where(Rom.missing_from_fs.is_(False))
         )
 
-        return [RomFeatureRow(*row) for row in session.execute(stmt).all()]
+        return [RomFeatureRow._make(row) for row in session.execute(stmt).all()]
 
     @begin_session
-    def get_rom_igdb_ids(
-        self, session: Session = None  # type: ignore
-    ) -> dict[int, int]:
+    def get_rom_igdb_ids(self, session: Session = INJECTED_SESSION) -> dict[int, int]:
         """ROM id -> IGDB id, for resolving IGDB's related-game ids to owned copies."""
         stmt = select(RomFacets.rom_id, RomFacets.igdb_id).where(
             RomFacets.igdb_id.is_not(None)
         )
-        return {rom_id: igdb_id for rom_id, igdb_id in session.execute(stmt).all()}
+        return {
+            rom_id: igdb_id
+            for rom_id, igdb_id in session.execute(stmt).all()
+            if igdb_id is not None
+        }
 
     @begin_session
     def get_rom_identity_ids(
-        self, session: Session = None  # type: ignore
+        self, session: Session = INJECTED_SESSION
     ) -> dict[int, frozenset[str]]:
         """ROM id -> "provider:id" tokens from every provider that matched it.
 
@@ -146,7 +148,7 @@ class DBRecommendationsHandler(DBBaseHandler):
 
     @begin_session
     def iter_igdb_related(
-        self, session: Session = None  # type: ignore
+        self, session: Session = INJECTED_SESSION
     ) -> Iterator[tuple[int, list[int]]]:
         """Stream each ROM's IGDB related-game ids out of its metadata blob.
 
@@ -159,32 +161,35 @@ class DBRecommendationsHandler(DBBaseHandler):
             .execution_options(yield_per=IGDB_SCAN_CHUNK_SIZE)
         )
 
-        for rom_id, metadata in session.execute(stmt):
-            if not metadata:
-                continue
+        # Read by partition: iterating the Result itself puts it in a reference
+        # cycle, and the GC frees its cursor on another thread, segfaulting mariadb.
+        with session.execute(stmt) as result:
+            for rom_id, metadata in chain.from_iterable(result.partitions()):
+                if not metadata:
+                    continue
 
-            related_ids: list[int] = []
-            # `ports` is deliberately absent: a faithful port is a duplicate,
-            # and a rebuilt one earns its place on its own facets.
-            for bucket in (
-                "similar_games",
-                "remakes",
-                "remasters",
-                "expanded_games",
-                "expansions",
-                "dlcs",
-            ):
-                for entry in metadata.get(bucket) or ():
-                    entry_id = entry.get("id") if isinstance(entry, dict) else None
-                    if isinstance(entry_id, int):
-                        related_ids.append(entry_id)
+                related_ids: list[int] = []
+                # `ports` is deliberately absent: a faithful port is a duplicate,
+                # and a rebuilt one earns its place on its own facets.
+                for bucket in (
+                    "similar_games",
+                    "remakes",
+                    "remasters",
+                    "expanded_games",
+                    "expansions",
+                    "dlcs",
+                ):
+                    for entry in metadata.get(bucket) or ():
+                        entry_id = entry.get("id") if isinstance(entry, dict) else None
+                        if isinstance(entry_id, int):
+                            related_ids.append(entry_id)
 
-            if related_ids:
-                yield rom_id, related_ids
+                if related_ids:
+                    yield rom_id, related_ids
 
     @begin_session
     def get_collection_membership_sets(
-        self, session: Session = None  # type: ignore
+        self, session: Session = INJECTED_SESSION
     ) -> list[list[int]]:
         """ROM ids grouped by user collection, for co-membership scoring."""
         stmt = select(CollectionRom.collection_id, CollectionRom.rom_id).order_by(
@@ -193,9 +198,7 @@ class DBRecommendationsHandler(DBBaseHandler):
         return self._group_second_by_first(session.execute(stmt).all())
 
     @begin_session
-    def get_played_sets(
-        self, session: Session = None  # type: ignore
-    ) -> list[list[int]]:
+    def get_played_sets(self, session: Session = INJECTED_SESSION) -> list[list[int]]:
         """ROM ids grouped by user, restricted to games they actually played.
 
         This is the item-based collaborative signal. On a single-user server it
@@ -232,7 +235,7 @@ class DBRecommendationsHandler(DBBaseHandler):
         self,
         rom_ids: Sequence[int],
         edges: Sequence[dict[str, Any]],
-        session: Session = None,  # type: ignore
+        session: Session = INJECTED_SESSION,
     ) -> int:
         """Swap in a batch of ROMs' edges.
 
@@ -256,7 +259,7 @@ class DBRecommendationsHandler(DBBaseHandler):
     def get_stored_edges(
         self,
         rom_ids: Sequence[int],
-        session: Session = None,  # type: ignore
+        session: Session = INJECTED_SESSION,
     ) -> dict[int, list[tuple[float, int]]]:
         """Each ROM's current neighbours, for a top-up to merge new ones into.
 
@@ -271,12 +274,12 @@ class DBRecommendationsHandler(DBBaseHandler):
         ).where(RomSimilarity.rom_id.in_(rom_ids))
 
         stored: dict[int, list[tuple[float, int]]] = {}
-        for rom_id, score, related_rom_id in session.execute(stmt):
+        for rom_id, score, related_rom_id in session.execute(stmt).all():
             stored.setdefault(rom_id, []).append((score, related_rom_id))
         return stored
 
     @begin_session
-    def count_similarity_edges(self, session: Session = None) -> int:  # type: ignore
+    def count_similarity_edges(self, session: Session = INJECTED_SESSION) -> int:
         return session.scalar(select(func.count()).select_from(RomSimilarity)) or 0
 
     # --- Reads -------------------------------------------------------------------
@@ -286,7 +289,7 @@ class DBRecommendationsHandler(DBBaseHandler):
         self,
         rom_id: int,
         limit: int = 20,
-        session: Session = None,  # type: ignore
+        session: Session = INJECTED_SESSION,
     ) -> list[SimilarRomEdge]:
         """Top precomputed neighbours of one ROM, best first.
 
@@ -314,7 +317,7 @@ class DBRecommendationsHandler(DBBaseHandler):
         self,
         rom_ids: Sequence[int],
         limit_per_rom: int = 20,
-        session: Session = None,  # type: ignore
+        session: Session = INJECTED_SESSION,
     ) -> list[tuple[int, int, float, list[dict[str, Any]]]]:
         """Edges fanning out from a set of seed ROMs, for the personalised feed.
 
@@ -339,7 +342,7 @@ class DBRecommendationsHandler(DBBaseHandler):
         # and the row counts here are already bounded by the build's top-N cut.
         per_seed: dict[int, int] = {}
         results: list[tuple[int, int, float, list[dict[str, Any]]]] = []
-        for seed_id, related_id, score, reasons in session.execute(stmt):
+        for seed_id, related_id, score, reasons in session.execute(stmt).all():
             taken = per_seed.get(seed_id, 0)
             if taken >= limit_per_rom:
                 continue
@@ -352,7 +355,7 @@ class DBRecommendationsHandler(DBBaseHandler):
     def get_user_affinity(
         self,
         user_id: int,
-        session: Session = None,  # type: ignore
+        session: Session = INJECTED_SESSION,
     ) -> list[UserAffinityRow]:
         """Everything the user has done with each ROM, plus total playtime.
 
@@ -402,7 +405,7 @@ class DBRecommendationsHandler(DBBaseHandler):
     def get_rom_names(
         self,
         rom_ids: Sequence[int],
-        session: Session = None,  # type: ignore
+        session: Session = INJECTED_SESSION,
     ) -> dict[int, str]:
         """Display names only, for the "Because you played X" attribution."""
         if not rom_ids:
@@ -419,7 +422,7 @@ class DBRecommendationsHandler(DBBaseHandler):
         self,
         limit: int,
         exclude_rom_ids: Sequence[int] = (),
-        session: Session = None,  # type: ignore
+        session: Session = INJECTED_SESSION,
     ) -> list[int]:
         """Cold-start feed: the best-reviewed games in the library.
 

@@ -7,7 +7,7 @@ from fastapi import HTTPException, Request, status
 from decorators.auth import protected_route
 from endpoints.responses.search import SearchCoverSchema, SearchRomSchema
 from handler.auth.constants import Scope
-from handler.auth.dependencies import get_permissions
+from handler.auth.dependencies import get_rom_visibility_filter
 from handler.database import db_rom_handler
 from handler.metadata import (
     meta_demozoo_handler,
@@ -137,9 +137,7 @@ async def search_rom(
         return []
 
     # Treat a rom hidden from the caller as non-existent.
-    if request.user.is_authenticated and not get_permissions(request).can_see_rom(
-        rom.id, rom.platform_id
-    ):
+    if not get_rom_visibility_filter(request).allows(rom):
         return []
 
     search_term = search_term or rom.fs_name_no_tags
@@ -234,7 +232,7 @@ async def search_rom(
             list,
         )
 
-    merged_dict: dict[str, dict] = {}
+    merged_dict: dict[str, dict[str, Any]] = {}
 
     source_configs: dict[
         MetadataSource, tuple[Sequence[Mapping[str, Any]], MetadataHandler, str, str]
@@ -335,13 +333,13 @@ async def search_rom(
                 "libretro_url_cover": libretro_rom.get("url_cover", ""),
             }
 
-    matched_roms: list = list(merged_dict.values())
+    matched_roms = list(merged_dict.values())
 
     log.info("Results:")
     for m_rom in matched_roms:
         log.info(f"\t - {m_rom['name']}")
 
-    return matched_roms
+    return [SearchRomSchema.model_validate(m_rom) for m_rom in matched_roms]
 
 
 @protected_route(router.get, "/cover", [Scope.ROMS_READ])

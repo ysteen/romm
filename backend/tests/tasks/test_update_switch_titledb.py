@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -57,7 +58,7 @@ class TestUpdateSwitchTitleDBTask:
 
     def test_init(self, task):
         """Test task initialization"""
-        assert task.description == "Updates the Nintendo Switch TitleDB file"
+        assert task.spec.description == "Updates the Nintendo Switch TitleDB file"
         assert (
             task.url
             == "https://raw.githubusercontent.com/blawar/titledb/master/US.en.json"
@@ -170,14 +171,11 @@ class TestUpdateSwitchTitleDBTask:
         assert len(hset_calls) > 2  # At least one batch for each key type
 
     @patch.object(RemoteFilePullTask, "run")
-    async def test_run_no_content(self, mock_super_run, task):
-        """Test run when super().run returns None"""
-        mock_super_run.return_value = None
+    async def test_a_failed_download_fails_the_run(self, mock_super_run, task):
+        mock_super_run.side_effect = RuntimeError("Could not reach the TitleDB")
 
-        await task.run()
-
-        # Should return early without doing anything
-        mock_super_run.assert_called_once_with()
+        with pytest.raises(RuntimeError, match="Could not reach the TitleDB"):
+            await task.run()
 
     @patch.object(RemoteFilePullTask, "run")
     @patch("tasks.scheduled.update_switch_titledb.async_binary_cache.pipeline")
@@ -273,9 +271,7 @@ class TestUpdateSwitchTitleDBTask:
 
     def test_runnable_with_the_scheduled_update_off(self, task):
         """The setting ships false, and a failed rebuild is not queued again."""
-        task.enabled = False
-
-        assert task.can_run_manually is True
+        assert replace(task.spec, enabled=False).can_run_manually is True
 
     def test_task_instance(self):
         """Test that the module-level task instance is created correctly"""

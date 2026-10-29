@@ -161,7 +161,7 @@ describe("RomForge status", () => {
     const wrapper = mount(RomForge);
     await vi.advanceTimersByTimeAsync(15000);
     expect(api.get).toHaveBeenCalledTimes(1);
-    const signal = vi.mocked(api.get).mock.calls[0][1]?.signal;
+    const signal = vi.mocked(api.get).mock.calls[0]![1]?.signal;
     wrapper.unmount();
     expect(signal?.aborted).toBe(true);
     resolve?.({ data: status() });

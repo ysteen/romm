@@ -31,6 +31,10 @@ export interface ChromeLabels {
   nextMonth: string;
   nextYear: string;
   today: string;
+  /** Tooltip over an empty field that must be filled in. */
+  required: string;
+  /** A select's filter field. */
+  search: string;
   /** Accessible name for a stepper, e.g. "Step 2 of 5". */
   step: (current: number, total: number) => string;
 }
@@ -49,6 +53,8 @@ export const DEFAULT_CHROME_LABELS: ChromeLabels = {
   nextMonth: "Next month",
   nextYear: "Next year",
   today: "Today",
+  required: "Required",
+  search: "Search",
   step: (current, total) => `Step ${current} of ${total}`,
 };
 

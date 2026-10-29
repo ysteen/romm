@@ -1,26 +1,24 @@
 <script setup lang="ts">
-// v2 AboutDialog — emitter-driven. Replaces the v1 AboutDialog in the v2
+// v2 AboutDialog: emitter-driven. Replaces the v1 AboutDialog in the v2
 // GlobalDialogs stack so the "About" entry in UserMenu renders the v2 glass
 // panel instead of the legacy card.
-import { RDialog, RIcon, RImg } from "@v2/lib";
-import type { Emitter } from "mitt";
-import { computed, inject, onBeforeUnmount, ref } from "vue";
+import { RDialog, RIcon, RImg, RTooltip } from "@v2/lib";
+import { useResizeObserver } from "@vueuse/core";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import type { Events } from "@/types/emitter";
+import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
 import { useVersionDisplay } from "@/v2/composables/useVersionDisplay";
 
 defineOptions({ inheritAttrs: false });
 
 const { t } = useI18n();
 const { version, href: versionHref } = useVersionDisplay();
-const emitter = inject<Emitter<Events>>("emitter");
 const show = ref(false);
 
 const openHandler = () => {
   show.value = true;
 };
-emitter?.on("showAboutDialog", openHandler);
-onBeforeUnmount(() => emitter?.off("showAboutDialog", openHandler));
+useEmitterEvent("showAboutDialog", openHandler);
 
 function closeDialog() {
   show.value = false;
@@ -60,6 +58,21 @@ const links = computed<Link[]>(() => [
     href: "https://discord.com/invite/P5HtHnhUDH",
   },
 ]);
+
+// Which tiles cut their value off, and then show it in full. Measured whenever
+// the grid lays out or a value changes, as RTooltip decides on the pointer's arrival.
+const grid = ref<HTMLElement | null>(null);
+const truncated = ref<boolean[]>([]);
+
+function measure() {
+  truncated.value = Array.from(
+    grid.value?.querySelectorAll(".r-v2-about__value") ?? [],
+    (value) => value.scrollWidth > value.clientWidth,
+  );
+}
+
+useResizeObserver(grid, measure);
+watch(() => links.value.map((link) => link.value), measure, { flush: "post" });
 </script>
 
 <template>
@@ -73,9 +86,9 @@ const links = computed<Link[]>(() => [
       <span>{{ t("common.about-romm") }}</span>
     </template>
     <template #content>
-      <div class="r-v2-about">
+      <div ref="grid" class="r-v2-about">
         <a
-          v-for="link in links"
+          v-for="(link, index) in links"
           :key="link.label"
           :href="link.href"
           target="_blank"
@@ -98,6 +111,11 @@ const links = computed<Link[]>(() => [
             <span class="r-v2-about__value">{{ link.value }}</span>
           </div>
           <RIcon icon="mdi-open-in-new" size="14" class="r-v2-about__chev" />
+          <RTooltip
+            activator="parent"
+            :text="link.value"
+            :disabled="!truncated[index]"
+          />
         </a>
       </div>
     </template>
@@ -107,7 +125,9 @@ const links = computed<Link[]>(() => [
 <style scoped>
 .r-v2-about {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* A 0 minimum, so a long value (a branch name) truncates instead of
+     widening its column past the dialog. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -174,6 +194,6 @@ const links = computed<Link[]>(() => [
 }
 
 html[data-bp~="xs"] .r-v2-about {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 </style>

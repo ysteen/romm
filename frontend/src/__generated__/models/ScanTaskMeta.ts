@@ -6,4 +6,3 @@ import type { ScanStats } from './ScanStats';
 export type ScanTaskMeta = {
     scan_stats: (ScanStats | null);
 };
-

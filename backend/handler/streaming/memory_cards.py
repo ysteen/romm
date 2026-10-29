@@ -22,11 +22,8 @@ from handler.streaming import broker
 from handler.streaming.config import ResolvedContainer
 from logger.logger import log
 from models.assets import MemoryCard
-from utils.memory_cards import (
-    MEMORY_CARD_MAX_BYTES,
-    content_hash_of_bytes,
-    store_memory_card_version,
-)
+from utils.memory_cards import MEMORY_CARD_MAX_BYTES, content_hash_of_bytes
+from utils.memory_cards import store_memory_card_version as store_memory_card_version
 
 
 def _empty_zip_bytes() -> bytes:
@@ -248,8 +245,11 @@ def adoption_already_stored(card_id: int, content: bytes | None) -> bool:
 
 
 async def discard_blank_card(card_id: int) -> None:
-    """Drop a card this claim created, with any archive it picked up on the way:
-    an abort after adoption is a card that already holds a version."""
+    """Drop a card this claim created, unless adoption already stored a version."""
+    # The adoption stays recorded, so the next claim must find this card to mount.
+    if db_memory_card_handler.get_latest_version(card_id) is not None:
+        log.info("keeping adopted card %d after an aborted claim", card_id)
+        return
     for path in db_memory_card_handler.delete_card(card_id):
         try:
             await fs_asset_handler.remove_file(file_path=path)

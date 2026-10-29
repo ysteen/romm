@@ -1,27 +1,33 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DetailedRomSchema, RomFileSchema } from "@/__generated__";
+import { detailedRomFixture, romFileFixture } from "@/utils/rom.fixtures";
 import FilesTab from "./FilesTab.vue";
 
-const { uploadRoms, refetchRom, confirmFn, snackbar, routeQuery, grants } =
-  vi.hoisted(() => ({
-    uploadRoms: vi.fn(),
-    refetchRom: vi.fn(),
-    confirmFn: vi.fn(),
-    snackbar: {
-      success: vi.fn(),
-      error: vi.fn(),
-      warning: vi.fn(),
-      info: vi.fn(),
-    },
-    routeQuery: { tab: "files", subtab: undefined as string | undefined },
-    grants: { upload: true, delete: false },
-  }));
-
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+const {
+  uploadRoms,
+  refetchRom,
+  confirmFn,
+  snackbar,
+  emitter,
+  routeQuery,
+  grants,
+} = vi.hoisted(() => ({
+  uploadRoms: vi.fn(),
+  refetchRom: vi.fn(),
+  confirmFn: vi.fn(),
+  snackbar: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
+  emitter: { emit: vi.fn() },
+  routeQuery: { tab: "files", subtab: undefined as string | undefined },
+  grants: { upload: true, delete: false },
 }));
+
+vi.mock("vue-i18n");
 vi.mock("vue-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("vue-router")>()),
   useRoute: () => ({ query: routeQuery, path: "/rom/1", params: {} }),
@@ -55,20 +61,18 @@ const ROM_PATH = "n64/roms/Game";
 
 function file(id: number, rel: string): RomFileSchema {
   const slash = rel.lastIndexOf("/");
-  return {
+  return romFileFixture({
     id,
-    rom_id: 1,
     file_name: slash < 0 ? rel : rel.slice(slash + 1),
     file_path: slash < 0 ? ROM_PATH : `${ROM_PATH}/${rel.slice(0, slash)}`,
     full_path: `${ROM_PATH}/${rel}`,
     file_size_bytes: 10,
     is_top_level: slash < 0,
-    category: null,
-  } as RomFileSchema;
+  });
 }
 
 function rom(overrides: Partial<DetailedRomSchema> = {}): DetailedRomSchema {
-  return {
+  return detailedRomFixture({
     id: 1,
     platform_id: 7,
     fs_name: "Game",
@@ -78,7 +82,7 @@ function rom(overrides: Partial<DetailedRomSchema> = {}): DetailedRomSchema {
     missing_from_fs: false,
     files: [file(1, "game.n64"), file(2, "hack/patched.n64")],
     ...overrides,
-  } as DetailedRomSchema;
+  });
 }
 
 const UploadFilesDialogStub = {
@@ -92,6 +96,7 @@ function mountTab(r = rom()) {
   return mount(FilesTab, {
     props: { rom: r },
     global: {
+      provide: { emitter },
       stubs: {
         FileRow: true,
         FilesSummary: true,
@@ -133,8 +138,6 @@ async function pickFile(wrapper: ReturnType<typeof mountTab>, name: string) {
 
 describe("FilesTab uploads", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.clearAllMocks();
     routeQuery.subtab = undefined;
     grants.upload = true;
     uploadRoms.mockResolvedValue([{ status: "fulfilled", value: null }]);
@@ -168,7 +171,7 @@ describe("FilesTab uploads", () => {
     });
     expect(refetchRom).toHaveBeenCalledWith(1);
     expect(snackbar.success).toHaveBeenCalledWith(
-      "rom.files-uploaded-n",
+      'rom.files-uploaded-n:1:{"named":{"n":1}}',
       expect.anything(),
     );
     expect(confirmFn).not.toHaveBeenCalled();
@@ -232,7 +235,9 @@ describe("FilesTab uploads", () => {
 
     await pickFile(wrapper, "patched.n64");
 
-    expect(snackbar.error).toHaveBeenCalledWith("rom.upload-file-exists");
+    expect(snackbar.error).toHaveBeenCalledWith(
+      'rom.upload-file-exists:{"name":"patched.n64"}',
+    );
     expect(snackbar.warning).toHaveBeenCalledWith(
       "rom.no-files-uploaded",
       expect.anything(),
@@ -243,8 +248,6 @@ describe("FilesTab uploads", () => {
 
 describe("FilesTab on a rom missing from the filesystem", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.clearAllMocks();
     routeQuery.subtab = undefined;
     grants.upload = true;
   });
@@ -258,7 +261,7 @@ describe("FilesTab on a rom missing from the filesystem", () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => r.props("missing") === true)).toBe(true);
 
-    wrapper.findAllComponents({ name: "FileRow" })[0].vm.$emit("toggle");
+    wrapper.findAllComponents({ name: "FileRow" })[0]!.vm.$emit("toggle");
     await flushPromises();
     const download = wrapper
       .findAll("button.btn")
@@ -272,5 +275,131 @@ describe("FilesTab on a rom missing from the filesystem", () => {
 
     const rows = wrapper.findAllComponents({ name: "FileRow" });
     expect(rows.every((r) => r.props("missing") === false)).toBe(true);
+  });
+});
+
+describe("FilesTab selection", () => {
+  beforeEach(() => {
+    routeQuery.subtab = undefined;
+    grants.upload = true;
+  });
+
+  function selectedFlags(wrapper: ReturnType<typeof mountTab>) {
+    return wrapper
+      .findAllComponents({ name: "FileRow" })
+      .map((row) => row.props("selected"));
+  }
+
+  async function selectFirst(wrapper: ReturnType<typeof mountTab>) {
+    await flushPromises();
+    wrapper.findAllComponents({ name: "FileRow" })[0]!.vm.$emit("toggle");
+    await flushPromises();
+  }
+
+  // A refresh hands down a new rom object with the same id; that must not read
+  // as a different rom and drop what the user picked.
+  it("survives the rom object being replaced", async () => {
+    const wrapper = mountTab();
+    await selectFirst(wrapper);
+    expect(selectedFlags(wrapper)).toEqual([true, false]);
+
+    await wrapper.setProps({ rom: rom() });
+    await flushPromises();
+
+    expect(selectedFlags(wrapper)).toEqual([true, false]);
+  });
+
+  it("is dropped when another rom takes over the tab", async () => {
+    const wrapper = mountTab();
+    await selectFirst(wrapper);
+
+    await wrapper.setProps({ rom: rom({ id: 2 }) });
+    await flushPromises();
+
+    expect(selectedFlags(wrapper)).toEqual([false, false]);
+  });
+});
+
+describe("FilesTab copy link", () => {
+  function setClipboard(
+    writeText: ((text: string) => Promise<void>) | null,
+    secure = true,
+  ) {
+    vi.stubGlobal("isSecureContext", secure);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: writeText ? { writeText } : undefined,
+    });
+  }
+
+  async function copyFirstFileLink() {
+    const wrapper = mountTab();
+    wrapper.findComponent({ name: "FileRow" }).vm.$emit("copy-link");
+    await flushPromises();
+  }
+
+  beforeEach(() => {
+    routeQuery.subtab = undefined;
+    snackbar.success.mockReset();
+    snackbar.error.mockReset();
+    emitter.emit.mockReset();
+  });
+
+  afterEach(() => {
+    setClipboard(null);
+  });
+
+  it("writes the link to the clipboard in a secure context", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    setClipboard(writeText);
+
+    await copyFirstFileLink();
+
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining("file_ids=1"),
+    );
+    expect(snackbar.success).toHaveBeenCalled();
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it("opens the link dialog when the context is not secure", async () => {
+    setClipboard(null, false);
+
+    await copyFirstFileLink();
+
+    expect(emitter.emit).toHaveBeenCalledWith(
+      "showCopyDownloadLinkDialog",
+      expect.stringContaining("file_ids=1"),
+    );
+    expect(snackbar.error).not.toHaveBeenCalled();
+  });
+
+  it("opens the dialog with every selected file from the toolbar", async () => {
+    setClipboard(null, false);
+    const wrapper = mountTab();
+    for (const row of wrapper.findAllComponents({ name: "FileRow" })) {
+      row.vm.$emit("toggle");
+    }
+    await flushPromises();
+
+    await wrapper.get('button[data-icon="mdi-link-variant"]').trigger("click");
+    await flushPromises();
+
+    expect(emitter.emit).toHaveBeenCalledWith(
+      "showCopyDownloadLinkDialog",
+      expect.stringContaining(`file_ids=${encodeURIComponent("1,2")}`),
+    );
+  });
+
+  it("opens the link dialog when the clipboard write is rejected", async () => {
+    setClipboard(vi.fn().mockRejectedValue(new Error("denied")));
+
+    await copyFirstFileLink();
+
+    expect(emitter.emit).toHaveBeenCalledWith(
+      "showCopyDownloadLinkDialog",
+      expect.stringContaining("file_ids=1"),
+    );
+    expect(snackbar.success).not.toHaveBeenCalled();
   });
 });

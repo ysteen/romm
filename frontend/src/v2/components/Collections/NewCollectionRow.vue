@@ -1,21 +1,25 @@
 <script setup lang="ts">
-// NewCollectionRow — the "create collection" CTA row inside the
+// NewCollectionRow: the "create collection" CTA row inside the
 // ManageCollectionsDialog. Collapsed: purple-tinted plus-tile + label.
-// Expanded: inline name input with Create / Cancel actions.
+// Expanded: inline name input and visibility switch with Create / Cancel
+// actions.
 //
-// Stateless — the parent owns `expanded`, `name`, and `creating`. The
-// outer row + tile are persistent across both states so the background
+// Stateless: the parent owns `expanded`, `name`, `isPublic` and `creating`.
+// The outer row + tile are persistent across both states so the background
 // tint and tile-active swap transition smoothly instead of remounting;
 // only the middle (label vs input) and the trailing actions toggle.
 import { RBtn, RIcon } from "@v2/lib";
 import { computed, nextTick, ref, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import VisibilitySwitch from "@/v2/components/shared/VisibilitySwitch.vue";
+import { focusFromInput } from "@/v2/utils/autofocus";
 
 defineOptions({ inheritAttrs: false });
 
 interface Props {
   expanded: boolean;
   name: string;
+  isPublic: boolean;
   creating: boolean;
   // Tile diameter in px. Drives both the grid first-column width and the
   // plus-tile width so the prepended slot stays flush with the label
@@ -34,6 +38,7 @@ const rowStyle = computed(() => ({
 const emit = defineEmits<{
   (e: "update:expanded", value: boolean): void;
   (e: "update:name", value: string): void;
+  (e: "update:isPublic", value: boolean): void;
   (e: "create"): void;
   (e: "cancel"): void;
 }>();
@@ -51,7 +56,7 @@ const formId = useId();
 watch(
   () => props.expanded,
   (expanded) => {
-    if (expanded) nextTick(() => input.value?.focus());
+    if (expanded) void nextTick(() => focusFromInput(input.value));
   },
 );
 
@@ -113,6 +118,11 @@ function onInput(e: Event) {
         @input="onInput"
         @keydown.esc.prevent="onCancel"
       />
+      <VisibilitySwitch
+        :model-value="isPublic"
+        :disabled="creating"
+        @update:model-value="emit('update:isPublic', $event)"
+      />
     </form>
 
     <!-- Actions sit outside the form (Create wires via `form` attr) so
@@ -148,13 +158,13 @@ function onInput(e: Event) {
 /* Edge-to-edge CTA row matching the picker rows below. The host
    dialog (`ManageCollectionsDialog`) drops the standard RDialog body
    padding AND we drop the row's horizontal padding too, so the tile
-   and actions go flush with the dialog walls — same "menu items, not
+   and actions go flush with the dialog walls: same "menu items, not
    padded cards" idiom as RMenu. */
 .new-row {
   display: grid;
   /* First column tracks the configurable tile width so the label always
      starts past the tile, even when the consumer makes the tile bigger.
-     Third column is `auto` — sizes to the actions when present, collapses
+     Third column is `auto`: sizes to the actions when present, collapses
      to 0 when the Transition unmounts them. */
   grid-template-columns: var(--tile-w, 36px) 1fr auto;
   align-items: center;
@@ -175,7 +185,7 @@ function onInput(e: Event) {
   background: color-mix(in srgb, var(--r-color-brand-primary) 5%, transparent);
 }
 
-/* Portrait plus-tile — matches the CollectionMosaic footprint of the
+/* Portrait plus-tile: matches the CollectionMosaic footprint of the
    picker rows so the first column aligns whether you're looking at the
    CTA or an existing collection thumb. */
 .new-row__tile {
@@ -198,7 +208,7 @@ function onInput(e: Event) {
   color: var(--r-color-overlay-fg);
 }
 
-/* Label-as-button — left-aligned, no chrome so it reads as a row label
+/* Label-as-button: left-aligned, no chrome so it reads as a row label
    that happens to be focusable. */
 .new-row__cta {
   appearance: none;
@@ -215,6 +225,9 @@ function onInput(e: Event) {
 
 .new-row__form {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--r-space-1);
   min-width: 0;
 }
 
@@ -250,7 +263,7 @@ function onInput(e: Event) {
   color: color-mix(in srgb, var(--r-color-fg) 35%, transparent);
 }
 
-/* Cancel/Create transition — slides in from the right on expand and
+/* Cancel/Create transition: slides in from the right on expand and
    slides back out on cancel. Both directions animate because the
    actions cluster lives outside the form, so its Vue Transition leave
    isn't cut short by a form unmount. */

@@ -1,12 +1,12 @@
 import { AxiosError } from "axios";
-import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import storeAuth from "@/stores/auth";
 import storeCollections, {
   type Collection,
   type VirtualCollection,
 } from "@/stores/collections";
-import type { User } from "@/stores/users";
+import { collectionFixture } from "@/utils/collection.fixtures";
+import { userFixture } from "@/utils/user.fixtures";
 
 const { getCollections, getVirtualCollection, getVirtualCollections } =
   vi.hoisted(() => ({
@@ -44,7 +44,6 @@ function deferred() {
 
 describe("collections store virtual refresh", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
     getVirtualCollection.mockReset();
     getVirtualCollections.mockReset();
   });
@@ -65,7 +64,7 @@ describe("collections store virtual refresh", () => {
     first.settle({ data: [virtualCollection(8)] });
     await initial;
     await vi.waitFor(() =>
-      expect(collections.virtualCollections[0].rom_count).toBe(9),
+      expect(collections.virtualCollections[0]?.rom_count).toBe(9),
     );
     expect(getVirtualCollections).toHaveBeenCalledTimes(2);
   });
@@ -81,7 +80,7 @@ describe("collections store virtual refresh", () => {
     // Resolves rather than rejects: every caller fires this in the background,
     // so a rejection would surface as an unhandled one.
     await expect(collections.refreshVirtualCollections()).resolves.toEqual([]);
-    expect(collections.virtualCollections[0].rom_count).toBe(8);
+    expect(collections.virtualCollections[0]?.rom_count).toBe(8);
   });
 
   it("does nothing until a slice has been fetched", async () => {
@@ -117,21 +116,18 @@ describe("collections store virtual refresh", () => {
 });
 
 function favoriteCollection(id: number, userId: number): Collection {
-  return {
+  return collectionFixture({
     id,
-    name: "Favourites",
     is_favorite: true,
     is_public: true,
     user_id: userId,
-    rom_ids: [],
-  } as unknown as Collection;
+  });
 }
 
 describe("collections store favorites", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
     getCollections.mockReset();
-    storeAuth().setCurrentUser({ id: 7 } as User);
+    storeAuth().setCurrentUser(userFixture({ id: 7 }));
   });
 
   // Another user's favorites collection turns up here once they make it
@@ -156,5 +152,17 @@ describe("collections store favorites", () => {
     await collections.fetchCollections();
 
     expect(collections.favoriteCollection).toBeUndefined();
+  });
+
+  it("follows membership writes to the favorites collection", () => {
+    const collections = storeCollections();
+    collections.setCollections([favoriteCollection(5, 7)]);
+
+    collections.updateCollection({
+      ...favoriteCollection(5, 7),
+      rom_ids: [1, 2],
+    });
+
+    expect(collections.favoriteCollection?.rom_ids).toEqual([1, 2]);
   });
 });

@@ -8,4 +8,3 @@ export type GrantSchema = {
     action: ActionKey;
     scope: PermissionScopeSchema;
 };
-

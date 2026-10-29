@@ -8,4 +8,3 @@ export type SyncCompleteResponse = {
     session: SyncSessionSchema;
     play_session_ingest?: (PlaySessionIngestResponse | null);
 };
-

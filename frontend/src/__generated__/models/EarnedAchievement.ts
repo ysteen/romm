@@ -7,4 +7,3 @@ export type EarnedAchievement = {
     date: string;
     date_hardcore?: string;
 };
-

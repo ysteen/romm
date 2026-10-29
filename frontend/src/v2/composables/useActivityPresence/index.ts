@@ -1,4 +1,4 @@
-// useActivityPresence — the "now playing" beat a player view sends while a
+// useActivityPresence: the "now playing" beat a player view sends while a
 // game is up, feeding the activity board and the home page's live cards.
 //
 // Fire-and-forget: presence is cosmetic and must never block or fail a launch.
@@ -36,7 +36,7 @@ export function useActivityPresence(
 
   // Auto-cleared on scope dispose, so a view unmounting mid-session leaves no
   // timer behind whichever way it left.
-  const { pause, resume } = useIntervalFn(beat, HEARTBEAT_MS, {
+  const { pause, resume } = useIntervalFn(() => void beat(), HEARTBEAT_MS, {
     immediate: false,
   });
 

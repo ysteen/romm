@@ -5,12 +5,11 @@ import UploadAssetDialog, {
   type UploadAssetPayload,
 } from "./UploadAssetDialog.vue";
 
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}));
+vi.mock("vue-i18n");
 vi.mock("@/locales", () => ({
   default: { global: { t: (key: string) => key } },
 }));
+vi.mock("@/stores/streaming", () => import("@/test-utils/streamingStore"));
 
 const formValid = { value: true };
 
@@ -20,7 +19,7 @@ const RDialog = {
 };
 const RForm = {
   methods: {
-    validate: async () => ({ valid: formValid.value }),
+    validate: () => Promise.resolve({ valid: formValid.value }),
   },
   template: `<form><slot /></form>`,
 };
@@ -113,9 +112,9 @@ async function choose(
   select: number,
   index: number,
 ) {
-  const el = wrapper.findAll("select")[select].element;
+  const el = wrapper.findAll("select")[select]!.element;
   el.selectedIndex = index;
-  await wrapper.findAll("select")[select].trigger("change");
+  await wrapper.findAll("select")[select]!.trigger("change");
 }
 
 async function submitted(wrapper: ReturnType<typeof mountDialog>) {
@@ -149,7 +148,7 @@ describe("UploadAssetDialog", () => {
 
   it("offers a new slot first, then autosave, the slots in use and no slot", async () => {
     const wrapper = mountDialog("save", [new File(["x"], "a.srm")]);
-    const options = wrapper.findAll("select")[0].findAll("option");
+    const options = wrapper.findAll("select")[0]!.findAll("option");
 
     expect(options.map((o) => o.text())).toEqual([
       "play.new-slot",
@@ -169,15 +168,37 @@ describe("UploadAssetDialog", () => {
     expect(await submitted(wrapper)).toMatchObject({ slot: null });
   });
 
-  it("names a new slot and asks saves for nothing else", async () => {
+  it("names a new slot", async () => {
     const wrapper = mountDialog("save", [new File(["x"], "a.srm")]);
-    expect(wrapper.findAll("select")).toHaveLength(1);
     await choose(wrapper, 0, 0);
     await wrapper.get("input.slot-name").setValue("  speedrun ");
 
     expect(await submitted(wrapper)).toMatchObject({
       slot: "speedrun",
       emulator: null,
+    });
+  });
+
+  it("files a save under the picked core in autosave", async () => {
+    const wrapper = mountDialog("save", [new File(["x"], "a.srm")]);
+    expect(wrapper.findAll("select")).toHaveLength(2);
+    await choose(wrapper, 1, 1);
+
+    expect(await submitted(wrapper)).toMatchObject({
+      type: "save",
+      slot: "autosave",
+      emulator: "mgba",
+    });
+  });
+
+  it("keeps a slot picked before the core", async () => {
+    const wrapper = mountDialog("save", [new File(["x"], "a.srm")]);
+    await choose(wrapper, 0, 2);
+    await choose(wrapper, 1, 1);
+
+    expect(await submitted(wrapper)).toMatchObject({
+      slot: "main_quest",
+      emulator: "mgba",
     });
   });
 
@@ -204,6 +225,18 @@ describe("UploadAssetDialog", () => {
       slot: null,
       emulator: "builtin",
     });
+  });
+
+  it("names a streamed state's core by its emulator label", async () => {
+    const wrapper = mountDialog("state", [new File(["x"], "a.state")]);
+    await wrapper.setProps({ cores: ["play"] });
+
+    expect(wrapper.findAll("option").map((o) => o.text())).toEqual([
+      "play.any-core",
+      "Play!",
+    ]);
+    await choose(wrapper, 0, 1);
+    expect(await submitted(wrapper)).toMatchObject({ emulator: "play" });
   });
 
   it("starts from the dropped files every time it opens", async () => {

@@ -12,6 +12,7 @@ floor the front-loading and `drop_roms_columns` are anchored to.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import ENUM
@@ -20,11 +21,21 @@ from sqlalchemy.schema import CreateColumn
 
 from models.rom import FULL_PATH_HASH_LENGTH, TITLE_ID_MAX_LENGTH
 from utils.database import (
+    HLTB_MAIN_STORY_COLUMN,
+    MIN_AGE_COLUMN,
+    ROMS_SEARCH_FULLTEXT_COLUMNS,
+    ROMS_SEARCH_FULLTEXT_INDEX,
+    ROMS_SEARCH_TITLES_TRGM_INDEX,
+    SEARCH_TITLES_COLUMN,
+    SORTABLE_NULLABLE_ROM_COLUMNS,
     CustomJSON,
     column_names,
     full_path_digest_sql,
     is_mariadb,
     is_postgresql,
+    rom_desc_index_name,
+    rom_sort_index_name,
+    rom_unset_flag_column,
 )
 
 TABLE = "roms"
@@ -33,7 +44,6 @@ VIEW = "roms_metadata"
 PRIMARY_REGION_COLUMN = "generated_primary_region"
 PRIMARY_REGION_LENGTH = 50
 FULL_PATH_HASH_COLUMN = "full_path_hash"
-HLTB_MAIN_STORY_COLUMN = "generated_hltb_main_story"
 RATING_COUNT_COLUMN = "generated_rating_count"
 
 SAVE_TARGET_LAYOUT_COLUMN = "save_target_layout"
@@ -180,17 +190,36 @@ class GeneratedColumn:
             f"{self.name} {self.type_} GENERATED ALWAYS AS ({self.expression}) STORED"
         )
 
+    @property
+    def unset_flag(self) -> "GeneratedColumn":
+        """This column's companion flag, over the same expression.
+
+        Repeated rather than referenced: PostgreSQL forbids one generated
+        column reading another, and a reference would block the DROP that
+        `rebuild_generated_columns` issues.
+        """
+        return GeneratedColumn(
+            rom_unset_flag_column(self.name),
+            "BOOLEAN",
+            f"({self.expression}) IS NULL",
+        )
+
 
 # ---------------------------------------------------------------------------
 # MariaDB / MySQL expressions (0098's, with 0112, 0123 and 0128's additions)
 # ---------------------------------------------------------------------------
 
 
+def _maria_char(expression: str) -> str:
+    """A JSON function's text result, comparable with a string literal."""
+    # JSON functions take the connection collation and a literal the table's,
+    # an illegal mix on a table that is not `general_ci` unless CAST re-derives it.
+    return f"CAST({expression} AS CHAR)"
+
+
 def _maria_text(source: str, path: str) -> str:
     """Unquoted JSON text carrying the surrounding expression's collation."""
-    # JSON_UNQUOTE takes the connection collation and a literal the table's, an
-    # illegal mix on a table that is not `general_ci` unless CAST re-derives it.
-    return f"CAST(JSON_UNQUOTE(JSON_EXTRACT({source}, '{path}')) AS CHAR)"
+    return _maria_char(f"JSON_UNQUOTE(JSON_EXTRACT({source}, '{path}'))")
 
 
 def _maria_array_expr(key: str, sources: list[str]) -> str:
@@ -409,26 +438,34 @@ def steam_fed_columns(pg: bool, *, with_steam: bool) -> list[GeneratedColumn]:
         )
 
     date_expr = _postgres_first_release_date if pg else _maria_first_release_date
-    columns.append(
-        GeneratedColumn("generated_first_release_date", "BIGINT", date_expr(with_steam))
+    release_date = GeneratedColumn(
+        "generated_first_release_date", "BIGINT", date_expr(with_steam)
     )
 
     rating_expr = _postgres_rating if pg else _maria_rating
     rating_sources = _RATING_SOURCES + ([_STEAM_RATING] if with_steam else [])
     ratings = [rating_expr(src, key, mult) for src, key, mult in rating_sources]
-    columns.append(
-        GeneratedColumn(
-            "generated_average_rating",
-            "DOUBLE PRECISION" if pg else "DOUBLE",
-            _average_expr(ratings),
-        )
+    average_rating = GeneratedColumn(
+        "generated_average_rating",
+        "DOUBLE PRECISION" if pg else "DOUBLE",
+        _average_expr(ratings),
     )
+
+    # A flag repeats its value's expression, so `_reads_steam` finds Steam in
+    # both and the pair is always rebuilt together.
+    columns += [release_date, release_date.unset_flag]
+    columns += [average_rating, average_rating.unset_flag]
     return columns
 
 
 def generated_columns(pg: bool) -> list[GeneratedColumn]:
     """Every generated column in the catalog, at its current definition."""
     array_expr = _postgres_array_expr if pg else _maria_array_expr
+    hltb_main_story = GeneratedColumn(
+        HLTB_MAIN_STORY_COLUMN,
+        "BIGINT",
+        _postgres_hltb_main_story() if pg else _maria_hltb_main_story(),
+    )
     return [
         GeneratedColumn(
             PRIMARY_REGION_COLUMN,
@@ -447,11 +484,8 @@ def generated_columns(pg: bool) -> list[GeneratedColumn]:
             "BIGINT",
             _postgres_rating_count() if pg else _maria_rating_count(),
         ),
-        GeneratedColumn(
-            HLTB_MAIN_STORY_COLUMN,
-            "BIGINT",
-            _postgres_hltb_main_story() if pg else _maria_hltb_main_story(),
-        ),
+        hltb_main_story,
+        hltb_main_story.unset_flag,
     ]
 
 
@@ -468,7 +502,7 @@ def drop_save_target_layout_type(conn: sa.Connection) -> None:
 
 
 # The stored columns in the catalog, minus `full_path_hash`.
-PLAIN_COLUMNS = [
+PLAIN_COLUMNS: list[sa.Column[Any]] = [
     sa.Column("is_physical", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("upc", sa.String(length=64)),
     sa.Column("locked_fields", CustomJSON()),
@@ -486,10 +520,12 @@ PLAIN_COLUMNS = [
         SAVE_TARGET_LAYOUT_COLUMN,
         sa.Enum(*SAVE_TARGET_LAYOUT_VALUES, name=SAVE_TARGET_LAYOUT_ENUM),
     ),
+    sa.Column(SEARCH_TITLES_COLUMN, sa.Text()),
+    sa.Column(MIN_AGE_COLUMN, sa.Integer()),
 ]
 
 
-def _plain_column_ddl(conn: sa.Connection, column: sa.Column) -> str:
+def _plain_column_ddl(conn: sa.Connection, column: sa.Column[Any]) -> str:
     # CreateColumn needs the column bound to a table to render its DDL.
     bound = column._copy()
     sa.Table(TABLE, sa.MetaData(), bound)
@@ -528,13 +564,80 @@ def roms_metadata_view_sql(pg: bool, columns: list[tuple[str, str]]) -> str:
     )
 
 
+def _index(
+    name: str, columns: list[str], expression: str
+) -> tuple[str, list[str], str]:
+    return name, columns, f"CREATE INDEX {name} ON {TABLE} ({expression})"
+
+
+def _generated_column_indexes(conn: sa.Connection) -> list[tuple[str, list[str], str]]:
+    """(name, columns read, CREATE statement) for every generated-column index."""
+    pg = is_postgresql(conn)
+    indexes = [_index(f"idx_{TABLE}_{c}", [c], c) for c in INDEXED_GENERATED_COLUMNS]
+    for column in SORTABLE_NULLABLE_ROM_COLUMNS:
+        flag = rom_unset_flag_column(column)
+        # Each spans through to `id`, the gallery's tiebreak: without it
+        # PostgreSQL sorts every tie, and unset roms are one tie of everything.
+        indexes.append(
+            _index(
+                rom_sort_index_name(column),
+                [flag, column, "id"],
+                f"{flag}, {column}, id",
+            )
+        )
+        # MariaDB and MySQL place NULLs last on DESC already, and an index
+        # there is ordered the same way. PostgreSQL needs both spelled out.
+        if pg:
+            indexes.append(
+                _index(
+                    rom_desc_index_name(column),
+                    [column, "id"],
+                    f"{column} DESC NULLS LAST, id DESC",
+                )
+            )
+    if pg:
+        indexes.append(
+            (
+                ROMS_SEARCH_TITLES_TRGM_INDEX,
+                [SEARCH_TITLES_COLUMN],
+                f"CREATE INDEX {ROMS_SEARCH_TITLES_TRGM_INDEX} ON {TABLE} "
+                f"USING gin ({SEARCH_TITLES_COLUMN} gin_trgm_ops)",
+            )
+        )
+    else:
+        indexes.append(
+            (
+                ROMS_SEARCH_FULLTEXT_INDEX,
+                list(ROMS_SEARCH_FULLTEXT_COLUMNS),
+                f"CREATE FULLTEXT INDEX {ROMS_SEARCH_FULLTEXT_INDEX} ON {TABLE} "
+                f"({', '.join(ROMS_SEARCH_FULLTEXT_COLUMNS)})",
+            )
+        )
+    return indexes
+
+
+def _drop_index_sql(conn: sa.Connection, name: str) -> str:
+    """DROP INDEX, which PostgreSQL spells without the table."""
+    return f"DROP INDEX {name}" if is_postgresql(conn) else f"DROP INDEX {name} ON {TABLE}"  # fmt: skip
+
+
 def _restore_generated_indexes(conn: sa.Connection) -> None:
-    """Recreate the single-column indexes a generated-column rebuild dropped."""
-    existing = {index["name"] for index in sa.inspect(conn).get_indexes(TABLE)}
-    for column in INDEXED_GENERATED_COLUMNS:
-        name = f"idx_{TABLE}_{column}"
-        if name not in existing:
-            conn.execute(sa.text(f"CREATE INDEX {name} ON {TABLE} ({column})"))
+    """Create or re-widen every generated-column index the table is missing.
+
+    Matches on the columns spanned rather than the name: a rebuild drops the
+    index on PostgreSQL but narrows it on MariaDB and MySQL.
+    """
+    existing = {
+        index["name"]: tuple(c for c in index["column_names"] if c)
+        for index in sa.inspect(conn).get_indexes(TABLE)
+    }
+    present = column_names(conn, TABLE)
+    for name, columns, create in _generated_column_indexes(conn):
+        if not set(columns) <= present or existing.get(name) == tuple(columns):
+            continue
+        if name in existing:
+            conn.execute(sa.text(_drop_index_sql(conn, name)))
+        conn.execute(sa.text(create))
 
 
 def _drop_indexes_spanning(conn: sa.Connection, columns: set[str]) -> None:
@@ -545,8 +648,9 @@ def _drop_indexes_spanning(conn: sa.Connection, columns: set[str]) -> None:
         return
     for index in sa.inspect(conn).get_indexes(TABLE):
         spanned = {name for name in index["column_names"] if name}
-        if spanned & columns and not spanned <= columns:
-            conn.execute(sa.text(f"DROP INDEX {index['name']} ON {TABLE}"))
+        name = index["name"]
+        if name and spanned & columns and not spanned <= columns:
+            conn.execute(sa.text(_drop_index_sql(conn, name)))
 
 
 def rebuild_generated_columns(
@@ -613,8 +717,10 @@ def ensure_roms_columns(conn: sa.Connection) -> None:
         conn.execute(
             sa.text(f"ALTER TABLE {TABLE}\n" + ",\n".join(actions))
         )  # nosec B608
-        if outdated:
-            _restore_generated_indexes(conn)
+
+    # Outside the block above so a replay after a run that died mid-ALTER
+    # still indexes the columns it did add.
+    _restore_generated_indexes(conn)
 
     # Outside the block above so a run that died between the ALTER and this
     # statement gets its view back on the replay.
@@ -665,7 +771,20 @@ def drop_roms_columns(conn: sa.Connection) -> None:
                 if projection[0] in present and projection[0] not in drop
             ],
         )
+    _drop_sort_indexes(conn)
     drop_save_target_layout_type(conn)
+
+
+def _drop_sort_indexes(conn: sa.Connection) -> None:
+    """Remove the sort indexes, which outlive the columns they were added for.
+
+    A descending one reads an inherited column, so nothing above drops it.
+    """
+    existing = {index["name"] for index in sa.inspect(conn).get_indexes(TABLE)}
+    for column in SORTABLE_NULLABLE_ROM_COLUMNS:
+        for name in (rom_sort_index_name(column), rom_desc_index_name(column)):
+            if name in existing:
+                conn.execute(sa.text(_drop_index_sql(conn, name)))
 
 
 def _reads_steam(column: ReflectedColumn) -> bool:

@@ -14,4 +14,3 @@ export type MusicGameFacetSchema = {
     cover_url?: (string | null);
     count: number;
 };
-

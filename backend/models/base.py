@@ -1,9 +1,9 @@
 import re
 from datetime import datetime, timezone
-from typing import NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sqlalchemy import TIMESTAMP
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
 
 FILE_NAME_MAX_LENGTH = 450
 FILE_PATH_MAX_LENGTH = 1000
@@ -70,6 +70,38 @@ def compute_file_name_parts(file_name: str) -> FileNameParts:
         no_ext=compute_file_name_no_ext(file_name),
         extension=compute_file_extension(file_name),
     )
+
+
+def with_file_name_parts(data: dict[str, Any]) -> dict[str, Any]:
+    """`data` plus the columns derived from its `file_name`, which a bulk
+    update() must write itself since it skips the `@validates` hook."""
+    if "file_name" not in data:
+        return data
+    parts = compute_file_name_parts(data["file_name"])
+    return {
+        **data,
+        "file_name_no_tags": parts.no_tags,
+        "file_name_no_ext": parts.no_ext,
+        "file_extension": parts.extension,
+    }
+
+
+class FileNamePartsMixin:
+    """Derives the `file_name_no_tags` / `file_name_no_ext` / `file_extension`
+    columns whenever `file_name` is assigned."""
+
+    if TYPE_CHECKING:
+        file_name_no_tags: str
+        file_name_no_ext: str
+        file_extension: str
+
+    @validates("file_name")
+    def _sync_file_name_parts(self, _key: str, file_name: str) -> str:
+        parts = compute_file_name_parts(file_name)
+        self.file_name_no_tags = parts.no_tags
+        self.file_name_no_ext = parts.no_ext
+        self.file_extension = parts.extension
+        return file_name
 
 
 class BaseModel(DeclarativeBase):

@@ -1,16 +1,16 @@
-<script setup lang="ts">
-// RSelect — combines an RTextField-style activator (variants,
+<script setup lang="ts" generic="Item, Model">
+// RSelect: combines an RTextField-style activator (variants,
 // hover/focus halos, labels) with a floating menu panel positioned by
 // `@floating-ui/vue` and rendered as a teleported surface in the v2
 // glass language.
 //
 // Single + multi-select. Items normalise via `itemTitle` / `itemValue`
-// (string key or function) so any shape — strings, numbers, plain
-// objects — fits without per-call-site shimming. `searchable` adds a
+// (string key or function) so any shape (strings, numbers, plain
+// objects) fits without per-call-site shimming. `searchable` adds a
 // sticky search input at the top of the panel.
 //
 // Slots `#selection` and `#item`. The `#item` slot's `props` bag is
-// spread on any element you want — it carries `class` (including the
+// spread on any element you want, it carries `class` (including the
 // active/selected/disabled state), `role`, `aria-*`, click/hover
 // handlers, and the index data attribute. The row default is a `<li>`
 // styled by `.r-select__item`. `dividerAfter` draws a divider below the
@@ -25,20 +25,20 @@ import {
   useFloating,
 } from "@floating-ui/vue";
 import type { Placement } from "@floating-ui/vue";
+import { useElementSize } from "@vueuse/core";
 import {
   computed,
   getCurrentInstance,
   nextTick,
-  onBeforeUnmount,
-  onMounted,
   ref,
   useAttrs,
   useSlots,
   watch,
 } from "vue";
 import { useInputModality } from "@/v2/composables/useInputModality";
+import { usePopoverDismiss } from "@/v2/composables/usePopoverDismiss";
 import { useChromeLabels } from "@/v2/lib/a11y/chromeLabels";
-import { shouldAutofocusSearch } from "@/v2/utils/autofocus";
+import { focusFromInput, shouldAutofocusSearch } from "@/v2/utils/autofocus";
 import RDivider from "../../primitives/RDivider/RDivider.vue";
 import RIcon from "../../primitives/RIcon/RIcon.vue";
 import RProgressCircular from "../../primitives/RProgressCircular/RProgressCircular.vue";
@@ -53,58 +53,71 @@ defineOptions({ inheritAttrs: false });
 type Rule = (value: any) => true | string;
 
 interface NormalisedItem {
-  // `raw` + `value` are the consumer's source item / its key — we don't
-  // know their shape but they do. Typing as `any` so `#selection` /
-  // `#item` slot consumers can read fields off them without spamming
-  // `as` casts.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  raw: any;
+  raw: Item;
   title: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  value: any;
+  value: unknown;
   disabled?: boolean;
 }
 
+// `multiple` needs an array model and single-select `clearable` a nullable one.
+// `boolean &` keeps Vue's runtime Boolean casting.
+type IsArrayModel = [NonNullable<Model>] extends [readonly unknown[]]
+  ? true
+  : false;
+type MultipleAllowed = unknown extends Model
+  ? unknown
+  : IsArrayModel extends true
+    ? unknown
+    : false;
+type ClearableAllowed = unknown extends Model
+  ? unknown
+  : null extends Model
+    ? unknown
+    : IsArrayModel extends true
+      ? unknown
+      : false;
+
 interface Props {
-  modelValue?: unknown;
-  items?: unknown[];
-  label?: string;
-  placeholder?: string;
+  /** Typed by the bound ref; RSelect trusts it matches the items' keys. */
+  modelValue?: Model | undefined;
+  items?: readonly Item[];
+  label?: string | undefined;
+  placeholder?: string | undefined;
   variant?: "outlined" | "filled" | "underlined" | "plain";
   density?: "default" | "comfortable" | "compact";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  itemTitle?: string | ((item: any) => string);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  itemValue?: string | ((item: any) => unknown);
-  multiple?: boolean;
+  itemTitle?: string | ((item: Item) => string);
+  itemValue?: string | ((item: Item) => unknown);
+  multiple?: boolean & MultipleAllowed;
   /** When true, the model holds the raw item objects instead of their
    *  `itemValue` keys. Read paths (selection comparisons, chip
-   *  rendering, isSelected) are mode-agnostic — only emits change. */
+   *  rendering, isSelected) are mode-agnostic: only emits change. */
   returnObject?: boolean;
   chips?: boolean;
   closableChips?: boolean;
-  clearable?: boolean;
+  clearable?: boolean & ClearableAllowed;
   disabled?: boolean;
   readonly?: boolean;
   loading?: boolean;
   hideDetails?: boolean | "auto";
   required?: boolean;
-  prependInnerIcon?: string;
+  prependInnerIcon?: string | undefined;
   appendInnerIcon?: string;
   rules?: Rule[];
-  hint?: string;
+  hint?: string | undefined;
   error?: boolean;
   errorMessages?: string | string[];
-  /** "stacked" — label above; "inline" — label as a left well. */
-  prefixLabel?: "stacked" | "inline";
+  /** "stacked": label above; "inline": label as a left well. */
+  prefixLabel?: "stacked" | "inline" | undefined;
   /** Accent for focus + selected items. Defaults to brand-primary. */
   color?: string;
   /** Adds a sticky search input at the top of the panel that filters
-   *  items locally by title. */
+   *  items locally by title and `itemSearchTerms`. */
   searchable?: boolean;
-  /** v-model:search — current query string. */
+  /** Extra strings the search matches an item by, besides its title. */
+  itemSearchTerms?: ((item: Item) => readonly string[]) | undefined;
+  /** v-model:search: current query string. */
   search?: string;
-  searchPlaceholder?: string;
+  searchPlaceholder?: string | undefined;
   /** Where to place the menu relative to the activator. */
   menuLocation?:
     | "bottom"
@@ -134,18 +147,17 @@ interface Props {
   /** Multi-select only: render a synthetic "All" row at the top of the
    *  menu (with a divider below) that toggles every item on / off. When
    *  no items are selected and this is on, the activator displays the
-   *  `allOptionLabel` text instead of the placeholder — the empty
+   *  `allOptionLabel` text instead of the placeholder, the empty
    *  selection reads as "every item" rather than "nothing picked". */
   showAllOption?: boolean;
   /** Label used by the "All" row in the menu and as the activator
    *  display when nothing is selected. Defaults to "All". */
-  allOptionLabel?: string;
+  allOptionLabel?: string | undefined;
   /** Items it matches get a divider below their row, setting them apart
    *  from the ones that follow. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  dividerAfter?: (item: any) => boolean;
+  dividerAfter?: ((item: Item) => boolean) | undefined;
   /** Tip revealed from an info icon in the trailing label well. */
-  info?: string;
+  info?: string | undefined;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -177,6 +189,7 @@ const props = withDefaults(defineProps<Props>(), {
   prefixLabel: undefined,
   color: "primary",
   searchable: false,
+  itemSearchTerms: undefined,
   search: "",
   searchPlaceholder: "",
   menuLocation: "bottom",
@@ -193,7 +206,7 @@ const labels = useChromeLabels();
 const allText = computed(() => props.allOptionLabel ?? labels.all);
 
 const emit = defineEmits<{
-  (e: "update:modelValue", value: unknown): void;
+  (e: "update:modelValue", value: Model): void;
   (e: "update:search", value: string): void;
   /** Fires whenever All-mode toggles. Consumers whose backend does NOT
    *  read an empty model as "all" (e.g. the Scan view, where an empty
@@ -207,6 +220,12 @@ const emit = defineEmits<{
   (e: "close"): void;
 }>();
 
+// Values are built from the items at runtime, so the cast trusts the
+// caller's model type to match them.
+function emitModel(value: unknown) {
+  emit("update:modelValue", value as Model);
+}
+
 const slots = useSlots();
 const attrs = useAttrs();
 
@@ -216,7 +235,7 @@ const autofocusSearch = computed(() => shouldAutofocusSearch());
 
 const fieldId = `r-sel-${getCurrentInstance()?.uid ?? Math.random().toString(36).slice(2)}`;
 
-// ── Tone resolver — same vocabulary as the rest of the lib ─────
+// ── Tone resolver: same vocabulary as the rest of the lib ─────
 const TONE_MAP: Record<string, string> = {
   primary: "var(--r-color-brand-primary)",
   secondary: "var(--r-color-brand-secondary)",
@@ -249,10 +268,18 @@ function readKey<T>(item: unknown, key: string | ((it: unknown) => T)): T {
   return item as T;
 }
 
+function titleText(title: unknown): string {
+  if (typeof title === "string") return title;
+  if (typeof title === "number" || typeof title === "boolean") {
+    return String(title);
+  }
+  return "";
+}
+
 const normalisedItems = computed<NormalisedItem[]>(() => {
   return (props.items ?? []).map((raw) => ({
     raw,
-    title: String(readKey<unknown>(raw, props.itemTitle as never) ?? ""),
+    title: titleText(readKey<unknown>(raw, props.itemTitle as never)),
     value: readKey<unknown>(raw, props.itemValue as never),
     disabled:
       typeof raw === "object" && raw != null
@@ -261,13 +288,22 @@ const normalisedItems = computed<NormalisedItem[]>(() => {
   }));
 });
 
-// Internal search buffer — RSelect filters from this. The `search`
+// Lowercased title plus `itemSearchTerms` per item, built on the first search.
+const itemSearchIndex = computed<string[][]>(() =>
+  normalisedItems.value.map((it) =>
+    [it.title, ...(props.itemSearchTerms?.(it.raw) ?? [])].map((term) =>
+      term.toLowerCase(),
+    ),
+  ),
+);
+
+// Internal search buffer: RSelect filters from this. The `search`
 // prop is treated as an *optional* controlled source: if the parent
 // binds `v-model:search`, we mirror the prop into internal state on
 // every change; if not, internal state is the sole source of truth.
 // Either way, `update:search` is always emitted on every keystroke so
 // parents that care can observe. This means `:searchable` just works
-// on its own — no v-model needed — and filtering survives unrelated
+// on its own (no v-model needed) and filtering survives unrelated
 // re-renders (e.g. `mouseenter` on a row updating `activeIndex`).
 const internalSearch = ref(props.search);
 watch(
@@ -285,8 +321,9 @@ const filteredItems = computed<NormalisedItem[]>(() => {
   if (!props.searchable) return normalisedItems.value;
   const q = internalSearch.value.trim().toLowerCase();
   if (!q) return normalisedItems.value;
-  return normalisedItems.value.filter((it) =>
-    it.title.toLowerCase().includes(q),
+  const index = itemSearchIndex.value;
+  return normalisedItems.value.filter((_, i) =>
+    index[i]!.some((term) => term.includes(q)),
   );
 });
 
@@ -295,16 +332,15 @@ const selectedValues = computed<unknown[]>(() => {
   if (props.multiple) {
     return Array.isArray(props.modelValue) ? props.modelValue : [];
   }
-  return props.modelValue === undefined || props.modelValue === null
-    ? []
-    : [props.modelValue];
+  // An item may hold null as its value, so only undefined means unset.
+  return props.modelValue === undefined ? [] : [props.modelValue];
 });
 
 // Normalise a model value to its primitive identity key. In
 // `return-object` mode the modelValue holds the raw objects; we
 // extract the same key the items expose via `itemValue` so matching
 // survives even when the source array recomputes to fresh object refs
-// (e.g. a computed that maps `.map(o => ({ ...o, disabled }))` — the
+// (e.g. a computed that maps `.map(o => ({ ...o, disabled }))`, the
 // raw identities change every tick but the underlying key doesn't).
 // For primitive modelValues this is a no-op.
 function valueOf(v: unknown): unknown {
@@ -320,7 +356,7 @@ function isSelected(value: unknown): boolean {
 
 const selectedItems = computed<NormalisedItem[]>(() => {
   // Only surface model values that are present in *this* select's
-  // items — keeps two subset selects sharing one model from each
+  // items: keeps two subset selects sharing one model from each
   // rendering the other's chips. Foreign values (no match) are
   // dropped on the floor; if you genuinely need off-list rendering,
   // include the value in your items list.
@@ -338,14 +374,14 @@ const selectedItems = computed<NormalisedItem[]>(() => {
 // because the sibling added something.
 const hasSelection = computed(() => selectedItems.value.length > 0);
 
-// Chip overflow — keep the activator at a single line by collapsing
+// Chip overflow: keep the activator at a single line by collapsing
 // chips that won't fit into a "+N" pill at the end of the row.
 // The fit count is measured from a hidden mirror (`measureRef`) that
 // always renders every chip; the visible row only renders the first
 // `fitChipCount` of them. ResizeObserver re-measures on width changes.
 const valueRef = ref<HTMLElement | null>(null);
 const measureRef = ref<HTMLElement | null>(null);
-const containerWidth = ref(0);
+const { width: containerWidth } = useElementSize(valueRef);
 const fitChipCount = ref<number>(Number.POSITIVE_INFINITY);
 
 const visibleChips = computed<NormalisedItem[]>(() => {
@@ -355,20 +391,6 @@ const visibleChips = computed<NormalisedItem[]>(() => {
 const overflowCount = computed(() =>
   Math.max(0, selectedItems.value.length - visibleChips.value.length),
 );
-
-let resizeObserver: ResizeObserver | null = null;
-onMounted(() => {
-  if (!valueRef.value) return;
-  containerWidth.value = valueRef.value.clientWidth;
-  resizeObserver = new ResizeObserver((entries) => {
-    for (const e of entries) containerWidth.value = e.contentRect.width;
-  });
-  resizeObserver.observe(valueRef.value);
-});
-onBeforeUnmount(() => {
-  resizeObserver?.disconnect();
-  resizeObserver = null;
-});
 
 // Walk through the mirror's chips and stop when the next one (plus
 // the reserved overflow-pill width) would overflow the visible row.
@@ -385,7 +407,7 @@ function recomputeFit() {
   if (chips.length === 0) {
     // Mirror hasn't painted yet (first tick of a brand-new selection).
     // Default to showing everything until we can measure on the next
-    // pass — better than rendering only the "+N" pill.
+    // pass: better than rendering only the "+N" pill.
     fitChipCount.value = selectedItems.value.length;
     return;
   }
@@ -401,7 +423,7 @@ function recomputeFit() {
   let used = 0;
   let count = 0;
   for (let i = 0; i < chips.length; i++) {
-    const w = chips[i].offsetWidth;
+    const w = chips[i]!.offsetWidth;
     const remaining = chips.length - 1 - i;
     const overflowReserve = remaining > 0 ? overflowWidth + gap : 0;
     const gapNow = count > 0 ? gap : 0;
@@ -409,7 +431,7 @@ function recomputeFit() {
     used += w + gapNow;
     count++;
   }
-  // Always render at least one chip if any are selected — better to
+  // Always render at least one chip if any are selected, better to
   // clip one chip with text-overflow than to show only "+N" on its own.
   if (count === 0 && chips.length > 0) count = 1;
   fitChipCount.value = count;
@@ -418,12 +440,12 @@ function recomputeFit() {
 watch(
   [selectedItems, containerWidth],
   () => {
-    nextTick(recomputeFit);
+    void nextTick(recomputeFit);
   },
   { flush: "post" },
 );
 
-// What goes into the model when this select pushes an item — the raw
+// What goes into the model when this select pushes an item, the raw
 // object in returnObject mode, the primitive value otherwise. Read
 // paths always re-extract the key via `valueOf` so the model can
 // be mixed (e.g., consumer-seeded with one shape, user-toggled in
@@ -436,7 +458,7 @@ function selectItem(item: NormalisedItem) {
   if (item.disabled) return;
   if (props.multiple) {
     // Picking an individual while All-mode is active flips the mode
-    // off automatically — All and individuals are mutually exclusive,
+    // off automatically: All and individuals are mutually exclusive,
     // but the transition is one-click instead of "first deselect All,
     // then pick". We preserve any model values that aren't part of
     // *this* select's items so two RSelects can share a single model
@@ -448,7 +470,7 @@ function selectItem(item: NormalisedItem) {
       const preserved = Array.isArray(props.modelValue)
         ? (props.modelValue as unknown[]).filter((v) => !ownSet.has(valueOf(v)))
         : [];
-      emit("update:modelValue", [...preserved, emitValueOf(item)]);
+      emitModel([...preserved, emitValueOf(item)]);
       return;
     }
     const cur = Array.isArray(props.modelValue)
@@ -457,9 +479,9 @@ function selectItem(item: NormalisedItem) {
     const idx = cur.findIndex((v) => valueOf(v) === item.value);
     if (idx === -1) cur.push(emitValueOf(item));
     else cur.splice(idx, 1);
-    emit("update:modelValue", cur);
+    emitModel(cur);
   } else {
-    emit("update:modelValue", emitValueOf(item));
+    emitModel(emitValueOf(item));
     closeMenu();
   }
 }
@@ -483,7 +505,7 @@ function selectItem(item: NormalisedItem) {
 // the same backend meaning either way; this state only governs the
 // menu / chip UX.
 //
-// Hidden while the user is filtering — choosing "All" in a filtered
+// Hidden while the user is filtering, choosing "All" in a filtered
 // menu would silently reach outside the visible rows.
 const showAllRow = computed(
   () => props.multiple && props.showAllOption && !internalSearch.value.trim(),
@@ -518,7 +540,7 @@ const isAllSelected = ref(isInitialAllSelected());
 watch(isAllSelected, (v) => emit("update:allSelected", v));
 
 // When the parent pushes a model that contains any of *this* select's
-// items, leave All-mode automatically — those items are individual
+// items, leave All-mode automatically: those items are individual
 // selections that can't coexist with All. Foreign items (from a
 // sibling select sharing the model) don't trip this.
 watch(
@@ -546,9 +568,9 @@ function toggleAllItems() {
       const preserved = (props.modelValue as unknown[]).filter(
         (v) => !ownSet.has(valueOf(v)),
       );
-      emit("update:modelValue", preserved);
+      emitModel(preserved);
     } else {
-      emit("update:modelValue", []);
+      emitModel([]);
     }
   }
 }
@@ -558,7 +580,7 @@ function removeSelection(value: unknown) {
     const cur = Array.isArray(props.modelValue)
       ? (props.modelValue as unknown[]).filter((v) => valueOf(v) !== value)
       : [];
-    emit("update:modelValue", cur);
+    emitModel(cur);
   } else {
     clear();
   }
@@ -579,44 +601,37 @@ function clear() {
       const preserved = (props.modelValue as unknown[]).filter(
         (v) => !ownSet.has(valueOf(v)),
       );
-      emit("update:modelValue", preserved);
+      emitModel(preserved);
     } else {
-      emit("update:modelValue", []);
+      emitModel([]);
     }
   } else {
-    emit("update:modelValue", null);
+    emitModel(null);
   }
   emit("clear");
 }
 
 // ── Validation (mirrors RTextField) ─────────────────────────────
 const dirty = ref(false);
-const internalErrors = ref<string[]>([]);
-
-function runRules() {
-  const out: string[] = [];
+const internalErrors = computed<string[]>(() => {
+  if (!dirty.value) return [];
   for (const r of props.rules ?? []) {
     const v = r(props.modelValue);
-    if (v !== true && typeof v === "string" && v.length) {
-      out.push(v);
-      break;
-    }
+    if (v !== true && typeof v === "string" && v.length) return [v];
   }
-  internalErrors.value = out;
-}
+  return [];
+});
 function validate(): boolean {
   dirty.value = true;
-  runRules();
   return internalErrors.value.length === 0 && !props.error;
 }
 function reset() {
   dirty.value = false;
-  internalErrors.value = [];
 }
 defineExpose({
   validate,
   reset,
-  focus: () => activatorRef.value?.focus(),
+  focus: () => focusFromInput(activatorRef.value),
   open: openMenu,
   close: closeMenu,
 });
@@ -627,13 +642,6 @@ useRFormRegistration({
   el: () => activatorRef.value,
   validity: () => !hasError.value,
 });
-
-watch(
-  () => props.modelValue,
-  () => {
-    if (dirty.value) runRules();
-  },
-);
 
 const externalMessages = computed<string[]>(() => {
   const m = props.errorMessages;
@@ -665,6 +673,7 @@ const showClear = computed(
   () =>
     props.clearable &&
     hasSelection.value &&
+    props.modelValue !== null &&
     !props.disabled &&
     !props.readonly &&
     !props.loading,
@@ -735,10 +744,9 @@ function closeMenu() {
   if (!isOpen.value) return;
   isOpen.value = false;
   emit("close");
-  // Run rules on close (acts as a "blur" for the field).
+  // Closing acts as a "blur" for the field.
   dirty.value = true;
-  runRules();
-  // Clear the search buffer so the next open starts fresh — matches
+  // Clear the search buffer so the next open starts fresh, matches
   // user expectation for "open select → type → pick → close → reopen"
   // not leaving a stale query that hides most rows.
   if (props.searchable && internalSearch.value) setSearch("");
@@ -751,24 +759,17 @@ function toggleMenu() {
   else openMenu();
 }
 
-// Click-outside — closes the panel when the user clicks anywhere
-// outside both the activator and the panel.
-function onDocPointerDown(evt: PointerEvent) {
-  if (!isOpen.value) return;
-  const target = evt.target as Node | null;
-  if (!target) return;
-  if (activatorRef.value?.contains(target)) return;
-  if (panelRef.value?.contains(target)) return;
-  closeMenu();
-}
-onMounted(() => {
-  document.addEventListener("pointerdown", onDocPointerDown, true);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", onDocPointerDown, true);
+usePopoverDismiss(isOpen, closeMenu, {
+  reference: () => activatorRef.value,
+  panel: () => panelRef.value,
+  onEscape: () => {
+    const focusInPanel = !!panelRef.value?.contains(document.activeElement);
+    closeMenu();
+    if (focusInPanel) focusFromInput(activatorRef.value);
+  },
 });
 
-// Close when search is changed externally? No — keep open while
+// Close when search is changed externally? No, keep open while
 // editing search. Reset active index to 0 when filter changes so
 // keyboard nav stays sensible.
 watch(filteredItems, () => {
@@ -786,14 +787,14 @@ function moveActive(delta: number) {
   for (let n = 0; n < list.length; n++) {
     if (i < 0) i = list.length - 1;
     if (i >= list.length) i = 0;
-    if (!list[i].disabled) break;
+    if (!list[i]!.disabled) break;
     i += delta || 1;
   }
   activeIndex.value = i;
   scrollActiveIntoView();
 }
 function scrollActiveIntoView() {
-  nextTick(() => {
+  void nextTick(() => {
     const el = panelRef.value?.querySelector<HTMLElement>(
       `[data-r-select-index="${activeIndex.value}"]`,
     );
@@ -825,12 +826,6 @@ function onActivatorKey(evt: KeyboardEvent) {
         if (item) selectItem(item);
       }
       break;
-    case "Escape":
-      if (isOpen.value) {
-        evt.preventDefault();
-        closeMenu();
-      }
-      break;
     case "Tab":
       if (isOpen.value) closeMenu();
       break;
@@ -853,11 +848,6 @@ function onSearchKey(evt: KeyboardEvent) {
       if (item) selectItem(item);
       break;
     }
-    case "Escape":
-      evt.preventDefault();
-      closeMenu();
-      activatorRef.value?.focus();
-      break;
   }
 }
 
@@ -932,15 +922,17 @@ const describedBy = computed(() => {
   >
     <span
       v-if="stackedLabelOn"
+      :id="`${fieldId}-label`"
       class="r-select__label r-select__label--stacked"
     >
       <slot name="prefix-label">{{ label }}</slot>
     </span>
 
-    <!-- Activator — a single button that opens the menu. Renders the
+    <!-- Activator: a single button that opens the menu. Renders the
          current selection inside (chips or plain text). Keyboard
          navigation routes through this button. -->
     <button
+      :id="`${fieldId}-field`"
       ref="activatorRef"
       type="button"
       class="r-select__field"
@@ -948,6 +940,9 @@ const describedBy = computed(() => {
       :aria-haspopup="'listbox'"
       :aria-expanded="isOpen"
       :aria-label="effectiveAriaLabel"
+      :aria-labelledby="
+        stackedLabelOn ? `${fieldId}-label ${fieldId}-field` : undefined
+      "
       :aria-invalid="hasError || undefined"
       :aria-describedby="describedBy"
       @click="toggleMenu"
@@ -976,13 +971,13 @@ const describedBy = computed(() => {
       </span>
 
       <span ref="valueRef" class="r-select__value">
-        <!-- Hidden measurement mirror — renders every selected chip
+        <!-- Hidden measurement mirror: renders every selected chip
              plus a worst-case "+N" pill so we can measure widths and
              compute how many chips actually fit in `valueRef`'s
              current width. Absolutely positioned so it doesn't push
              the visible row. The `#chip` slot is rendered here as
-             well so its visible width matches the real row exactly
-             — without it the icon-only PlatformSelect chips would
+             well so its visible width matches the real row exactly;
+             without it the icon-only PlatformSelect chips would
              measure as the bare title text. -->
         <span
           v-if="multiple && chips && hasSelection"
@@ -1039,7 +1034,7 @@ const describedBy = computed(() => {
         <span v-else-if="!hasSelection" class="r-select__placeholder">
           <slot name="placeholder">{{ effectivePlaceholder }}</slot>
         </span>
-        <!-- Multi with chips — render the visible slice as removable
+        <!-- Multi with chips: render the visible slice as removable
              tags; anything past `maxVisibleChips` collapses into a
              "+N" pill so the activator stays single-line. The `#chip`
              slot lets consumers swap the chip's inner content (e.g.,
@@ -1081,7 +1076,7 @@ const describedBy = computed(() => {
             :text="`+${overflowCount}`"
           />
         </template>
-        <!-- Single selection or multi-without-chips — defer to the
+        <!-- Single selection or multi-without-chips: defer to the
              `#selection` slot for custom rendering. Default: title.
              Wrapped in one box so the comma separator doesn't inherit
              `.r-select__value`'s flex gap and read as " , ". -->
@@ -1160,7 +1155,7 @@ const describedBy = computed(() => {
       <span v-if="info" :id="`${fieldId}-info`" hidden>{{ info }}</span>
     </button>
 
-    <!-- Details row — error or hint. -->
+    <!-- Details row: error or hint. -->
     <div
       v-if="showDetails"
       :id="`${fieldId}-details`"
@@ -1170,21 +1165,19 @@ const describedBy = computed(() => {
       <slot name="details">{{ detailText }}</slot>
     </div>
 
-    <!-- Menu panel — teleported to <body> to escape overflow / z-index
+    <!-- Menu panel: teleported to <body> to escape overflow / z-index
          contexts. Mounted only when open. -->
     <Teleport to="body">
       <Transition name="r-select-pop">
-        <!-- eslint-disable-next-line vuejs-accessibility/interactive-supports-focus -- the listbox routes keydown for its options; focus lives on the search input / option rows, not this container -->
+        <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- catches keys bubbling from the search input and option rows, which hold focus; the panel itself never does -->
         <div
           v-if="isOpen"
           ref="panelRef"
           class="r-select__panel"
           :style="floatingStyles"
-          role="listbox"
-          :aria-multiselectable="multiple"
           @keydown="onSearchKey"
         >
-          <!-- Sticky search — autofocused on open. The panel-level
+          <!-- Sticky search: autofocused on open. The panel-level
                keydown handler catches Up/Down/Enter/Esc bubbling from
                whichever child is focused (search input or item rows).
                We use RTextField directly (no wrapper primitive) since
@@ -1208,13 +1201,21 @@ const describedBy = computed(() => {
             >
               <template #prefix-label>
                 <RIcon icon="mdi-magnify" size="16" />
+                <span class="r-select__search-label">{{ labels.search }}</span>
               </template>
             </RTextField>
             <!-- eslint-enable vuejs-accessibility/no-autofocus -->
           </div>
 
-          <ul class="r-select__list">
-            <!-- Synthetic "All" row — multi-select only, suppressed
+          <ul
+            class="r-select__list"
+            role="listbox"
+            :aria-multiselectable="multiple"
+            :aria-labelledby="
+              stackedLabelOn ? `${fieldId}-label` : `${fieldId}-field`
+            "
+          >
+            <!-- Synthetic "All" row: multi-select only, suppressed
                  while the user is filtering. Sits above the regular
                  items and is separated by a divider so it reads as a
                  meta action rather than a list item. -->
@@ -1245,10 +1246,6 @@ const describedBy = computed(() => {
                 <RDivider />
               </li>
             </template>
-
-            <li v-if="!filteredItems.length" class="r-select__empty">
-              <slot name="no-data">No options</slot>
-            </li>
 
             <template
               v-for="(item, i) in filteredItems"
@@ -1310,6 +1307,10 @@ const describedBy = computed(() => {
               </li>
             </template>
           </ul>
+
+          <div v-if="!filteredItems.length" class="r-select__empty">
+            <slot name="no-data">No options</slot>
+          </div>
         </div>
       </Transition>
     </Teleport>
@@ -1321,7 +1322,7 @@ const describedBy = computed(() => {
 .r-select {
   display: inline-flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--r-space-1);
   width: 100%;
   /* As a flex child, default `min-width: auto` refuses to shrink below the
      selection's content width, so a long value overflows its container.
@@ -1350,7 +1351,7 @@ const describedBy = computed(() => {
   --r-tf-radius: 6px;
 }
 
-/* ── Activator field — shares the RTextField chrome ────────────── */
+/* ── Activator field: shares the RTextField chrome ────────────── */
 .r-select__field {
   appearance: none;
   display: inline-flex;
@@ -1372,7 +1373,7 @@ const describedBy = computed(() => {
     box-shadow var(--r-motion-med) cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* Variants — mirror RTextField exactly. */
+/* Variants: mirror RTextField exactly. */
 .r-select--variant-outlined .r-select__field {
   border-color: var(--r-color-border);
   background: var(--r-color-bg-elevated);
@@ -1438,7 +1439,7 @@ const describedBy = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  /* Single-line — overflow chips are handled by the explicit "+N" pill
+  /* Single-line: overflow chips are handled by the explicit "+N" pill
      rather than wrapping. Keeps the activator height stable regardless
      of selection count. */
   flex-wrap: nowrap;
@@ -1446,7 +1447,7 @@ const describedBy = computed(() => {
   overflow: hidden;
 }
 
-/* Hidden measurement mirror — renders every chip + a worst-case "+N"
+/* Hidden measurement mirror: renders every chip + a worst-case "+N"
    pill so JS can measure how many actually fit. `visibility: hidden`
    keeps the layout sized so `offsetWidth` is accurate; `position:
    absolute` keeps it out of the visible row's flex flow. */
@@ -1475,7 +1476,7 @@ const describedBy = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Flex items default to `min-width: auto` — without this the title
+/* Flex items default to `min-width: auto`, without this the title
    refuses to shrink and a long selection clips instead of ellipsizing. */
 .r-select__title {
   min-width: 0;
@@ -1484,13 +1485,13 @@ const describedBy = computed(() => {
   color: var(--r-color-fg-faint);
 }
 
-/* Synthetic "All" row in the menu — slightly emphasised so it reads
+/* Synthetic "All" row in the menu, slightly emphasised so it reads
    as a meta action rather than just another item. The divider sits
    on a non-interactive li with reset padding. */
 .r-select__item--all {
   font-weight: var(--r-font-weight-semibold);
 }
-/* The All row is hovered via CSS — `activeIndex` is reserved for the
+/* The All row is hovered via CSS, `activeIndex` is reserved for the
    filtered-items list (keyboard navigation), so we can't piggyback on
    the `--active` class here. */
 .r-select__item--all:hover {
@@ -1513,7 +1514,7 @@ const describedBy = computed(() => {
   padding-inline-end: 6px;
 }
 
-/* Chips inside multi-select — wrap rows when stacked. */
+/* Chips inside multi-select: wrap rows when stacked. */
 .r-select__chip {
   flex-shrink: 0;
 }
@@ -1550,7 +1551,7 @@ const describedBy = computed(() => {
 
 /* Chevron rotation comes from the global `.r-chevron-toggle` utility
    (rotates on `aria-expanded="true"`); only the open-state colour is
-   kept local — when the field is focused the chevron picks up the
+   kept local: when the field is focused the chevron picks up the
    accent tint. */
 .r-select--open .r-select__chevron {
   color: var(--r-tf-color);
@@ -1631,6 +1632,7 @@ const describedBy = computed(() => {
   line-height: 1.2;
   align-self: flex-start;
   padding-inline-start: 2px;
+  margin-bottom: var(--r-space-1);
 }
 .r-select__label--inline,
 .r-select__label--append {
@@ -1702,7 +1704,7 @@ html[data-input="pad"] .r-select__field:focus {
 }
 </style>
 
-<!-- Panel — teleported outside the SFC's scope. Painted with the v2
+<!-- Panel: teleported outside the SFC's scope. Painted with the v2
      glass language (matches RMenuPanel / RTooltip). Animation is the
      same overlay vocabulary the rest of the lib uses. -->
 <style>
@@ -1712,7 +1714,7 @@ html[data-input="pad"] .r-select__field:focus {
   display: flex;
   flex-direction: column;
   min-width: 180px;
-  /* Never exceed the viewport — on a narrow phone the activator-pinned
+  /* Never exceed the viewport: on a narrow phone the activator-pinned
      min-width or wide option content would otherwise push the panel past
      the screen edge (floating-ui's `shift` can't shrink it). */
   max-width: min(480px, calc(100vw - 16px));
@@ -1744,6 +1746,15 @@ html[data-input="pad"] .r-select__field:focus {
   padding: 6px;
   overflow-y: auto;
   scrollbar-width: thin;
+}
+
+.r-select__search-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .r-select__empty {
@@ -1791,7 +1802,7 @@ html[data-input="pad"] .r-select__field:focus {
 }
 /* Column wrapper for two-row items (title + subtitle). Pair with the
    `.r-select__item-title` and `.r-select__item-subtitle` classes inside
-   it — the wrapper takes the flex slot the bare title would have used. */
+   it: the wrapper takes the flex slot the bare title would have used. */
 .r-select__item-stack {
   flex: 1;
   min-width: 0;
@@ -1801,7 +1812,7 @@ html[data-input="pad"] .r-select__field:focus {
 }
 .r-select__item-stack .r-select__item-title {
   /* Inside the stack the title is no longer the flex slot, so drop the
-     `flex: 1` — let it size to its line height. */
+     `flex: 1`: let it size to its line height. */
   flex: 0 0 auto;
 }
 /* A description never widens the menu past the activator; it wraps instead. */

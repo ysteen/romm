@@ -1,15 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
+import { expect, userEvent, within } from "storybook/test";
 import { ref } from "vue";
+import { CONTRAST_TODO_PARAMETERS } from "@/v2/utils/storyA11y";
 import RBtn from "./RBtn.vue";
 
 const meta: Meta<typeof RBtn> = {
   title: "Primitives/RBtn",
   component: RBtn,
+  parameters: CONTRAST_TODO_PARAMETERS,
   argTypes: {
-    variant: {
-      control: "select",
-      options: ["flat", "text", "elevated", "translucent", "outlined", "plain"],
-    },
     color: { control: "text" },
     size: {
       control: "select",
@@ -25,13 +24,6 @@ const meta: Meta<typeof RBtn> = {
       options: ["button", "submit", "reset"],
     },
     icon: { control: "text" },
-    loading: { control: "boolean" },
-    disabled: { control: "boolean" },
-    block: { control: "boolean" },
-    border: { control: "boolean" },
-    surface: { control: "boolean" },
-    prependIcon: { control: "text" },
-    appendIcon: { control: "text" },
   },
 };
 
@@ -196,11 +188,10 @@ export const IconSizeLadder: Story = {
   }),
 };
 
-// Icon-mode button with custom default-slot content. When `icon` is
-// set as a flag (boolean / empty / `true`) and a default slot is
-// provided, the slot replaces the icon glyph. Used for composite icon
-// content like GameCard's platform badge, where the "icon" is an
-// RPlatformIcon SVG rather than an MDI codepoint.
+/**
+ * When `icon` is a flag, a default slot replaces the glyph (e.g. GameCard's
+ * PlatformIcon badge).
+ */
 export const IconSlotCustom: Story = {
   name: "Icon-mode · custom slot content",
   render: () => ({
@@ -373,9 +364,10 @@ export const FormActions: Story = {
   }),
 };
 
-// Surface modifier — pairs an outlined icon-only RBtn with an
-// `RSliderBtnGroup` segmented cluster so both share the same tinted
-// chrome. Used in `GalleryToolbar` for filter / kebab buttons.
+/**
+ * `surface` gives an outlined icon-only RBtn the same tinted chrome as the
+ * `RSliderBtnGroup` beside it.
+ */
 export const SurfaceWithSlider: Story = {
   name: "Surface modifier (icon button next to slider)",
   render: () => ({
@@ -394,4 +386,46 @@ export const SurfaceWithSlider: Story = {
       </p>
     `,
   }),
+};
+
+/**
+ * Toggle state: `active` drives `aria-pressed` and, while on, paints the
+ * translucent tint of `color` (primary when no colour is given).
+ */
+export const Active: Story = {
+  name: "Active (toggle)",
+  render: () => ({
+    components: { RBtn },
+    setup: () => ({ shuffle: ref(false), mute: ref(true) }),
+    template: `
+      <div style="display:flex;gap:8px;align-items:center">
+        <RBtn variant="text" icon="mdi-shuffle" aria-label="Shuffle" :active="shuffle" @click="shuffle = !shuffle" />
+        <RBtn variant="text" color="danger" prepend-icon="mdi-volume-off" :active="mute" @click="mute = !mute">Mute</RBtn>
+        <RBtn variant="outlined" active>Always on</RBtn>
+        <RBtn variant="outlined">Not a toggle</RBtn>
+        <RBtn variant="outlined" aria-pressed="true">Manual pressed</RBtn>
+      </div>
+    `,
+  }),
+  play: async ({ canvasElement, step }) => {
+    const canvas = within(canvasElement);
+    const shuffle = canvas.getByRole("button", { name: "Shuffle" });
+
+    await step("starts unpressed and toggles on click", async () => {
+      await expect(shuffle).toHaveAttribute("aria-pressed", "false");
+      await userEvent.click(shuffle);
+      await expect(shuffle).toHaveAttribute("aria-pressed", "true");
+      await expect(shuffle).toHaveClass("r-btn--translucent");
+    });
+
+    await step("leaves aria-pressed off buttons without active", async () => {
+      const plain = canvas.getByRole("button", { name: "Not a toggle" });
+      await expect(plain).not.toHaveAttribute("aria-pressed");
+    });
+
+    await step("keeps a caller's own aria-pressed", async () => {
+      const manual = canvas.getByRole("button", { name: "Manual pressed" });
+      await expect(manual).toHaveAttribute("aria-pressed", "true");
+    });
+  },
 };

@@ -12,4 +12,3 @@ export type WebrcadeFeedItemSchema = {
     background?: string;
     props: WebrcadeFeedItemPropsSchema;
 };
-

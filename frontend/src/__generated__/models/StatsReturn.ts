@@ -14,4 +14,3 @@ export type StatsReturn = {
     METADATA_COVERAGE?: Record<string, Array<MetadataCoverageItem>>;
     REGION_BREAKDOWN?: Record<string, Array<RegionBreakdownItem>>;
 };
-

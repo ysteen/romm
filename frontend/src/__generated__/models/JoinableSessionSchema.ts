@@ -20,4 +20,3 @@ export type JoinableSessionSchema = {
     path_cover_large?: (string | null);
     url_cover?: (string | null);
 };
-

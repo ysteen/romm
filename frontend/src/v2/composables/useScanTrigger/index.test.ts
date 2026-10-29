@@ -1,5 +1,4 @@
-import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import storeScanning from "@/stores/scanning";
 import { useScanTrigger } from "./index";
 
@@ -9,9 +8,7 @@ const { emit, connect, warning } = vi.hoisted(() => ({
   warning: vi.fn(),
 }));
 
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}));
+vi.mock("vue-i18n");
 vi.mock("@/services/socket", () => ({
   default: { connected: false, connect, emit },
 }));
@@ -20,13 +17,6 @@ vi.mock("@/v2/composables/useSnackbar", () => ({
 }));
 
 describe("useScanTrigger", () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    emit.mockClear();
-    connect.mockClear();
-    warning.mockClear();
-  });
-
   it("flips the store, connects and emits one event per payload", () => {
     const { startScan } = useScanTrigger();
 
@@ -37,6 +27,7 @@ describe("useScanTrigger", () => {
 
     expect(started).toBe(true);
     expect(storeScanning().scanning).toBe(true);
+    expect(storeScanning().startedInThisTab).toBe(true);
     expect(connect).toHaveBeenCalledOnce();
     expect(emit).toHaveBeenCalledTimes(2);
     expect(emit).toHaveBeenCalledWith("scan", {
@@ -54,6 +45,7 @@ describe("useScanTrigger", () => {
     const started = startScan([{ type: "quick", roms_ids: [5], apis: [] }]);
 
     expect(started).toBe(false);
+    expect(storeScanning().startedInThisTab).toBe(false);
     expect(emit).not.toHaveBeenCalled();
     expect(warning).toHaveBeenCalledWith(
       "scan.scan-in-progress",

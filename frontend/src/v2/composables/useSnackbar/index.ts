@@ -1,4 +1,4 @@
-// useSnackbar — typed convenience wrapper around the global `snackbarShow`
+// useSnackbar: typed convenience wrapper around the global `snackbarShow`
 // emitter event. Removes the per-call boilerplate of importing the emitter
 // and constructing a SnackbarStatus payload. The actual rendering still
 // happens in `Notifications/NotificationHost.vue`, which stacks toasts.
@@ -7,26 +7,34 @@
 //   const snackbar = useSnackbar();
 //   snackbar.success("Saved");
 //   snackbar.error("Upload failed", { timeout: 6000 });
+//   snackbar.success("Upload finished", { persist: { link: "/rom/12" } });
 //
 // Tones map to the four canonical kinds the NotificationHost collapses to:
 // success | error | warning | info. When v1 dies the emitter payload can
 // drop the free-form `color` string and accept the tone directly.
 import type { Emitter } from "mitt";
 import { inject } from "vue";
-import type { Events } from "@/types/emitter";
+import type { Events, SnackbarStatus } from "@/types/emitter";
+import storeNotificationInbox from "@/v2/stores/notificationInbox";
 
 export type SnackbarTone = "success" | "error" | "warning" | "info";
 
-export interface SnackbarOptions {
-  /** Auto-dismiss timeout in ms. Defaults to NotificationHost's 3000ms. */
-  timeout?: number;
-  /** Override the default icon for the tone. */
-  icon?: string;
-  /** Stable id — useful when deduplicating repeated notifications. */
-  id?: number;
-  /** Artwork shown in place of the icon, e.g. the cover of the game it concerns. */
-  image?: string | null;
+export interface SnackbarOptions extends Pick<
+  SnackbarStatus,
+  "id" | "timeout" | "icon" | "image"
+> {
+  /** Also keeps it in the user's notifications, optionally with a detail
+   *  line and an in-app link. */
+  persist?: boolean | { body?: string; link?: string } | undefined;
 }
+
+/** The icon for a tone, where the caller gives none. */
+export const TONE_ICONS: Record<SnackbarTone, string> = {
+  info: "mdi-information-outline",
+  success: "mdi-check-circle-outline",
+  warning: "mdi-alert-outline",
+  error: "mdi-alert-circle-outline",
+};
 
 const TONE_TO_COLOR: Record<SnackbarTone, string> = {
   success: "success",
@@ -38,12 +46,39 @@ const TONE_TO_COLOR: Record<SnackbarTone, string> = {
 export function useSnackbar() {
   const emitter = inject<Emitter<Events>>("emitter");
 
-  function show(tone: SnackbarTone, msg: string, opts: SnackbarOptions = {}) {
+  function toast(
+    tone: SnackbarTone,
+    msg: string,
+    { persist: _, ...opts }: SnackbarOptions,
+  ) {
     emitter?.emit("snackbarShow", {
       msg,
       color: TONE_TO_COLOR[tone],
       ...opts,
     });
+  }
+
+  async function persist(
+    tone: SnackbarTone,
+    msg: string,
+    opts: SnackbarOptions,
+  ) {
+    const extra = typeof opts.persist === "object" ? opts.persist : {};
+    try {
+      await storeNotificationInbox().send({
+        level: tone,
+        title: msg,
+        ...extra,
+        ...(opts.icon === undefined ? {} : { icon: opts.icon }),
+      });
+    } catch (error) {
+      console.error("Could not keep the notification:", error);
+    }
+  }
+
+  function show(tone: SnackbarTone, msg: string, opts: SnackbarOptions = {}) {
+    toast(tone, msg, opts);
+    if (opts.persist) void persist(tone, msg, opts);
   }
 
   return {

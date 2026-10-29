@@ -16,10 +16,11 @@ import type {
   FirmwareSchema,
   SaveSchema,
   StateSchema,
-  NetplayICEServer,
 } from "@/__generated__";
+import { userStorage } from "@/composables/useUserLocalStorage";
 import { ROUTES } from "@/plugins/router";
 import { saveApi as api } from "@/services/api/save";
+import syncApi from "@/services/api/sync";
 import pendingAssetStore, {
   pendingAssetId,
   type PendingAsset,
@@ -45,6 +46,12 @@ import {
   MAX_AZAHAR_STATE_BYTES,
 } from "@/utils/azaharState";
 import { useSnackbar, type SnackbarTone } from "@/v2/composables/useSnackbar";
+import { newest } from "@/v2/utils/assets";
+import { firmwareExternalFiles } from "@/v2/utils/playerFirmware";
+import { leaveFullscreen } from "@/v2/utils/playerFullscreen";
+import { browserDeviceId } from "@/v2/utils/saveSync/browserDevice";
+import { bytesEqual, saveContentHash } from "@/v2/utils/saveSync/hash";
+import { createRetryBackoff } from "@/v2/utils/saveSync/retryBackoff";
 import {
   saveSave,
   captureScreenshot,
@@ -53,17 +60,18 @@ import {
   heldFor,
   resolveScreenshot,
   saveState,
+  bootEmulatorJSSave,
   loadEmulatorJSSave,
   loadEmulatorJSState,
   invalidateEmulatorJSRomCacheIfRenamed,
   installEJSDefaultOptionsTrap,
+  installNetplayHostAudioTap,
+  patchNetplaySocketIo,
   createQuickLoadButton,
   createSaveQuitButton,
   createExitEmulationButton,
   labelContextMenuButton,
-  createRetryBackoff,
   createSaveSyncTracker,
-  bytesEqual,
   pollSaveFiles,
   saveSaveOnUnload,
   toArrayBuffer,
@@ -85,6 +93,7 @@ const props = defineProps<{
   save: SaveSchema | null;
   state: StateSchema | null;
   bios: FirmwareSchema | null;
+  firmware: FirmwareSchema[];
   core: string | null;
   disc: number | null;
   /** Slot for new saves when the loaded save has none; defaults to autosave. */
@@ -99,7 +108,28 @@ const romRef = ref<DetailedRom>(props.rom);
 // so far. Loading a save resets the version so the next write opens a new one.
 let loadedSave: SaveSchema | null = props.save;
 const sessionSaveRef = ref<SaveSchema | null>(null);
-const deviceIDRef = ref(authStore.user?.current_device_id ?? undefined);
+// This browser's own sync device: the login's device is shared by every
+// browser behind one address. Undefined when the account cannot have one.
+const deviceIDRef = ref<string | undefined>(undefined);
+const deviceReady = (async () => {
+  const userId = authStore.user?.id;
+  if (userId == null) return;
+  try {
+    deviceIDRef.value = (await browserDeviceId(userId)) ?? undefined;
+  } catch (error) {
+    console.error("Registering this browser as a sync device failed", error);
+  }
+})();
+// Writes that continue the slot's current version are refused when another
+// device moved the slot on since; any other boot source was picked on purpose.
+function continuesSlotHead(): boolean {
+  const slot = loadedSave?.slot;
+  if (!slot) return false;
+  const head = newest(
+    romRef.value.user_saves.filter((save) => save.slot === slot),
+  );
+  return head?.id === loadedSave?.id;
+}
 // Bytes the server already holds, so forced writes can skip an unchanged SRAM.
 const saveTracker = createSaveSyncTracker();
 function baselineSaveTrackerFromEmulator() {
@@ -177,6 +207,7 @@ function writeSave(
 ): Promise<SaveSchema | null> {
   if (saveLoading) return Promise.resolve(null);
   const write = saveWrite.then(async () => {
+    await deviceReady;
     if (disposed || generation !== saveGeneration) return null;
     const bytes = new Uint8Array(file.saveFile);
     try {
@@ -209,6 +240,7 @@ function writeSave(
         save: sessionSaveRef.value,
         deviceId: deviceIDRef.value,
         slot: currentSlot(),
+        guarded: !!deviceIDRef.value && continuesSlotHead(),
         saveFile: file.saveFile,
         screenshotFile,
       });
@@ -273,79 +305,13 @@ const { selectedLanguage } = storeToRefs(languageStore);
 const stateSession = new AbortController();
 let stateBusy = false;
 
-// Declare global variables for EmulatorJS
-declare global {
-  interface Window {
-    EJS_core: string;
-    EJS_biosUrl: string;
-    EJS_player: string;
-    EJS_pathtodata: string;
-    EJS_color: string;
-    EJS_gameID: number;
-    EJS_gameName: string;
-    EJS_backgroundImage: string;
-    EJS_backgroundColor: string;
-    EJS_backgroundBlur: boolean;
-    EJS_gameUrl: string;
-    EJS_loadStateURL: string | null;
-    EJS_cheats: string;
-    EJS_gameParentUrl: string;
-    EJS_gamePatchUrl: string;
-    EJS_netplayServer: string;
-    EJS_netplayICEServers: NetplayICEServer[];
-    EJS_alignStartButton: "top" | "center" | "bottom";
-    EJS_startOnLoaded: boolean;
-    EJS_fullscreenOnLoaded: boolean;
-    EJS_threads: boolean;
-    EJS_controlScheme: string | null;
-    EJS_defaultOptions: object;
-    EJS_defaultControls: object;
-    EJS_emulator: any; // eslint-disable-line @typescript-eslint/no-explicit-any
-    EJS_language: string;
-    EJS_disableAutoLang: boolean;
-    EJS_DEBUG_XX: boolean;
-    EJS_CacheLimit: number;
-    EJS_Buttons: Record<string, boolean | { displayName: string }>;
-    EJS_VirtualGamepadSettings: Record<string, unknown>;
-    EJS_volume: number;
-    EJS_paths: Record<string, string>;
-    EJS_startButtonName: string;
-    EJS_softLoad: boolean;
-    EJS_screenCapture: object;
-    EJS_externalFiles: Record<string, string>;
-    EJS_videoRotation: number;
-    EJS_fixedSaveInterval: number;
-    EJS_disableCue: boolean;
-    EJS_dontExtractRom: boolean;
-    EJS_dontExtractBIOS: boolean;
-    EJS_disableDatabases: boolean;
-    EJS_disableLocalStorage: boolean;
-    EJS_disableAutoUnload: boolean;
-    EJS_disableBatchBootup: boolean;
-    EJS_onGameStart: () => void;
-    EJS_onSaveState: (args: {
-      screenshot?: ArrayBuffer;
-      state: ArrayBuffer;
-    }) => void;
-    EJS_onLoadState: () => void;
-    EJS_onSaveSave: (args: {
-      screenshot: ArrayBuffer;
-      save: ArrayBuffer;
-    }) => void;
-    EJS_onLoadSave: () => void;
-    // Socket.IO global, bundled by EmulatorJS and used by its netplay code.
-    io?: ((url: string, opts?: Record<string, unknown>) => unknown) & {
-      __rommNetplayPatched?: boolean;
-    };
-  }
-}
 
 const supportedCores = getSupportedEJSCores(
   romRef.value.platform_slug,
   configStore.config.EJS_NETPLAY_ENABLED,
 );
 window.EJS_core =
-  supportedCores.find((core) => core === props.core) ?? supportedCores[0];
+  supportedCores.find((core) => core === props.core) ?? supportedCores[0]!;
 const isDosBoxPure = ["dos", "dosbox_pure"].includes(window.EJS_core);
 const isPpsspp = window.EJS_core === "ppsspp";
 const isAzahar = window.EJS_core === "azahar";
@@ -368,16 +334,21 @@ invalidateEmulatorJSRomCacheIfRenamed(romRef.value);
 window.EJS_gameUrl = getDownloadPath({
   rom: romRef.value,
   fileIDs: props.disc ? [props.disc] : [],
+  purpose: "play",
 });
 window.EJS_biosUrl = props.bios
   ? `/api/firmware/${props.bios.id}/content/${props.bios.file_name}`
   : "";
+window.EJS_externalFiles = firmwareExternalFiles(
+  window.EJS_core,
+  props.firmware,
+);
 window.EJS_player = "#game";
 window.EJS_color = "#A453FF";
 window.EJS_alignStartButton = "center";
 window.EJS_startOnLoaded = true;
 window.EJS_backgroundImage = `${window.location.origin}/assets/logos/romm_logo_xbox_one_circle_boot.svg`;
-window.EJS_backgroundColor = theme.current.value.colors.background;
+window.EJS_backgroundColor = String(theme.current.value.colors.background);
 // Labels come from RomM's locales, which cover languages EmulatorJS does not.
 window.EJS_Buttons = {
   // Disable the standard exit button to implement our own
@@ -442,6 +413,9 @@ window.EJS_disableBatchBootup = EJS_DISABLE_BATCH_BOOTUP;
 if (EJS_CACHE_LIMIT !== null) window.EJS_CacheLimit = EJS_CACHE_LIMIT;
 
 installEJSDefaultOptionsTrap();
+const patchNetplayHostAudio = EJS_NETPLAY_ENABLED
+  ? installNetplayHostAudioTap()
+  : null;
 
 onMounted(() => {
   window.scrollTo(0, 0);
@@ -450,33 +424,33 @@ onMounted(() => {
   window.addEventListener("beforeunload", onBeforeUnload);
   window.addEventListener("pagehide", onPageHide);
   if (props.bios) {
-    localStorage.setItem(
+    userStorage.setItem(
       `player:${romRef.value.platform_slug}:bios_id`,
       props.bios.id.toString(),
     );
   } else {
-    localStorage.removeItem(`player:${romRef.value.platform_slug}:bios_id`);
+    userStorage.removeItem(`player:${romRef.value.platform_slug}:bios_id`);
   }
 
   if (props.core) {
     // Remember the core per-game, and per-platform as the fallback default
-    localStorage.setItem(`player:${romRef.value.id}:core`, props.core);
-    localStorage.setItem(
+    userStorage.setItem(`player:${romRef.value.id}:core`, props.core);
+    userStorage.setItem(
       `player:${romRef.value.platform_slug}:core`,
       props.core,
     );
   } else {
-    localStorage.removeItem(`player:${romRef.value.id}:core`);
-    localStorage.removeItem(`player:${romRef.value.platform_slug}:core`);
+    userStorage.removeItem(`player:${romRef.value.id}:core`);
+    userStorage.removeItem(`player:${romRef.value.platform_slug}:core`);
   }
 
   if (props.disc) {
-    localStorage.setItem(
+    userStorage.setItem(
       `player:${romRef.value.id}:disc`,
       props.disc.toString(),
     );
   } else {
-    localStorage.removeItem(`player:${romRef.value.id}:disc`);
+    userStorage.removeItem(`player:${romRef.value.id}:disc`);
   }
 
   emitter?.on("saveSelected", switchSave);
@@ -639,7 +613,11 @@ async function flushPendingSave() {
     emulator.pause();
   }
 }
-onBeforeRouteLeave(flushPendingSave);
+onBeforeRouteLeave(async () => {
+  await flushPendingSave();
+  // The unmount reloads the page.
+  await leaveFullscreen();
+});
 // A v2 shell that leaves by replacing the document aborts the navigation, so
 // the guard above never runs and the flush has to be asked for. Idempotent.
 defineExpose({ flushPendingSave });
@@ -681,14 +659,31 @@ function onPageHide() {
 // Saves management
 // Resolves whether this pick reached the core: a later pick, a state load or
 // leaving the player voids a download still in flight.
-async function loadSave(save: SaveSchema): Promise<boolean> {
+async function confirmDirectorySave(save: SaveSchema) {
+  await deviceReady;
+  const deviceId = deviceIDRef.value;
+  const contentHash = window.EJS_emulator?.gameManager?.getSaveFileAdapter()?.lastRestoredHash;
+  if (disposed || !deviceId || !contentHash) return;
+  try {
+    await syncApi.confirmDownloaded({ saveId: save.id, deviceId, contentHash });
+  } catch (error) {
+    console.error("Confirming the loaded directory save failed", error);
+  }
+}
+
+async function loadSave(
+  save: SaveSchema,
+  apply: (bytes: Uint8Array) => void = loadEmulatorJSSave,
+): Promise<boolean> {
   const generation = ++saveGeneration;
   saveLoading = true;
 
   try {
+    await deviceReady;
+    const deviceId = deviceIDRef.value;
     const { data } = await api.get(save.download_path.replace("/api", ""), {
       responseType: "arraybuffer",
-      params: { device_id: deviceIDRef.value },
+      params: { device_id: deviceId },
     });
     if (disposed || generation !== saveGeneration) return false;
     const bytes = new Uint8Array(data);
@@ -696,7 +691,18 @@ async function loadSave(save: SaveSchema): Promise<boolean> {
       await window.EJS_emulator.gameManager.getSaveFileAdapter().restore(bytes);
       if (disposed || generation !== saveGeneration) return false;
     } else {
-      loadEmulatorJSSave(bytes);
+      apply(bytes);
+    }
+    if (deviceId) {
+      void syncApi
+        .confirmDownloaded({
+          saveId: save.id,
+          deviceId,
+          contentHash: saveContentHash(bytes),
+        })
+        .catch((error: unknown) => {
+          console.error("Confirming the loaded save failed", error);
+        });
     }
     // Writes follow the picked save only once its bytes are in the core.
     loadedSave = save;
@@ -931,20 +937,10 @@ window.EJS_onGameStart = async () => {
         return {};
       }
     };
+    patchNetplayHostAudio?.(netplay);
   }
 
-  // Polling requests can reach different backend workers and lose the session.
-  if (window.io && !window.io.__rommNetplayPatched) {
-    const originalIo = window.io;
-    const patchedIo = ((url: string, opts?: Record<string, unknown>) =>
-      originalIo(url, {
-        ...opts,
-        path: "/netplay/socket.io",
-        transports: ["websocket"],
-      })) as NonNullable<Window["io"]>;
-    patchedIo.__rommNetplayPatched = true;
-    window.io = patchedIo;
-  }
+  patchNetplaySocketIo();
 
   void (async () => {
     const ready = await waitForGameManager();
@@ -960,13 +956,10 @@ window.EJS_onGameStart = async () => {
         );
         await loadState(props.state);
       } else if (props.save && !usesDirectorySaveBundle) {
-        const applied = await loadSave(props.save);
-        // melonDS reads cartridge SRAM from disk when loading or resetting a ROM.
-        if (applied && window.EJS_core === "melonds") {
-          window.EJS_emulator.gameManager.restart();
-        }
+        await loadSave(props.save, bootEmulatorJSSave);
       } else {
         baselineSaveTrackerFromEmulator();
+        if (props.save && usesDirectorySaveBundle) await confirmDirectorySave(props.save);
       }
       if (EJS_ENABLE_AUTO_SAVE_SYNC) {
         try {

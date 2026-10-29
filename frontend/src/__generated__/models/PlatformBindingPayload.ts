@@ -6,4 +6,3 @@ export type PlatformBindingPayload = {
     fs_slug: string;
     slug: string;
 };
-

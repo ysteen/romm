@@ -1,11 +1,13 @@
 <script setup lang="ts">
-// CollectionPickerRow — one row in the ManageCollectionsDialog. Portrait
-// thumb + name + rom-count + brand-primary circular tick when checked.
+// CollectionPickerRow: one row in the ManageCollectionsDialog. Portrait
+// thumb (globed when public) + name + rom-count + brand-primary circular
+// tick when checked.
 // Click toggles; parent owns the pending/checked state and handles the
 // API round-trip.
 import { RIcon } from "@v2/lib";
 import { computed } from "vue";
 import CollectionMosaic from "@/v2/components/Collections/CollectionMosaic.vue";
+import PublicBadge from "@/v2/components/shared/PublicBadge.vue";
 
 defineOptions({ inheritAttrs: false });
 
@@ -18,6 +20,7 @@ interface Props {
    *   - "some" → some are, some aren't (bulk-only, drawn with a dash)
    *   - "all"  → every selected ROM is already in this collection */
   state: "off" | "some" | "all";
+  isPublic?: boolean | undefined;
   busy?: boolean;
   // Thumb diameter in px. Drives both the grid first-column width and
   // the CollectionMosaic width so the label column always lines up with
@@ -26,6 +29,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  isPublic: false,
   busy: false,
   tileSize: 36,
 });
@@ -58,7 +62,10 @@ const isFull = computed(() => props.state === "all");
     :disabled="busy"
     @click="$emit('toggle')"
   >
-    <CollectionMosaic :covers="covers" radius="6px" class="pick-row__thumb" />
+    <span class="pick-row__thumb">
+      <CollectionMosaic :covers="covers" radius="6px" />
+      <PublicBadge v-if="isPublic" class="pick-row__public" />
+    </span>
     <span class="pick-row__name">{{ name }}</span>
     <span class="pick-row__count">{{ count }}</span>
     <span class="pick-row__tick" aria-hidden="true">
@@ -104,10 +111,17 @@ const isFull = computed(() => props.state === "all");
   cursor: progress;
 }
 
-/* Portrait thumb — width tracks the configurable tile size; height is
+/* Portrait thumb: width tracks the configurable tile size; height is
    computed by CollectionMosaic from its 140/188 aspectRatio. */
 .pick-row__thumb {
+  position: relative;
+  display: block;
   width: var(--tile-w, 36px);
+}
+.pick-row__public {
+  position: absolute;
+  top: 4px;
+  left: 4px;
 }
 
 .pick-row__name {
@@ -147,7 +161,7 @@ const isFull = computed(() => props.state === "all");
   color: var(--r-color-overlay-fg);
 }
 
-/* Indeterminate (`some`) — the brand colour reads as a hint but the
+/* Indeterminate (`some`): the brand colour reads as a hint but the
    tick swaps to a horizontal dash so users can tell "partially in" from
    "fully in" at a glance. */
 .pick-row--partial .pick-row__tick {

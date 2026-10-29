@@ -20,4 +20,3 @@ export type ScreenshotSchema = {
     is_gallery?: boolean;
     is_public?: boolean;
 };
-

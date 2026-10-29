@@ -15,10 +15,12 @@
 import { RBtn, RDialog, RSelect } from "@v2/lib";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import type { MemoryCardSchema } from "@/__generated__";
 import memoryCardApi from "@/services/api/memory-card";
+import MemoryCardDialog, {
+  type MemoryCardFields,
+} from "@/v2/components/Player/MemoryCardDialog.vue";
 import MemoryCardManager from "@/v2/components/Player/MemoryCardManager.vue";
-import MemoryCardNameDialog from "@/v2/components/Player/MemoryCardNameDialog.vue";
+import { useFetchState } from "@/v2/composables/useFetchState";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import { errorMessage } from "@/v2/utils/errorMessage";
 
@@ -35,33 +37,36 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const snackbar = useSnackbar();
 
-const cards = ref<MemoryCardSchema[]>([]);
-const loading = ref(false);
+// Best-effort: a failed fetch leaves the list empty (a blank card at claim)
+// rather than blocking launch.
+const {
+  state: cards,
+  isLoading: loading,
+  execute: fetchCards,
+} = useFetchState(
+  (emulator: string) =>
+    memoryCardApi.getMemoryCards({ emulator }).then(({ data }) => data),
+  [],
+  {
+    immediate: false,
+    onSuccess: () => preselect(),
+    onError: (err) => {
+      console.error("[memory-cards] Could not fetch cards:", err);
+      cards.value = [];
+      // The parent still holds whatever the last emulator selected, and
+      // claiming with a card this emulator does not own is a 404.
+      preselect();
+    },
+  },
+);
 
 const cardItems = computed(() =>
   cards.value.map((c) => ({ title: c.name, value: c.id })),
 );
 
-// Fetch the caller's cards for this emulator whenever the emulator changes,
-// then preselect the newest (first) so Play resumes the last-used card.
-// Best-effort: a fetch failure leaves the list empty (blank card at claim)
-// rather than blocking launch.
 async function loadCards(emulator: string): Promise<void> {
   if (!emulator) return;
-  loading.value = true;
-  try {
-    const { data } = await memoryCardApi.getMemoryCards({ emulator });
-    cards.value = data;
-    preselect();
-  } catch (err) {
-    console.warn("[memory-cards] Could not fetch cards:", err);
-    cards.value = [];
-    // The parent still holds whatever the last emulator selected, and claiming
-    // with a card this emulator does not own is a 404.
-    preselect();
-  } finally {
-    loading.value = false;
-  }
+  await fetchCards(emulator);
 }
 
 // Keep the selection valid: clear it if the chosen card vanished, and default
@@ -97,7 +102,10 @@ function onManaged(): void {
   void loadCards(props.emulator);
 }
 
-async function submitCreate(name: string): Promise<void> {
+async function submitCreate({
+  name,
+  isPublic,
+}: MemoryCardFields): Promise<void> {
   if (creating.value) return;
   creating.value = true;
   try {
@@ -105,6 +113,7 @@ async function submitCreate(name: string): Promise<void> {
       name,
       emulator: props.emulator,
       platform_id: props.platformId ?? null,
+      is_public: isPublic,
     });
     // Newest-first, so the fresh card leads the list and becomes the choice.
     cards.value = [data, ...cards.value];
@@ -160,7 +169,7 @@ async function submitCreate(name: string): Promise<void> {
       />
     </div>
 
-    <MemoryCardNameDialog
+    <MemoryCardDialog
       v-model="showCreate"
       :title="t('play.create-memory-card')"
       :confirm-label="t('common.create')"

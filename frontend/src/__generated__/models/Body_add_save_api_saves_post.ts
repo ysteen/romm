@@ -12,4 +12,3 @@ export type Body_add_save_api_saves_post = {
      */
     screenshotFile?: (string | null);
 };
-

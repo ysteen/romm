@@ -17,4 +17,3 @@ export type RomFiltersDict = {
     tags: Array<string>;
     platforms: Array<number>;
 };
-

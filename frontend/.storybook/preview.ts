@@ -1,6 +1,7 @@
 import "@mdi/font/css/materialdesignicons.css";
 import { withThemeByClassName } from "@storybook/addon-themes";
 import { setup, type Preview } from "@storybook/vue3-vite";
+import mitt from "mitt";
 import { createPinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { createVuetify } from "vuetify";
@@ -10,17 +11,25 @@ import storePermissions from "../src/stores/permissions";
 import "../src/styles/common.css";
 import "../src/styles/fonts.css";
 import { dark, light } from "../src/styles/themes";
+import type { Events } from "../src/types/emitter";
 import { installBreakpointAttribute } from "../src/v2/composables/useBreakpoint";
 import { ChromeLabelsKey } from "../src/v2/lib/a11y/chromeLabels";
 import "../src/v2/styles/global.css";
 import { createChromeLabels } from "../src/v2/utils/chromeLabels";
+import "./preview.css";
 import { ROMM_STORYBOOK_VIEWPORTS } from "./rommViewports";
+import {
+  INPUT_DEFAULT,
+  INPUT_GLOBAL,
+  INPUT_TOOLBAR,
+  withInputModality,
+} from "./withInputModality";
 
 // Mirror AppLayout/AuthLayout so html[data-bp] CSS matches useBreakpoint() in the iframe.
 installBreakpointAttribute();
 
 // Each story runs inside a Vue app with Pinia + i18n + Vuetify registered.
-// v2 primitives are Vuetify-free at runtime — Vuetify stays registered only
+// v2 primitives are Vuetify-free at runtime: Vuetify stays registered only
 // because some shared dependencies still pull it in. The visible theme for
 // v2 stories comes from the `.r-v2-dark` / `.r-v2-light` class toggled on
 // <html> by the theme switcher decorator below.
@@ -35,6 +44,8 @@ setup((app) => {
   // Stories exercise the same injected-label path as the app, so a
   // primitive rendering an un-translated label fails here too.
   app.provide(ChromeLabelsKey, createChromeLabels());
+  // Snackbar and confirm composables inject the app-wide event bus.
+  app.provide("emitter", mitt<Events>());
   // A catch-all router so primitives that render real `<router-link>`s
   // (RBtn / RListItem / RMenuItem with `to`) resolve a proper `href`
   // instead of crashing on `router.resolve`. Any string path resolves.
@@ -62,8 +73,13 @@ setup((app) => {
 });
 
 const preview: Preview = {
+  tags: ["autodocs"],
+  globalTypes: {
+    [INPUT_GLOBAL]: INPUT_TOOLBAR,
+  },
   initialGlobals: {
     viewport: { value: "rommDesktopMd" },
+    [INPUT_GLOBAL]: INPUT_DEFAULT,
   },
   parameters: {
     layout: "centered",
@@ -102,6 +118,7 @@ const preview: Preview = {
     },
   },
   decorators: [
+    withInputModality,
     withThemeByClassName({
       themes: {
         dark: "r-v2 r-v2-dark v-theme--dark",

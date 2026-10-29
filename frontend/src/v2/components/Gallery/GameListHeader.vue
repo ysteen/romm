@@ -1,15 +1,16 @@
 <script setup lang="ts">
-// GameListHeader — sticky column-header row for list-mode galleries.
+// GameListHeader: sticky column-header row for list-mode galleries.
 //
 // Layout: a single CSS-grid div sharing `LIST_GRID_TEMPLATE` with every
 // `GameListRow` underneath, so columns line up regardless of viewport.
 // Click on a sortable column toggles asc → desc → asc (single-key sort,
-// matching the rest of the gallery surface).
+// matching the rest of the gallery surface), or asc → desc → unsorted when
+// the gallery has an order of its own to fall back to.
 //
 // Sticky positioning is owned by the parent (`GalleryShell` pins this
 // below the toolbar at `top: --r-v2-shell-toolbar-h`). The header
-// itself only paints — it doesn't manage scroll.
-import { RCheckbox, RIcon } from "@v2/lib";
+// itself only paints: it doesn't manage scroll.
+import { RCheckbox, RSortHeader, type RSortDir } from "@v2/lib";
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import ListSortMenu from "@/v2/components/shared/ListSortMenu.vue";
@@ -29,21 +30,29 @@ interface Props {
   /** Currently-sorted column key. `null` when no sort is active. */
   sortKey: ListSortKey | null;
   /** Sort direction for the active key. */
-  sortDir: "asc" | "desc";
+  sortDir: RSortDir;
   /** Include the `platform` column. True on cross-platform surfaces
    * (Search / Collection / Missing games); false on Platform.vue where
    * every row shares the same platform. Mirrors the prop of the same
    * name on `GameListRow` + `GameListSkeletonRow` so all three stay in
    * lockstep. */
   showPlatformColumn?: boolean;
+  /** Names the gallery's order without a sort key (Search's relevance), and
+   * lets a third click on a column return to it. */
+  unsortedLabel?: string | undefined;
+  /** Whether that order is the one applied. */
+  unsorted?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   showPlatformColumn: true,
+  unsortedLabel: undefined,
+  unsorted: false,
 });
 
 const emit = defineEmits<{
-  (e: "sort", payload: { key: ListSortKey; dir: "asc" | "desc" }): void;
+  (e: "sort", payload: { key: ListSortKey; dir: RSortDir }): void;
+  (e: "unsort"): void;
 }>();
 
 const { t } = useI18n();
@@ -74,22 +83,22 @@ function onSelectAllClick(e: MouseEvent) {
   }
 }
 
-function handleClick(col: ListColumn) {
+function onSort(col: ListColumn, dir: RSortDir) {
   if (!isSortableColumn(col)) return;
-  // Toggle direction when re-clicking the active column; otherwise start the
-  // new one ascending, like every other sortable table in the app.
-  const nextDir: "asc" | "desc" =
-    props.sortKey === col.key && props.sortDir === "asc" ? "desc" : "asc";
-  emit("sort", { key: col.key, dir: nextDir });
+  if (
+    props.unsortedLabel &&
+    props.sortKey === col.key &&
+    props.sortDir === "desc"
+  ) {
+    emit("unsort");
+    return;
+  }
+  emit("sort", { key: col.key, dir });
 }
 </script>
 
 <template>
-  <div
-    v-if="smAndDown"
-    class="game-list-header game-list-header--compact"
-    role="row"
-  >
+  <div v-if="smAndDown" class="game-list-header game-list-header--compact">
     <RCheckbox
       class="game-list-header__check"
       :model-value="selectionState === 'all'"
@@ -111,7 +120,10 @@ function handleClick(col: ListColumn) {
       :options="sortOptions"
       :sort-key="sortKey"
       :sort-dir="sortDir"
+      :unsorted-label="unsortedLabel"
+      :unsorted="unsorted"
       @sort="emit('sort', $event)"
+      @unsort="emit('unsort')"
     />
   </div>
 
@@ -119,54 +131,38 @@ function handleClick(col: ListColumn) {
     <template v-for="col in columns" :key="String(col.key)">
       <!-- Tri-state select-all checkbox (off → some → all), judged
            against the whole filtered result. -->
-      <RCheckbox
+      <div
         v-if="col.key === 'select'"
-        class="game-list-header__check"
-        :model-value="selectionState === 'all'"
-        :indeterminate="selectionState === 'some'"
-        shape="circle"
-        size="sm"
-        color="primary"
-        bare
-        hide-details
-        :aria-label="
-          selectionState === 'all'
-            ? t('gallery.selection-deselect-all')
-            : t('gallery.selection-select-all')
-        "
-        @click="onSelectAllClick"
-      />
-
-      <button
-        v-else
-        type="button"
-        class="game-list-header__cell"
-        :class="{
-          'game-list-header__cell--sortable': col.sortable,
-          'game-list-header__cell--end': col.align === 'end',
-          'game-list-header__cell--active': col.sortable && sortKey === col.key,
-        }"
-        :aria-sort="
-          col.sortable && sortKey === col.key
-            ? sortDir === 'asc'
-              ? 'ascending'
-              : 'descending'
-            : 'none'
-        "
-        :tabindex="col.sortable ? 0 : -1"
-        :disabled="!col.sortable"
-        @click="handleClick(col)"
+        role="columnheader"
+        class="game-list-header__select"
       >
-        <span class="game-list-header__label">{{ col.label }}</span>
-        <RIcon
-          v-if="col.sortable && sortKey === col.key"
-          :icon="
-            sortDir === 'asc' ? 'mdi-arrow-up-thin' : 'mdi-arrow-down-thin'
+        <RCheckbox
+          class="game-list-header__check"
+          :model-value="selectionState === 'all'"
+          :indeterminate="selectionState === 'some'"
+          shape="circle"
+          size="sm"
+          color="primary"
+          bare
+          hide-details
+          :aria-label="
+            selectionState === 'all'
+              ? t('gallery.selection-deselect-all')
+              : t('gallery.selection-select-all')
           "
-          size="14"
-          class="game-list-header__icon"
+          @click="onSelectAllClick"
         />
-      </button>
+      </div>
+      <RSortHeader
+        v-else
+        :label="col.label || col.hiddenLabel || ''"
+        :hide-label="!col.label"
+        :sortable="col.sortable"
+        :active="sortKey === col.key"
+        :dir="sortDir"
+        :align="col.align"
+        @sort="onSort(col, $event)"
+      />
     </template>
   </div>
 </template>
@@ -194,66 +190,16 @@ function handleClick(col: ListColumn) {
   width: var(--r-list-select-w);
 }
 
-.game-list-header__cell {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  font: inherit;
-  color: var(--r-color-fg-secondary);
-  font-size: var(--r-font-size-xs);
-  font-weight: var(--r-font-weight-bold);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--r-space-1);
+.game-list-header__select {
+  display: flex;
+  justify-content: center;
   min-width: 0;
   height: 100%;
-  cursor: default;
-  text-align: start;
-  border-radius: var(--r-radius-sm);
-  transition: color var(--r-motion-fast) var(--r-motion-ease-out);
-}
-
-.game-list-header__cell--end {
-  justify-content: flex-end;
-  text-align: end;
-}
-
-/* End-aligned labels hug the right edge, so the sort glyph goes on the
-   label's left. Appending it would shove the label sideways on click. */
-.game-list-header__cell--end .game-list-header__icon {
-  order: -1;
-}
-
-.game-list-header__cell--sortable {
-  cursor: pointer;
-}
-
-.game-list-header__cell--sortable:hover,
-.game-list-header__cell--sortable:focus-visible {
-  color: var(--r-color-fg);
-}
-
-.game-list-header__cell--active {
-  color: var(--r-color-fg);
-}
-
-.game-list-header__label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.game-list-header__icon {
-  flex-shrink: 0;
-  color: var(--r-color-brand-primary);
 }
 
 /* Select-all checkbox in the leading column: RCheckbox bare/circle, matching the
    GameCard and GameListRow ticks, and centred over every row's tick. */
 .game-list-header__check {
-  justify-self: center;
+  align-self: center;
 }
 </style>

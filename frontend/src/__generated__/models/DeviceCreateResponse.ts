@@ -7,4 +7,3 @@ export type DeviceCreateResponse = {
     name: (string | null);
     created_at: string;
 };
-

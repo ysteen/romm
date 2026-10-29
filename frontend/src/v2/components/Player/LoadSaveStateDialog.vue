@@ -3,7 +3,7 @@
 // on `selectStateDialog`, emits `saveSelected` or `stateSelected`.
 import { RDialog, RSliderBtnGroup } from "@v2/lib";
 import type { Emitter } from "mitt";
-import { computed, inject, onBeforeUnmount, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { SaveSchema, StateSchema } from "@/__generated__";
 import type { Events, StatePickerRequest } from "@/types/emitter";
@@ -11,6 +11,7 @@ import AssetList from "@/v2/components/shared/AssetList.vue";
 import AssetStrip from "@/v2/components/shared/AssetStrip.vue";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
 import { useConfirm } from "@/v2/composables/useConfirm";
+import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
 import { useSaveStateTabs } from "@/v2/composables/useSaveStateTabs";
 import type { Asset, AssetType } from "@/v2/utils/assets";
 
@@ -38,8 +39,7 @@ const openHandler = (selectedRom: StatePickerRequest) => {
   tab.value = "state";
   show.value = true;
 };
-emitter?.on("selectStateDialog", openHandler);
-onBeforeUnmount(() => emitter?.off("selectStateDialog", openHandler));
+useEmitterEvent("selectStateDialog", openHandler);
 
 // Either one replaces the running game, so unsaved progress is at stake.
 async function onSelect(asset: Asset) {

@@ -1,8 +1,8 @@
 """Startup script to run tasks before the main application is started."""
 
 import asyncio
+from typing import cast
 
-import sentry_sdk
 from opentelemetry import trace
 from rq.exceptions import DuplicateJobError
 from rq.job import Job
@@ -11,7 +11,9 @@ from rq.utils import as_text
 from config import (
     ENABLE_SCHEDULED_CONVERT_IMAGES_TO_WEBP,
     LAUNCHBOX_API_ENABLED,
-    SENTRY_DSN,
+    SMTP_HOST,
+    SMTP_SECURITY,
+    SMTP_SECURITY_MODES,
 )
 from config.config_manager import config_manager as cm
 from handler.database import db_save_handler
@@ -37,9 +39,9 @@ from logger.logger import log
 from models.firmware import FIRMWARE_FIXTURES_DIR, KNOWN_BIOS_KEY
 from tasks.registry import enqueue_task
 from tasks.scheduled.update_switch_titledb import SWITCH_TITLEDB_STORE
-from utils import get_version
 from utils.cache import conditionally_set_cache, drop_stale_cache_store
 from utils.context import initialize_context
+from utils.sentry import init_sentry
 
 tracer = trace.get_tracer(__name__)
 
@@ -138,7 +140,9 @@ def _drop_legacy_scheduler_state() -> None:
     try:
         legacy_job_ids = {
             as_text(job_id)
-            for job_id in redis_client.zrange(LEGACY_SCHEDULED_JOBS_KEY, 0, -1)
+            for job_id in cast(
+                list[bytes], redis_client.zrange(LEGACY_SCHEDULED_JOBS_KEY, 0, -1)
+            )
         }
 
         if legacy_job_ids:
@@ -171,7 +175,14 @@ async def main() -> None:
     async with initialize_context():
         log.info("Running startup tasks")
 
+        cm.migrate_retired_filesystem_keys()
         cm.check_library_layout()
+
+        if SMTP_HOST and SMTP_SECURITY not in SMTP_SECURITY_MODES:
+            log.warning(
+                f"Email is off: SMTP_SECURITY is {SMTP_SECURITY!r}, not one of "
+                + ", ".join(SMTP_SECURITY_MODES)
+            )
 
         try:
             drop_stale_scheduled_scans()
@@ -225,9 +236,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        release=f"romm@{get_version()}",
-    )
+    init_sentry()
 
     asyncio.run(main())

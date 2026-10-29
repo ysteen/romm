@@ -1,11 +1,12 @@
 <script setup lang="ts">
-// UploadAssetDialog: the slot for saves, or the core for states, plus the
-// files to send. The Save data tab owns the upload.
+// UploadAssetDialog: the slot for saves and the core for both, plus the files
+// to send. The Save data tab owns the upload.
 import { RBtn, RDialog, RForm, RIcon, RSelect, RTextField } from "@v2/lib";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { SaveSchema } from "@/__generated__";
 import { AUTOSAVE_SLOT, SAVE_SLOT_MAX_LENGTH } from "@/services/api/save";
+import { useStreamingStore } from "@/stores/streaming";
 import PendingFilesDropzone from "@/v2/components/shared/PendingFilesDropzone.vue";
 import type { AssetType } from "@/v2/utils/assets";
 import {
@@ -36,7 +37,7 @@ const props = defineProps<{
   type: AssetType;
   /** Own saves, whose slots the picker offers. */
   saves: Pick<SaveSchema, "slot">[];
-  /** Cores the states may have been made with. */
+  /** Cores the files may have been made with. */
   cores: string[];
   /** Files dropped on the tab, already picked when the dialog opens. */
   initialFiles: File[];
@@ -48,6 +49,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const { emulatorLabel } = useStreamingStore();
 
 const slot = ref<UploadSlot>(existingSlot(AUTOSAVE_SLOT));
 const newSlotName = ref("");
@@ -73,12 +75,13 @@ function isUploadSlot(value: unknown): value is UploadSlot {
   );
 }
 function onSlot(value: unknown) {
-  if (isUploadSlot(value)) slot.value = value;
+  if (!isUploadSlot(value)) return;
+  slot.value = value;
 }
 
 const coreItems = computed(() => [
   { value: "", title: t("play.any-core") },
-  ...props.cores.map((value) => ({ value, title: value })),
+  ...props.cores.map((value) => ({ value, title: emulatorLabel(value) })),
 ]);
 
 watch(
@@ -111,7 +114,7 @@ async function submit() {
       props.type === "save" && picked.kind !== "none"
         ? chosenSlot(picked, newSlotName.value)
         : null,
-    emulator: props.type === "state" ? core.value || null : null,
+    emulator: core.value || null,
   });
 }
 </script>
@@ -157,7 +160,6 @@ async function submit() {
           autocomplete="off"
         />
         <RSelect
-          v-if="type === 'state'"
           v-model="core"
           :items="coreItems"
           prefix-label="inline"

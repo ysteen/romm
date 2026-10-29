@@ -8,4 +8,3 @@ export type MissingFirmwareCleanupStats = {
     firmware_deleted: number;
     errors: number;
 };
-

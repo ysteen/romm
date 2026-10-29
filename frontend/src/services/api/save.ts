@@ -57,7 +57,7 @@ export function sessionScreenshotFile(
 
 type SaveUploadInput = Omit<AddSaveInput, "saveFile" | "screenshotFile"> & {
   saveFile: File;
-  screenshotFile?: File;
+  screenshotFile?: File | undefined;
 };
 
 type UpdateSaveUploadInput = Omit<
@@ -65,17 +65,21 @@ type UpdateSaveUploadInput = Omit<
   "saveFile" | "screenshotFile"
 > & {
   saveFile: File;
-  screenshotFile?: File;
+  screenshotFile?: File | undefined;
 };
 
 interface SaveVersionParams {
   rom: Pick<DetailedRomSchema, "id">;
-  emulator?: string;
-  deviceId?: string;
-  slot?: string;
-  autocleanup?: boolean;
+  emulator?: string | undefined;
+  deviceId?: string | undefined;
+  slot?: string | undefined;
+  autocleanup?: boolean | undefined;
   /** Skip the stale-device conflict check and the content-hash dedupe. */
-  overwrite?: boolean;
+  overwrite?: boolean | undefined;
+  /** The device's own hash of the file, kept as its sync baseline. */
+  contentHash?: string | undefined;
+  /** The sync session the upload carries out. */
+  sessionId?: number | undefined;
 }
 
 function saveVersionQuery({
@@ -85,6 +89,8 @@ function saveVersionQuery({
   slot,
   autocleanup,
   overwrite,
+  contentHash,
+  sessionId,
 }: SaveVersionParams) {
   return {
     rom_id: rom.id,
@@ -93,6 +99,8 @@ function saveVersionQuery({
     slot,
     autocleanup,
     overwrite,
+    content_hash: contentHash,
+    session_id: sessionId,
   };
 }
 
@@ -131,11 +139,14 @@ async function updateSave({
   saveFile,
   screenshotFile,
   deviceId,
+  contentHash,
 }: {
   save: SaveSchema;
   saveFile: UpdateSaveUploadInput["saveFile"];
   screenshotFile?: UpdateSaveUploadInput["screenshotFile"];
-  deviceId?: string;
+  deviceId?: string | undefined;
+  /** The device's own hash of the file, kept as its sync baseline. */
+  contentHash?: string | undefined;
 }) {
   const formData = buildFormInput<UpdateSaveUploadInput>([
     ["saveFile", saveFile],
@@ -143,7 +154,7 @@ async function updateSave({
   ]);
 
   return api.put<SaveSchema>(`/saves/${save.id}`, formData, {
-    params: { device_id: deviceId },
+    params: { device_id: deviceId, content_hash: contentHash },
   });
 }
 
@@ -164,12 +175,15 @@ function sendSaveOnUnload({
     ? {
         url: `/saves/${save.id}`,
         method: "PUT",
-        params: { device_id: version.deviceId },
+        params: {
+          device_id: version.deviceId,
+          content_hash: version.contentHash,
+        },
       }
     : {
         url: "/saves",
         method: "POST",
-        params: saveVersionQuery({ ...version, overwrite: true }),
+        params: saveVersionQuery({ overwrite: true, ...version }),
       };
   const csrfToken = Cookies.get("romm_csrftoken");
   void fetch(api.getUri(request), {
@@ -177,7 +191,7 @@ function sendSaveOnUnload({
     body: saveFormData(saveFile),
     keepalive: true,
     credentials: "same-origin",
-    headers: csrfToken ? { "x-csrftoken": csrfToken } : undefined,
+    ...(csrfToken ? { headers: { "x-csrftoken": csrfToken } } : {}),
   }).catch(() => undefined);
   return true;
 }
@@ -198,10 +212,35 @@ async function setSaveVisibility({
   });
 }
 
+async function setSaveFavorite({
+  id,
+  isFavorite,
+}: {
+  id: number;
+  isFavorite: boolean;
+}) {
+  return api.put<SaveSchema>(`/saves/${id}/favorite`, {
+    is_favorite: isFavorite,
+  });
+}
+
+async function setSaveLabels({ id, labels }: { id: number; labels: string[] }) {
+  return api.put<SaveSchema>(`/saves/${id}/labels`, { labels });
+}
+
+async function renameSave({ id, fileName }: { id: number; fileName: string }) {
+  return api.put<SaveSchema>(`/saves/${id}/file-name`, {
+    file_name: fileName,
+  });
+}
+
 export default {
   uploadSaves,
   updateSave,
   sendSaveOnUnload,
   deleteSaves,
   setSaveVisibility,
+  setSaveFavorite,
+  setSaveLabels,
+  renameSave,
 };

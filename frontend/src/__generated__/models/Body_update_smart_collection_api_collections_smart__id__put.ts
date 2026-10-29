@@ -10,4 +10,3 @@ export type Body_update_smart_collection_api_collections_smart__id__put = {
      */
     filter_criteria?: (string | null);
 };
-

@@ -5,4 +5,3 @@
 export type MuteRequest = {
     mute?: (boolean | null);
 };
-

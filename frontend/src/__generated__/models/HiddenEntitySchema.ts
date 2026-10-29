@@ -7,4 +7,3 @@ export type HiddenEntitySchema = {
     entity: PermEntity;
     entity_id: number;
 };
-

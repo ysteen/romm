@@ -1,24 +1,23 @@
 <script setup lang="ts">
-// PlatformsIndex — grid of the library's platforms, with the same toolbar
+// PlatformsIndex: grid of the library's platforms, with the same toolbar
 // (search / groupBy / layout) the ROM galleries use. Toolbar state lives
 // in `useGalleryMode` so toggling layout here also affects Platform /
-// Collection / Search ROM views — one consistent reading mode across
+// Collection / Search ROM views: one consistent reading mode across
 // every main surface. Search is local (per-view URL ?search=) since the
 // platforms list is small enough that no Pinia store is warranted.
 //
 // Group-by axes: "letter" (universal across galleries) plus three
-// platform-specific modes — "family" (PlayStation / Nintendo / …),
+// platform-specific modes: "family" (PlayStation / Nintendo / …),
 // "category" (Console / Portable / Computer / …), "generation" (1st /
 // 2nd / …). Each non-letter mode is implemented as the same shape:
 // list of `{ label, items: Platform[] }` buckets the template iterates
 // blindly. When the global groupBy lands on a value with no usable
-// data on the loaded platforms, the view falls through to flat — the
+// data on the loaded platforms, the view falls through to flat: the
 // toolbar's mode is the user's intent, not a hard requirement.
 import { RDivider, REmptyState, RLetterHeading, RSkeletonBlock } from "@v2/lib";
 import { storeToRefs } from "pinia";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRoute, useRouter } from "vue-router";
 import storePlatforms, { type Platform } from "@/stores/platforms";
 import GalleryToolbar, {
   type GroupByItem,
@@ -36,11 +35,12 @@ import IndexShell from "@/v2/components/shared/IndexShell.vue";
 import PageHeader from "@/v2/components/shared/PageHeader.vue";
 import { useGalleryMode } from "@/v2/composables/useGalleryMode";
 import { useGalleryViewModeUrl } from "@/v2/composables/useGalleryViewModeUrl";
+import { useGridNav } from "@/v2/composables/useGridNav";
 import { useLoadingPhase } from "@/v2/composables/useLoadingPhase";
 import { usePlatformPlayableChecker } from "@/v2/composables/usePlatformPlayable";
+import { useRouteQueryParam } from "@/v2/composables/useRouteQueryParam";
 import { useTileSearchUrl } from "@/v2/composables/useTileSearchUrl";
-import { useWrapGridNav } from "@/v2/composables/useWrapGridNav";
-import { patchQuery } from "@/v2/utils/routeQuery";
+import { platformMatchesSearch } from "@/v2/utils/platformSearch";
 
 const { t } = useI18n();
 const platformsStore = storePlatforms();
@@ -53,7 +53,8 @@ const phase = useLoadingPhase(
 const { groupBy, layout } = useGalleryMode();
 useGalleryViewModeUrl();
 const searchTerm = useTileSearchUrl();
-const { isPlayable, isStreamable } = usePlatformPlayableChecker();
+const { isPlayable, isStreamable, isNativeSupported } =
+  usePlatformPlayableChecker();
 
 // Empty (0-game) platforms are leftovers: rows whose folder vanished from
 // disk, whose ROMs were all deleted, or that a config exclusion keeps out
@@ -64,35 +65,7 @@ const { isPlayable, isStreamable } = usePlatformPlayableChecker();
 const CONTENT_VALUES = ["with-games", "all"] as const;
 type ContentFilter = (typeof CONTENT_VALUES)[number];
 
-// `?show=all`, URL-synced like the Collections index filters and omitted
-// at the default so a plain /platforms link stays clean.
-const route = useRoute();
-const router = useRouter();
-
-function readContentQuery(): ContentFilter {
-  const value = route.query.show;
-  return typeof value === "string" &&
-    (CONTENT_VALUES as readonly string[]).includes(value)
-    ? (value as ContentFilter)
-    : "with-games";
-}
-
-const contentFilter = ref<ContentFilter>(readContentQuery());
-
-watch(
-  () => route.query.show,
-  () => {
-    const next = readContentQuery();
-    if (next !== contentFilter.value) contentFilter.value = next;
-  },
-);
-watch(contentFilter, (next) => {
-  const desired = next === "with-games" ? undefined : next;
-  const current =
-    typeof route.query.show === "string" ? route.query.show : undefined;
-  if (desired === current) return;
-  patchQuery(router, { show: desired });
-});
+const contentFilter = useRouteQueryParam("show", "with-games", CONTENT_VALUES);
 
 const visiblePlatforms = computed<Platform[]>(() =>
   contentFilter.value === "all"
@@ -103,21 +76,27 @@ const visiblePlatforms = computed<Platform[]>(() =>
 // Spatial 2D arrow / gamepad nav across the wrapping tiles grid. List-mode
 // rows are anchor-based and tab through natively; the spatial nav only
 // targets `.plat-tile` in grid mode (which is the only place tiles render
-// — list mode emits `.plat-list-row`).
+// list mode emits `.plat-list-row`).
 const gridRoot = ref<HTMLElement | null>(null);
-useWrapGridNav(gridRoot, { cellSelector: ".plat-tile" });
+useGridNav(gridRoot, { cellSelector: ".plat-tile" });
 
 // Pre-compute the play flag per platform: sort comparator and every row
 // read this map so the column, the badge on the tile, and the playable
 // bucket all agree on a single source of truth. "Playable" here means by
-// any means: in this tab through EmulatorJS or Ruffle, or on a configured
-// streaming container.
+// any means: in this tab through EmulatorJS or Ruffle, on a configured
+// streaming container, or in a local emulator when the desktop shell is
+// there to launch one -- a platform with no in-browser core at all, PS2
+// being the example, is playable inside the shell and has to sort as such.
 const playableById = computed(() => {
   const playableFn = isPlayable.value;
   const streamableFn = isStreamable.value;
+  const nativeFn = isNativeSupported.value;
   const map = new Map<number | string, boolean>();
   for (const p of allPlatforms.value) {
-    map.set(p.id, playableFn(p.slug) || streamableFn(p.slug));
+    map.set(
+      p.id,
+      playableFn(p.slug) || streamableFn(p.slug) || nativeFn(p.slug),
+    );
   }
   return map;
 });
@@ -143,7 +122,7 @@ function onListSort({
 }
 
 // Sort axis the grid view should use, derived from the active groupBy.
-// Grid has no column headers — the bucket axis is the natural sort axis,
+// Grid has no column headers: the bucket axis is the natural sort axis,
 // the toolbar asc/desc toggle is the only direction control.
 const gridSortKey = computed<PlatformSortKey>(() => {
   switch (groupBy.value) {
@@ -208,7 +187,7 @@ function compareBy(
   }
 }
 
-// Toolbar group-by items — order = visual order in the segmented
+// Toolbar group-by items: order = visual order in the segmented
 // slider (28×28 each, so 5 items still fits the toolbar comfortably on
 // desktop). Tooltips ride on `title`.
 const platformGroupByItems = computed<GroupByItem[]>(() => [
@@ -282,26 +261,14 @@ function onSegmentFilter({ key, value }: { key: string; value: string }) {
 
 onMounted(() => {
   if (platformsStore.allPlatforms.length === 0) {
-    platformsStore.fetchPlatforms();
+    void platformsStore.fetchPlatforms();
   }
 });
-
-// Category contributes both the raw IGDB value and the prettified label, since
-// the label is what the UI shows ("Portable console") while the raw
-// value is what the rest of the app stores ("portable_console").
-function searchFields(p: Platform): string[] {
-  const fields = [p.display_name, p.slug, p.fs_slug];
-  if (p.category) fields.push(p.category, prettifyPlatformCategory(p.category));
-  if (p.family_name) fields.push(p.family_name);
-  return fields;
-}
 
 const filtered = computed<Platform[]>(() => {
   const term = searchTerm.value.trim().toLowerCase();
   if (!term) return visiblePlatforms.value;
-  return visiblePlatforms.value.filter((p) =>
-    searchFields(p).some((field) => field.toLowerCase().includes(term)),
-  );
+  return visiblePlatforms.value.filter((p) => platformMatchesSearch(p, term));
 });
 
 // Per-mode sorted views. Grid uses the toolbar asc/desc + groupBy axis;
@@ -334,7 +301,7 @@ const noResultsMessage = computed(() =>
     : t("platform.no-platforms-with-games"),
 );
 
-// Generic bucket — every grouping computed produces the same shape so
+// Generic bucket: every grouping computed produces the same shape so
 // the template can iterate one branch per non-letter mode. `key` is the
 // raw bucket discriminator (sortable); `label` is what we show.
 type Bucket = { key: string; label: string; items: Platform[] };
@@ -359,9 +326,9 @@ function bucketBy(
 
 // Letter buckets. Non-letter first chars split into two head buckets so
 // the user can tell digits apart from other symbols at a glance:
-//   * "#" — digits (0-9)
-//   * "@" — anything else (Greek, punctuation, etc.)
-// Order in asc: `# A…Z @` — `#` first, `@` last (matches AlphaStrip's
+//   * "#": digits (0-9)
+//   * "@": anything else (Greek, punctuation, etc.)
+// Order in asc: `# A…Z @`, `#` first, `@` last (matches AlphaStrip's
 // ALPHABET). Desc flips the whole sequence (`@ Z…A #`).
 const BUCKET_ORDER = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ@";
 const letterGroups = computed<Bucket[]>(() => {
@@ -400,7 +367,7 @@ const familyGroups = computed<Bucket[]>(() =>
 );
 
 // Category buckets. IGDB raw values come through as snake_case
-// ("portable_console", "operating_system") — `prettifyPlatformCategory`
+// ("portable_console", "operating_system"): `prettifyPlatformCategory`
 // (shared with PlatformListRow's metadata column) produces a human
 // label without altering the underlying key.
 const categoryGroups = computed<Bucket[]>(() =>
@@ -459,7 +426,7 @@ const playableGroups = computed<Bucket[]>(() =>
 );
 
 // Active bucket list per groupBy mode. When the chosen mode produces
-// only one group ("Other" / "Unknown"), the rendering still works —
+// only one group ("Other" / "Unknown"), the rendering still works:
 // it's just one labelled section, no different from a flat grid with
 // a label on top. The visual answers the user's intent without us
 // needing to second-guess.
@@ -483,7 +450,10 @@ const groupedBuckets = computed<Bucket[] | null>(() => {
 </script>
 
 <template>
-  <IndexShell :list-mode="layout === 'list'">
+  <IndexShell
+    :list-mode="layout === 'list'"
+    :list-label="t('common.platforms')"
+  >
     <template #header>
       <PageHeader :title="t('common.platforms')" :count="totalCount" />
       <RDivider class="r-v2-pidx__header-divider" />
@@ -515,6 +485,23 @@ const groupedBuckets = computed<Bucket[] | null>(() => {
       />
     </template>
 
+    <!-- Rows show the axes the toolbar groups by, so a flat list still
+         shows what would have separated them. -->
+    <template #listRows>
+      <PlatformListRow
+        v-for="p in sortedForList"
+        :id="p.id"
+        :key="p.id"
+        :slug="p.slug"
+        :fs-slug="p.fs_slug"
+        :display-name="p.display_name"
+        :rom-count="p.rom_count"
+        :family-name="p.family_name ?? null"
+        :category="p.category ?? null"
+        :generation="p.generation ?? null"
+      />
+    </template>
+
     <div ref="gridRoot">
       <div v-if="phase === 'skeleton'" class="r-v2-pidx__grid">
         <RSkeletonBlock
@@ -538,27 +525,10 @@ const groupedBuckets = computed<Bucket[] | null>(() => {
         :title="noResultsMessage"
       />
 
-      <!-- List mode — rows underneath the sticky column header (rendered
-           by IndexShell via the `#listHeader` slot above). Rows surface
-           the same family / category / generation axes the toolbar can
-           group by, so the user reading the flat list still sees what
-           would have separated them. -->
-      <div v-else-if="layout === 'list'" class="r-v2-pidx__list">
-        <PlatformListRow
-          v-for="p in sortedForList"
-          :id="p.id"
-          :key="p.id"
-          :slug="p.slug"
-          :fs-slug="p.fs_slug"
-          :display-name="p.display_name"
-          :rom-count="p.rom_count"
-          :family-name="p.family_name ?? null"
-          :category="p.category ?? null"
-          :generation="p.generation ?? null"
-        />
-      </div>
+      <!-- List mode: IndexShell renders the rows with the header. -->
+      <template v-else-if="layout === 'list'" />
 
-      <!-- Grid mode, grouped — letter uses RLetterHeading (large
+      <!-- Grid mode, grouped: letter uses RLetterHeading (large
            single-character glyph); family / category / generation use
            a compact section heading so multi-word labels read cleanly. -->
       <div v-else-if="groupedBuckets">
@@ -614,11 +584,7 @@ const groupedBuckets = computed<Bucket[] | null>(() => {
   gap: 16px;
 }
 
-.r-v2-pidx__list :deep(.plat-list-row:last-child) {
-  border-bottom: 0;
-}
-
-/* Section heading used by family / category / generation grouping —
+/* Section heading used by family / category / generation grouping:
    compact uppercase label with the same vocabulary as
    RLetterHeading's metadata, so the two heading styles read as
    siblings instead of competing surfaces. The single bottom margin

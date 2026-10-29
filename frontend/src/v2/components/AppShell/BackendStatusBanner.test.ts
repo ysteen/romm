@@ -1,17 +1,22 @@
 import { mount } from "@vue/test-utils";
-import { createPinia, setActivePinia } from "pinia";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ref } from "vue";
 import storePlaying from "@/stores/playing";
 import BackendStatusBanner from "./BackendStatusBanner.vue";
 
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}));
+vi.mock("vue-i18n");
 
 const isOffline = ref(false);
+const isWebSocketDegraded = ref(false);
+const retryNow = vi.fn();
+const retryWebSocket = vi.fn();
+
 vi.mock("@/v2/composables/useServerConnection", () => ({
-  useServerConnection: () => ({ isOffline, retryNow: vi.fn() }),
+  useServerConnection: () => ({ isOffline, retryNow }),
+}));
+
+vi.mock("@/v2/composables/useSocketTransportHealth", () => ({
+  useSocketTransportHealth: () => ({ isWebSocketDegraded, retryWebSocket }),
 }));
 
 vi.mock("@v2/lib", () => ({
@@ -36,21 +41,46 @@ const body = () => wrapper!.find(".r-backend-banner__body");
 
 describe("BackendStatusBanner", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
     vi.useFakeTimers();
     isOffline.value = false;
-  });
-
-  afterEach(() => {
-    wrapper?.unmount();
-    wrapper = null;
-    vi.useRealTimers();
+    isWebSocketDegraded.value = false;
   });
 
   it("stays out of sight while the server answers", async () => {
     await render();
 
     expect(banner().exists()).toBe(false);
+  });
+
+  it("shows the websocket message when HTTP is up but transport is degraded", async () => {
+    isWebSocketDegraded.value = true;
+
+    await render();
+
+    expect(banner().exists()).toBe(true);
+    expect(wrapper!.text()).toContain("common.websocket-unreachable-retrying");
+  });
+
+  it("prefers the offline message when both HTTP and websocket are down", async () => {
+    isOffline.value = true;
+    isWebSocketDegraded.value = true;
+
+    await render();
+
+    expect(wrapper!.text()).toContain("common.server-offline-retrying");
+    expect(wrapper!.text()).not.toContain(
+      "common.websocket-unreachable-retrying",
+    );
+  });
+
+  it("retries the websocket when the degraded banner retry is clicked", async () => {
+    isWebSocketDegraded.value = true;
+
+    await render();
+    await wrapper!.find(".r-backend-banner__retry").trigger("click");
+
+    expect(retryWebSocket).toHaveBeenCalledOnce();
+    expect(retryNow).not.toHaveBeenCalled();
   });
 
   it("offers the retry button outside a game", async () => {

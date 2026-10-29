@@ -47,6 +47,7 @@ const defaultHeartbeat: Heartbeat = {
     DISABLE_RUFFLE_RS: false,
     DISABLE_JSDOS: true,
     DISABLE_PICO8: false,
+    DISABLE_EASYRPG: false,
   },
   FRONTEND: {
     DISABLE_USERPASS_LOGIN: false,
@@ -58,6 +59,17 @@ const defaultHeartbeat: Heartbeat = {
     AUTOLOGIN: false,
     PROVIDER: "",
     RP_INITIATED_LOGOUT: false,
+  },
+  NOTIFICATIONS: {
+    EMAIL_ENABLED: false,
+    EMAILS_RESET_LINKS: false,
+  },
+  DEVICE_INSTALL: {
+    ENABLED: false,
+    EXCLUDED_PLATFORM_SLUGS: [],
+  },
+  CONVERTO: {
+    ENABLED: false,
   },
   TASKS: {
     ENABLE_SCHEDULED_RESCAN: false,

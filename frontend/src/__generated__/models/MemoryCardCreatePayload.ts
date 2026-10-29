@@ -8,4 +8,3 @@ export type MemoryCardCreatePayload = {
     platform_id?: (number | null);
     is_public?: boolean;
 };
-

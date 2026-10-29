@@ -8,4 +8,3 @@ export type Body_delete_states_api_states_delete_post = {
      */
     states: Array<number>;
 };
-

@@ -8,7 +8,7 @@ export interface LinkRoom {
   maxPlayers?: number;
   manualStart?: boolean;
   automatic?: boolean;
-  hostGame?: string;
+  hostGame?: string | undefined;
   roomId?: string;
   roomName: string;
   password: string;
@@ -17,7 +17,7 @@ export interface LinkRoom {
 export interface LinkLaunch extends LinkRoom {
   roms: number[];
   save: Uint8Array<ArrayBuffer> | null;
-  connection?: LinkConnection;
+  connection?: LinkConnection | undefined;
 }
 
 export interface LinkConnection {
@@ -53,12 +53,9 @@ export interface NetplayMenu {
 }
 
 export function supportsLink(
-  rom: Pick<SimpleRomSchema, "platform_slug" | "fs_name">,
+  rom: Pick<SimpleRomSchema, "platform_slug">,
 ): boolean {
-  return rom.platform_slug === "gba"
-    ? /\.(gba|zip)$/i.test(rom.fs_name)
-    : ["gb", "gbc"].includes(rom.platform_slug) &&
-        /\.(gb|gbc|zip)$/i.test(rom.fs_name);
+  return ["gb", "gbc", "gba"].includes(rom.platform_slug);
 }
 
 export function linkCoreFor(platform: string): "sameboy" | "mgba_splitscreen" {
@@ -94,11 +91,13 @@ export function installLinkRoomMenu(
   create: () => void,
   join: (room: LinkRoom) => void,
 ): () => void {
+  /* eslint-disable @typescript-eslint/unbound-method -- Restored to menu or invoked with .call(menu). */
   const original = {
     rooms: menu.getOpenRooms,
     create: menu.showOpenRoomDialog,
     join: menu.joinRoom,
   };
+  /* eslint-enable @typescript-eslint/unbound-method */
   let rooms: Record<string, RoomsResponse> = {};
   menu.getOpenRooms = async () => {
     const { data } = await api.get<Record<string, RoomsResponse>>(

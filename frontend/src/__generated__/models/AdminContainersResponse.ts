@@ -7,4 +7,3 @@ export type AdminContainersResponse = {
     enabled: boolean;
     containers: Array<AdminContainerSchema>;
 };
-

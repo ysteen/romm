@@ -119,7 +119,7 @@ export async function captureAzaharState(
   isCurrent: () => boolean,
 ): Promise<{
   data: Uint8Array<ArrayBuffer>;
-  screenshot?: Uint8Array<ArrayBuffer>;
+  screenshot?: Uint8Array<ArrayBuffer> | undefined;
 }> {
   return withRunningCore(runtime, signal, isCurrent, async () => {
     const data = copyStateBytes(await runtime.gameManager.getState());

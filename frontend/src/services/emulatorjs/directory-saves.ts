@@ -1,4 +1,5 @@
 import { unzipSync, zipSync } from "fflate";
+import { saveContentHash } from "../../v2/utils/saveSync/hash.ts";
 
 interface SaveStat {
   mode: number;
@@ -12,6 +13,7 @@ export interface SaveFileSystem {
   isFile(mode: number): boolean;
   isDir(mode: number): boolean;
   readFile(path: string): Uint8Array;
+  unlink(path: string): void;
   open(path: string, mode: string): unknown;
   read(
     stream: unknown,
@@ -58,6 +60,7 @@ declare global {
 
 export class DirectorySaveAdapter {
   private manager: SaveManager;
+  lastRestoredHash: string | null = null;
   private azaharSaveRoots?: Partial<Record<"data" | "extdata", string>>;
 
   constructor(manager: SaveManager) {
@@ -120,6 +123,7 @@ export class DirectorySaveAdapter {
     await new Promise<void>((resolve, reject) =>
       this.FS.syncfs(false, (error) => (error ? reject(error) : resolve())),
     );
+    this.lastRestoredHash = saveContentHash(data);
     if (refresh) this.manager.loadSaveFiles();
   }
 
@@ -130,42 +134,26 @@ export class DirectorySaveAdapter {
     await this.restore(new Uint8Array(await response.arrayBuffer()), false);
     return true;
   }
-  getDosBoxPureSaveFiles(): SaveEntry[] {
+  isDosBoxPureSaveName(name: string) {
+    const saveName = this.getSaveFilePath().split("/").pop()!;
+    const stem = saveName.replace(/\.[^.]+$/, "");
+    return name === saveName || (name.startsWith(stem) &&
+      /^(?:\.(?:pure\.zip|sav\.zip|sav)|-(?:[A-Z]DRIVE|[0-9A-F]{8})\.sav)$/i.test(name.substring(stem.length)));
+  }
+  getDosBoxPureSavePaths(): string[] {
     const savePath = this.getSaveFilePath();
     if (!savePath.startsWith("/data/saves/")) return [];
-    const saveName = savePath.split("/").pop()!;
-    const stem = saveName.includes(".")
-      ? saveName.substring(0, saveName.lastIndexOf("."))
-      : saveName;
-    const root = "/data/saves";
-    const saveDirectory =
-      savePath.substring(0, savePath.lastIndexOf("/")) || root;
-    const result: SaveEntry[] = [];
-    if (!this.FS.analyzePath(saveDirectory).exists) return result;
-    for (const name of this.FS.readdir(saveDirectory)) {
-      if (name === "." || name === "..") continue;
-      const path = saveDirectory + "/" + name;
-      const stat = this.FS.stat(path);
-      if (!this.FS.isFile(stat.mode)) continue;
-      // DOSBox Pure uses one or more of these siblings for a title:
-      // .srm, .pure.zip, -CDRIVE.sav and -<content hash>.sav.
-      const suffix = name.substring(stem.length);
-      if (
-        name === saveName ||
-        (name.startsWith(stem) &&
-          /^(?:\.(?:pure\.zip|sav\.zip|sav)|-(?:[A-Z]DRIVE|[0-9A-F]{8})\.sav)$/i.test(
-            suffix,
-          ))
-      ) {
-        // Keep the core-specific subdirectory (usually DOSBox-pure/)
-        // so extraction recreates the exact paths the core will open.
-        result.push({
-          name: path.substring(root.length + 1),
-          bytes: this.FS.readFile(path),
-        });
-      }
-    }
-    return result;
+    const directory = savePath.substring(0, savePath.lastIndexOf("/"));
+    if (!this.FS.analyzePath(directory).exists) return [];
+    return this.FS.readdir(directory)
+      .filter((name) => this.isDosBoxPureSaveName(name) && this.FS.isFile(this.FS.stat(directory + "/" + name).mode))
+      .map((name) => (directory + "/" + name).substring("/data/saves/".length));
+  }
+  getDosBoxPureSaveFiles(): SaveEntry[] {
+    return this.getDosBoxPureSavePaths().map((name) => ({
+      name,
+      bytes: this.FS.readFile("/data/saves/" + name),
+    }));
   }
   getPpssppSaveFiles(): SaveEntry[] {
     const root = "/data/saves";
@@ -420,14 +408,18 @@ export class DirectorySaveAdapter {
         } else if (!name.startsWith("Azahar/Azahar/sdmc/")) {
           continue;
         }
-      } else if (name.includes("/") && !name.startsWith("DOSBox-pure/")) {
-        throw new Error(`Not a DOSBox Pure save path: ${name}`);
+      } else {
+        const member = name.replace(/^DOSBox-pure\//, "");
+        if (member.includes("/") || !this.isDosBoxPureSaveName(member))
+          throw new Error(`Not a DOSBox Pure save path for this game: ${name}`);
+        const directory = this.getSaveFilePath().substring("/data/saves/".length).replace(/[^/]+$/, "");
+        target = directory + member;
       }
       if (prepared.has(target))
         throw new Error(`Duplicate save bundle path: ${target}`);
       prepared.set(target, file.bytes);
     }
-    if (!prepared.size)
+    if (!prepared.size && !(this.isDosBoxPure() && files.length === 0))
       throw new Error("Save bundle contained no files for this core");
     for (const path of prepared.keys()) {
       const parts = path.split("/");
@@ -437,7 +429,12 @@ export class DirectorySaveAdapter {
           throw new Error(`Conflicting save bundle path: ${path}`);
       }
     }
-    // Validate every entry before applying any file, including legacy bundles.
+    // A cloud snapshot must also remove drive deltas deleted on another device.
+    if (this.isDosBoxPure()) {
+      for (const path of this.getDosBoxPureSavePaths()) {
+        if (!prepared.has(path)) this.FS.unlink("/data/saves/" + path);
+      }
+    }
     for (const [path, bytes] of prepared)
       this.writeFile("/data/saves/" + path, bytes);
     return prepared.size;

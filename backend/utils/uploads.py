@@ -1,6 +1,21 @@
 from fastapi import HTTPException, UploadFile, status
 
 from config import MAX_ASSET_UPLOAD_SIZE_BYTES
+from utils.filesystem import check_filename_length, sanitize_filename
+
+
+def sanitize_asset_filename(filename: str, label: str) -> str:
+    """`filename` made safe to write, or a 400 naming the `label` upload, so a
+    caller can reject a bad name before it stores anything."""
+    try:
+        sanitized = sanitize_filename(filename)
+        check_filename_length(sanitized)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {label} filename: {exc}",
+        ) from exc
+    return sanitized
 
 
 def check_asset_upload_size(file: UploadFile | None, label: str) -> None:
@@ -20,4 +35,24 @@ def check_asset_upload_size(file: UploadFile | None, label: str) -> None:
                 f"{label} exceeds the maximum allowed size of "
                 f"{MAX_ASSET_UPLOAD_SIZE_BYTES} bytes"
             ),
+        )
+
+
+def is_emulator_folder_name(emulator: str) -> bool:
+    """Whether `emulator` is usable verbatim as one folder name."""
+    try:
+        return sanitize_filename(emulator) == emulator
+    except ValueError:
+        return False
+
+
+def check_emulator_folder_name(emulator: str | None) -> None:
+    """Reject an asset's emulator unless it is usable verbatim as one folder name."""
+    if not emulator:
+        return
+
+    if not is_emulator_folder_name(emulator):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid emulator name: {emulator}",
         )

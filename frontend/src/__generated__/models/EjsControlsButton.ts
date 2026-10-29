@@ -6,4 +6,3 @@ export type EjsControlsButton = {
     value?: string;
     value2?: string;
 };
-

@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 from config import LAUNCHBOX_API_ENABLED
 from handler.filesystem import fs_rom_handler
@@ -8,7 +9,10 @@ from utils.cache import is_cache_store_ready
 from utils.database import safe_int
 from utils.platform_slugs import UniversalPlatformSlug as UPS
 
-from ..base_handler import MetadataHandler
+from ..base_handler import (
+    MetadataHandler,
+    tag_id_from_filename,
+)
 from .local_source import LocalSource
 from .media import build_rom, local_media_req, remote_media_req
 from .platforms import get_platform
@@ -92,7 +96,7 @@ class LaunchboxHandler(MetadataHandler):
 
         if local is not None:
             launchbox_id_local = safe_int(local.get("DatabaseID"))
-            remote: dict | None = None
+            remote: dict[str, Any] | None = None
             if remote_available:
                 if launchbox_id_local:
                     remote = await self._remote.get_by_id(launchbox_id_local)
@@ -125,8 +129,7 @@ class LaunchboxHandler(MetadataHandler):
                 media_req=media_req,
             )
 
-        match = LAUNCHBOX_TAG_REGEX.search(fs_name)
-        launchbox_id_from_tag = int(match.group(1)) if match else None
+        launchbox_id_from_tag = tag_id_from_filename(LAUNCHBOX_TAG_REGEX, fs_name)
 
         if launchbox_id_from_tag is not None:
             log.debug(f"Found LaunchBox ID tag in filename: {launchbox_id_from_tag}")

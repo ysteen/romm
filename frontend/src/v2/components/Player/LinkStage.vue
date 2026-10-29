@@ -52,7 +52,7 @@ interface LinkRuntime {
   netplay: NetplayMenu;
   connect(
     room: {
-      id?: string;
+      id?: string | undefined;
       name: string;
       password: string;
       player: number;
@@ -186,7 +186,7 @@ async function start() {
     if (!alive.value) return;
     const instance = await win.bootRomm(bytes, {
       romId: props.rom.id,
-      core: linkCoreFor(pair[0].platform_slug),
+      core: linkCoreFor(pair[0]!.platform_slug),
       gameId: `link:${pair.map((rom) => rom.id).join(":")}`,
       name: auth.user?.username ?? "",
       createSocket: io,
@@ -390,6 +390,7 @@ function save(): Promise<void> {
         deviceId: auth.user?.current_device_id ?? undefined,
         savesToUpload: [{ saveFile: file }],
       });
+      if (!result) throw new Error("Save upload returned no result");
       if (result.status === "rejected") throw result.reason;
       uploaded = result.value;
     }

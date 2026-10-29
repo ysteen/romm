@@ -1,13 +1,17 @@
 """Job stubs and Redis patching shared by the scan job discovery tests."""
 
+from contextlib import asynccontextmanager
 from itertools import count
 from typing import Any
 from unittest.mock import MagicMock
 
+from rq import Worker
 from rq.exceptions import NoSuchJobError
 from rq.job import Job, JobStatus
+from rq.worker import WorkerStatus
 
 import handler.scan_jobs as scan_jobs_module
+from handler.redis_handler import high_prio_queue, low_prio_queue, scan_queue
 from tasks.tasks import TaskType, run_task_by_name
 
 TASK_RUNNER_FUNC = f"{run_task_by_name.__module__}.{run_task_by_name.__name__}"
@@ -67,26 +71,29 @@ def patch_scan_jobs(
     Returns the patched scheduled-scan registry.
     """
     worker = MagicMock()
+    worker.death_date = None
+    worker.get_state.return_value = WorkerStatus.IDLE
+    worker.queue_names.return_value = [scan_queue.name]
     if worker_lost:
         worker.get_current_job.side_effect = NoSuchJobError
     else:
         worker.get_current_job.return_value = running
-    mocker.patch.object(scan_jobs_module.Worker, "all", return_value=[worker])
+    mocker.patch.object(Worker, "all", return_value=[worker])
 
     queued_jobs = list(scan_queued) + list(high_queued) + list(low_queued)
     scheduled_jobs = list(scheduled)
     mocker.patch.object(
-        scan_jobs_module.scan_queue,
+        scan_queue,
         "get_job_ids",
         return_value=[job.id for job in scan_queued],
     )
     mocker.patch.object(
-        scan_jobs_module.high_prio_queue,
+        high_prio_queue,
         "get_job_ids",
         return_value=[job.id for job in high_queued],
     )
     mocker.patch.object(
-        scan_jobs_module.low_prio_queue,
+        low_prio_queue,
         "get_job_ids",
         return_value=[job.id for job in low_queued],
     )
@@ -102,8 +109,19 @@ def patch_scan_jobs(
     # answer for whichever ids it is handed.
     by_id = {job.id: job for job in queued_jobs + scheduled_jobs}
     mocker.patch.object(
-        scan_jobs_module.Job,
+        Job,
         "fetch_many",
         side_effect=lambda job_ids, **kwargs: [by_id.get(i) for i in job_ids],
     )
     return registry
+
+
+def patch_held_scan_request_lock(mocker):
+    """Make the library scan request lock look held by another web worker."""
+
+    @asynccontextmanager
+    async def held_lock(*args, **kwargs):
+        raise TimeoutError
+        yield
+
+    mocker.patch("endpoints.sockets.scan.redis_lock", held_lock)

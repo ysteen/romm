@@ -1,13 +1,12 @@
-import asyncio
-import http
 import json
-from typing import Final, cast
+from typing import Final
 
 import aiohttp
 import yarl
 from aiohttp.client import ClientTimeout
-from fastapi import HTTPException, status
 
+from adapters.services.provider_http import send_with_retries
+from adapters.services.response_validation import parse_response
 from adapters.services.steam_types import (
     SteamAppDetails,
     SteamAppDetailsEnvelope,
@@ -50,60 +49,47 @@ class SteamService:
     ) -> None:
         self.url = yarl.URL(base_url or "https://store.steampowered.com/api")
 
-    async def _request(self, url: str, request_timeout: int = 120) -> dict:
+    async def _request[T](
+        self, url: str, tp: type[T], request_timeout: int = 120
+    ) -> T | None:
         aiohttp_session = ctx_aiohttp_session.get()
 
-        for attempt in range(STEAM_MAX_REQUEST_ATTEMPTS):
+        async def send() -> T | None:
             await _rate_limiter.acquire()
-
             log.debug(
                 "Steam API request: URL=%s, Timeout=%s",
                 url,
                 request_timeout,
             )
+            res = await aiohttp_session.get(
+                url,
+                headers={"user-agent": f"RomM/{get_version()}"},
+                timeout=ClientTimeout(total=request_timeout),
+            )
+            res.raise_for_status()
+            body = await res.read()
+            # A throttled storefront answers 200 with a bare `null`.
+            if body.strip() == b"null":
+                return None
+            return parse_response(tp, body, source=f"Steam {yarl.URL(url).name}")
 
-            try:
-                res = await aiohttp_session.get(
-                    url,
-                    headers={"user-agent": f"RomM/{get_version()}"},
-                    timeout=ClientTimeout(total=request_timeout),
-                )
-                res.raise_for_status()
-                payload = await res.json()
-                # A throttled storefront answers 200 with a bare `null`, and the
-                # callers only ever read mappings.
-                return payload if isinstance(payload, dict) else {}
-            # A `total` timeout surfaces as a bare asyncio.TimeoutError, not as
-            # aiohttp's ServerTimeoutError, so catch the base class.
-            except TimeoutError:
-                log.debug("Request to URL=%s timed out. Retrying...", url)
-                continue
-            except aiohttp.ClientConnectionError as exc:
-                log.critical("Connection error: can't connect to Steam", exc_info=True)
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Can't connect to Steam, check your internet connection",
-                ) from exc
-            except aiohttp.ClientResponseError as exc:
-                is_last_attempt = attempt == STEAM_MAX_REQUEST_ATTEMPTS - 1
-                if (
-                    exc.status == http.HTTPStatus.TOO_MANY_REQUESTS
-                    and not is_last_attempt
-                ):
-                    log.warning(
-                        "Steam rate limit hit, retrying after %ss",
-                        STEAM_RATE_LIMIT_BACKOFF_SECONDS,
-                    )
-                    await asyncio.sleep(STEAM_RATE_LIMIT_BACKOFF_SECONDS)
-                    continue
-
-                log.error(exc)
-                return {}
-            except json.JSONDecodeError as exc:
-                log.error("Error decoding JSON response from Steam: %s", exc)
-                return {}
-
-        return {}
+        try:
+            return await send_with_retries(
+                send,
+                provider="Steam",
+                url=url,
+                attempts=STEAM_MAX_REQUEST_ATTEMPTS,
+                backoff=STEAM_RATE_LIMIT_BACKOFF_SECONDS,
+            )
+        except TimeoutError:
+            log.debug("Request to URL=%s timed out on every attempt", url)
+            return None
+        except aiohttp.ClientResponseError as exc:
+            log.error(exc)
+            return None
+        except json.JSONDecodeError as exc:
+            log.error("Error decoding JSON response from Steam: %s", exc)
+            return None
 
     async def search_apps(
         self,
@@ -119,8 +105,8 @@ class SteamService:
         url = self.url.joinpath("storesearch").with_query(
             term=term, cc=country, l=language
         )
-        response = cast(SteamStoreSearchResponse, await self._request(str(url)))
-        return response.get("items", []) or []
+        response = await self._request(str(url), SteamStoreSearchResponse)
+        return (response.get("items") or []) if response else []
 
     async def get_app_details(
         self,
@@ -138,12 +124,32 @@ class SteamService:
         if filters:
             query["filters"] = filters
         url = self.url.joinpath("appdetails").with_query(query)
-        response = await self._request(str(url))
-        envelope = cast(SteamAppDetailsEnvelope | None, response.get(str(app_id)))
+        response = await self._request(str(url), dict[str, SteamAppDetailsEnvelope])
+        if not response:
+            return None
+
+        envelope = response.get(str(app_id))
+        if envelope is None and len(response) == 1:
+            envelope = self._envelope_keyed_by_another_id(response, app_id)
         if not envelope or not envelope.get("success"):
             return None
 
         return envelope.get("data")
+
+    @staticmethod
+    def _envelope_keyed_by_another_id(
+        response: dict[str, SteamAppDetailsEnvelope], app_id: int
+    ) -> SteamAppDetailsEnvelope | None:
+        """Steam keys some apps' envelope by another ID, e.g. one of their DLC."""
+        envelope = next(iter(response.values()))
+        if not isinstance(envelope, dict):
+            return None
+
+        data = envelope.get("data")
+        if not isinstance(data, dict) or data.get("steam_appid") != app_id:
+            return None
+
+        return envelope
 
     async def get_library_capsule_url(self, app_id: int) -> str | None:
         """The portrait capsule URL when the CDN serves one, else None."""

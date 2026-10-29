@@ -58,11 +58,11 @@ const stages: Record<string, string> = {
         <span class="romforge-jobs__details">
           <span>{{
             operations[job.operation]
-              ? t(operations[job.operation])
+              ? t(operations[job.operation]!)
               : job.operation
           }}</span>
           <span v-if="job.status === 'running' && stages[job.stage]">
-            {{ t(stages[job.stage]) }}
+            {{ t(stages[job.stage]!) }}
           </span>
           <time :datetime="job.ended_at || job.started_at || job.created_at">
             {{

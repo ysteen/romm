@@ -16,4 +16,3 @@ export type RomMetadataSchema = {
     first_release_date: (number | null);
     average_rating: (number | null);
 };
-

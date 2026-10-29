@@ -13,4 +13,3 @@ export type SlotCapabilitiesSchema = {
     supports_disc_swap: boolean;
     has_manual_disc_swap: boolean;
 };
-

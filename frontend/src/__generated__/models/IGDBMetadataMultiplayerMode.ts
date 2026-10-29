@@ -17,4 +17,3 @@ export type IGDBMetadataMultiplayerMode = {
     splitscreenonline: boolean;
     platform: IGDBMetadataPlatform;
 };
-

@@ -7,4 +7,3 @@ export type VolumeResponse = {
     level: number;
     platform: string;
 };
-

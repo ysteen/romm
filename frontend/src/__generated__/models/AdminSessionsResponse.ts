@@ -6,4 +6,3 @@ import type { AdminSessionSchema } from './AdminSessionSchema';
 export type AdminSessionsResponse = {
     sessions: Array<AdminSessionSchema>;
 };
-

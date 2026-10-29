@@ -1,6 +1,6 @@
-from handler.database import db_platform_handler
+from tests.factories import make_platform
+
 from handler.filesystem import fs_platform_handler
-from models.platform import Platform
 from utils.platforms import get_filesystem_platforms, get_supported_platforms
 
 
@@ -11,13 +11,9 @@ def test_supported_platform_not_shadowed_by_variant():
     "arcade" renamed the Arcade platform to "FBneo" in the platform picker.
     """
     # Canonical Arcade platform (folder name matches the slug).
-    db_platform_handler.add_platform(
-        Platform(name="Arcade", slug="arcade", fs_slug="arcade")
-    )
+    make_platform("arcade", name="Arcade")
     # Variant folder resolved to the same slug during scan.
-    db_platform_handler.add_platform(
-        Platform(name="FBneo", slug="arcade", fs_slug="fbneo")
-    )
+    make_platform("arcade", name="FBneo", fs_slug="fbneo")
 
     supported = get_supported_platforms()
     arcade = next(p for p in supported if p.slug == "arcade")
@@ -52,3 +48,20 @@ async def test_filesystem_platform_resolves_frontend_folder_name(monkeypatch):
     platforms = await get_filesystem_platforms()
 
     assert [(p.fs_slug, p.slug) for p in platforms] == [("gamecube", "ngc")]
+
+
+def test_supported_platform_sharing_ss_id_keeps_its_own_name():
+    """A platform sharing a ScreenScraper system ID must not take its sibling's name."""
+    supported = {p.slug: p for p in get_supported_platforms()}
+
+    assert supported["c128"].name == "Commodore 128"
+    assert supported["videopac-g7400"].name == "Videopac+ G7400"
+
+
+def test_scanned_platform_carries_other_providers_names():
+    make_platform("genesis", name="Sega Mega Drive/Genesis")
+
+    genesis = next(p for p in get_supported_platforms() if p.slug == "genesis")
+
+    assert genesis.id != -1
+    assert "Megadrive" in genesis.alternative_names

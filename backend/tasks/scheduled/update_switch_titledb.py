@@ -2,14 +2,11 @@ import json
 from itertools import batched
 from typing import Any, Final
 
-from config import (
-    ENABLE_SCHEDULED_UPDATE_SWITCH_TITLEDB,
-    SCHEDULED_UPDATE_SWITCH_TITLEDB_CRON,
-)
 from handler.dump_cache import encode
 from handler.redis_handler import async_binary_cache, async_cache
 from logger.logger import log
-from tasks.tasks import RemoteFilePullTask, TaskType
+from tasks.registry import UPDATE_SWITCH_TITLEDB_SPEC
+from tasks.tasks import RemoteFilePullTask
 from utils.cache import (
     VersionedCacheStore,
     drop_stale_cache_store,
@@ -30,30 +27,17 @@ SWITCH_TITLEDB_STORE: Final = VersionedCacheStore(
 
 
 class UpdateSwitchTitleDBTask(RemoteFilePullTask):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(
-            title="Scheduled Switch TitleDB update",
-            description="Updates the Nintendo Switch TitleDB file",
-            task_type=TaskType.UPDATE,
-            enabled=ENABLE_SCHEDULED_UPDATE_SWITCH_TITLEDB,
-            cron_string=SCHEDULED_UPDATE_SWITCH_TITLEDB_CRON,
-            manual_run=True,
+            UPDATE_SWITCH_TITLEDB_SPEC,
             url="https://raw.githubusercontent.com/blawar/titledb/master/US.en.json",
         )
-
-    @property
-    def can_run_manually(self) -> bool:
-        # The store lives only in the cache, and a rebuild that fails is not
-        # queued again, so admins need a way to fill it with the cron off.
-        return self.manual_run
 
     @initialize_context()
     async def run(self) -> dict[str, Any]:
         update_stats = UpdateStats()
 
         content = await super().run()
-        if content is None:
-            return update_stats.to_dict()
 
         # An import merges into its hashes, so an older release's rows go first.
         await drop_stale_cache_store(async_cache, SWITCH_TITLEDB_STORE)

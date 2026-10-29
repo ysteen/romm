@@ -16,4 +16,3 @@ export type ScanStats = {
     updated_roms: number;
     new_files: number;
 };
-

@@ -7,7 +7,7 @@ import RBtn from "@/v2/lib/primitives/RBtn/RBtn.vue";
 import RIcon from "@/v2/lib/primitives/RIcon/RIcon.vue";
 import RTooltip from "./RTooltip.vue";
 
-// Dispatch a pointerenter with an explicit `pointerType` — `userEvent.hover`
+// Dispatch a pointerenter with an explicit `pointerType`: `userEvent.hover`
 // can't set it, and the touch-gating branch keys off exactly that.
 function firePointerEnter(el: Element, pointerType: "mouse" | "touch") {
   let ev: Event;
@@ -48,7 +48,6 @@ const meta: Meta<typeof RTooltip> = {
   title: "Structural/RTooltip",
   component: RTooltip,
   argTypes: {
-    text: { control: "text" },
     location: {
       control: "select",
       options: [
@@ -65,8 +64,6 @@ const meta: Meta<typeof RTooltip> = {
     openDelay: { control: "number" },
     closeDelay: { control: "number" },
     offset: { control: "number" },
-    contentClass: { control: "text" },
-    disabled: { control: "boolean" },
   },
 };
 
@@ -94,18 +91,45 @@ export const Default: Story = {
   }),
 };
 
+export const Light: Story = {
+  ...Default,
+  name: "Light",
+  globals: { theme: "light" },
+};
+
+/**
+ * An RBtn with a string `icon` drops its default slot, so icon buttons use
+ * RBtn's own `tooltip` prop; parent-attach is for plain elements like this.
+ */
 export const ParentAttach: Story = {
   name: "Parent attach (no slot)",
   render: () => ({
-    components: { RTooltip, RBtn },
+    components: { RTooltip, RIcon },
     template: `
       <div style="padding:48px;display:flex;justify-content:center">
-        <RBtn icon="mdi-delete" variant="translucent" aria-label="Delete this item">
-          <RTooltip activator="parent" text="Delete this item" location="top" />
-        </RBtn>
+        <span
+          tabindex="0"
+          style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--r-color-border);border-radius:999px;font:12px sans-serif;color:var(--r-color-fg-muted)"
+        >
+          <RIcon icon="mdi-cloud-check" size="x-small" />
+          Synced
+          <RTooltip activator="parent" text="Saves synced 2 minutes ago" location="top" />
+        </span>
       </div>
     `,
   }),
+  play: async ({ canvasElement, step }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    const badge = canvas.getByText("Synced");
+
+    await step("hovering the parent reveals the tooltip", async () => {
+      firePointerEnter(badge, "mouse");
+      await expect(await body.findByRole("tooltip")).toHaveTextContent(
+        "Saves synced 2 minutes ago",
+      );
+    });
+  },
 };
 
 // ── Placements ──────────────────────────────────────────────────────
@@ -380,9 +404,10 @@ export const IconBarRealWorld: Story = {
 };
 
 // ── Touch gating (behavioral) ───────────────────────────────────────
-// A touch "hover" is really a tap that fires the underlying action, so a
-// tooltip there would linger over whatever the tap opened. The tooltip must
-// reveal for mouse/pen hover only, and a click must always dismiss it.
+/**
+ * Tooltips reveal on mouse/pen hover only, since a touch hover is a tap; a
+ * click always dismisses them.
+ */
 export const TouchGating: Story = {
   name: "Touch gating (play)",
   args: { text: "Tooltip body text", location: "top", openDelay: 0 },
@@ -390,7 +415,7 @@ export const TouchGating: Story = {
     components: { RTooltip, RBtn },
     setup: () => ({ args }),
     template: `
-      <div class="r-v2 r-v2-dark" style="padding:48px;display:flex;justify-content:center;background:#07070f">
+      <div style="padding:48px;display:flex;justify-content:center;">
         <RTooltip v-bind="args">
           <template #activator="{ props }">
             <RBtn v-bind="props">Hover target</RBtn>
@@ -408,13 +433,13 @@ export const TouchGating: Story = {
     await step("a touch hover does NOT reveal the tooltip", async () => {
       firePointerEnter(activator, "touch");
       await new Promise((r) => setTimeout(r, 50));
-      expect(body.queryByRole("tooltip")).toBeNull();
+      await expect(body.queryByRole("tooltip")).toBeNull();
     });
 
     await step("a mouse hover reveals it", async () => {
       firePointerEnter(activator, "mouse");
       const tip = await body.findByRole("tooltip");
-      expect(tip).toHaveTextContent("Tooltip body text");
+      await expect(tip).toHaveTextContent("Tooltip body text");
     });
 
     await step("a click dismisses it", async () => {
@@ -424,8 +449,10 @@ export const TouchGating: Story = {
   },
 };
 
-// `open-on-tap` — a standalone info affordance that must reveal on touch too
-// (tap toggles; a mouse click opens rather than closing a hover-revealed tip).
+/**
+ * `open-on-tap`: a standalone info affordance that must reveal on touch too
+ * (tap toggles; a mouse click opens rather than closing a hover-revealed tip).
+ */
 export const OpenOnTap: Story = {
   name: "Open on tap (play)",
   args: {
@@ -438,7 +465,7 @@ export const OpenOnTap: Story = {
     components: { RTooltip, RBtn },
     setup: () => ({ args }),
     template: `
-      <div class="r-v2 r-v2-dark" style="padding:48px;display:flex;justify-content:center;background:#07070f">
+      <div style="padding:48px;display:flex;justify-content:center;">
         <RTooltip v-bind="args">
           <template #activator="{ props }">
             <RBtn v-bind="props">Tap target</RBtn>
@@ -455,7 +482,7 @@ export const OpenOnTap: Story = {
     await step("a touch tap reveals the tooltip", async () => {
       fireTap(activator, "touch");
       const tip = await body.findByRole("tooltip");
-      expect(tip).toHaveTextContent("Tooltip body text");
+      await expect(tip).toHaveTextContent("Tooltip body text");
     });
 
     await step("a second touch tap toggles it closed", async () => {
@@ -465,14 +492,14 @@ export const OpenOnTap: Story = {
 
     await step("a mouse click opens it", async () => {
       fireTap(activator, "mouse");
-      expect(await body.findByRole("tooltip")).toBeInTheDocument();
+      await expect(await body.findByRole("tooltip")).toBeInTheDocument();
     });
 
     await step(
       "a second mouse click keeps it open (no toggle-closed)",
       async () => {
         fireTap(activator, "mouse");
-        expect(body.queryByRole("tooltip")).not.toBeNull();
+        await expect(body.queryByRole("tooltip")).not.toBeNull();
       },
     );
   },
@@ -532,7 +559,7 @@ export const DismissedByOverlay: Story = {
 
     await step("hovering the card reveals its tooltip", async () => {
       firePointerEnter(card, "mouse");
-      expect(await body.findByRole("tooltip")).toHaveTextContent(
+      await expect(await body.findByRole("tooltip")).toHaveTextContent(
         "Super Mario World",
       );
     });
@@ -541,20 +568,23 @@ export const DismissedByOverlay: Story = {
       "opening the menu dismisses it, even though the activator swallows the click",
       async () => {
         activator.click();
-        expect(await body.findByRole("menu")).toBeInTheDocument();
+        await expect(await body.findByRole("menu")).toBeInTheDocument();
         await waitFor(() => expect(body.queryByRole("tooltip")).toBeNull());
       },
     );
 
-    await step("re-hovering the covered card does not bring it back", () => {
-      firePointerEnter(card, "mouse");
-      expect(body.queryByRole("tooltip")).toBeNull();
-    });
+    await step(
+      "re-hovering the covered card does not bring it back",
+      async () => {
+        firePointerEnter(card, "mouse");
+        await expect(body.queryByRole("tooltip")).toBeNull();
+      },
+    );
 
     await step("a tooltip inside the menu still opens", async () => {
       const menu = within(await body.findByRole("menu"));
-      firePointerEnter(menu.getByRole("button", { name: /edit/i }), "mouse");
-      expect(await body.findByRole("tooltip")).toHaveTextContent(
+      firePointerEnter(menu.getByRole("menuitem", { name: /edit/i }), "mouse");
+      await expect(await body.findByRole("tooltip")).toHaveTextContent(
         "Rename this game",
       );
     });
@@ -588,16 +618,16 @@ export const PendingOpenCancelledByOverlay: Story = {
 
     await step("the menu opens while the reveal is still pending", async () => {
       firePointerEnter(card, "mouse");
-      expect(body.queryByRole("tooltip")).toBeNull();
+      await expect(body.queryByRole("tooltip")).toBeNull();
       activator.click();
-      expect(await body.findByRole("menu")).toBeInTheDocument();
+      await expect(await body.findByRole("menu")).toBeInTheDocument();
     });
 
     await step("the tooltip never lands once the delay elapses", async () => {
       // Real wait: the pending timer is the thing under test, so it has to be
       // given its full `openDelay` to fire.
       await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(body.queryByRole("tooltip")).toBeNull();
+      await expect(body.queryByRole("tooltip")).toBeNull();
     });
   },
 };

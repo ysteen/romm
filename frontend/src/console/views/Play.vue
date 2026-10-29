@@ -11,7 +11,8 @@ import {
   nextTick,
 } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRoute, useRouter } from "vue-router";
+import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
+import type { FirmwareSchema } from "@/__generated__";
 import NavigationText from "@/console/components/NavigationText.vue";
 import { useInputScope } from "@/console/composables/useInputScope";
 import { useThemeAssets } from "@/console/composables/useThemeAssets";
@@ -32,9 +33,14 @@ import {
   areThreadsRequiredForEJSCore,
   getDownloadPath,
 } from "@/utils";
+import { firmwareExternalFiles } from "@/v2/utils/playerFirmware";
+import { leaveFullscreen } from "@/v2/utils/playerFullscreen";
 import {
   buildStateFormData,
   resolveScreenshot,
+} from "@/views/Player/EmulatorJS/utils";
+import {
+  bootEmulatorJSSave,
   installEJSDefaultOptionsTrap,
   invalidateEmulatorJSRomCacheIfRenamed,
 } from "@/views/Player/EmulatorJS/utils";
@@ -182,7 +188,7 @@ function handleExitAction(action: string) {
     return true;
   }
   if (action === "confirm") {
-    activateExitOption(exitOptions.value[focusedExitIndex.value].id);
+    activateExitOption(exitOptions.value[focusedExitIndex.value]!.id);
     return true;
   }
   if (action === "back") {
@@ -244,14 +250,9 @@ async function uploadState(
   screenshotFile: ArrayBuffer,
 ) {
   if (!romRef.value) return;
-  const filename = `${romRef.value.fs_name_no_ext.trim()} [${new Date()
-    .toISOString()
-    .replace(/[:.]/g, "-")
-    .replace("T", " ")
-    .replace("Z", "")}]`;
-
   try {
     const stateApi = await import("@/services/api/state");
+    const filename = stateApi.sessionStateName(romRef.value, new Date());
 
     const uploadedStates = await stateApi.default.uploadStates({
       rom: romRef.value,
@@ -268,7 +269,7 @@ async function uploadState(
       ],
     });
 
-    const uploadedState = uploadedStates[0];
+    const uploadedState = uploadedStates[0]!;
     if (uploadedState.status == "fulfilled") {
       if (romRef.value) romRef.value.user_states.unshift(uploadedState.value);
       return uploadedState.value;
@@ -372,7 +373,7 @@ function attachGamepadExit(options?: { windowMs?: number }) {
         }
       } else {
         if (edge(BTN.A))
-          activateExitOption(exitOptions.value[focusedExitIndex.value].id);
+          activateExitOption(exitOptions.value[focusedExitIndex.value]!.id);
         if (edge(BTN.B)) cancelExit();
       }
       for (let i = 0; i < pad.buttons.length; i++) {
@@ -432,7 +433,7 @@ async function boot() {
   const core =
     [playerStorage.gameCore.value, playerStorage.core.value].find(
       (c): c is string => !!c && supported.includes(c),
-    ) ?? supported[0];
+    ) ?? supported[0]!;
 
   const coreOptions = configStore.getEJSCoreOptions(core);
   window.EJS_core = core;
@@ -471,6 +472,7 @@ async function boot() {
   window.EJS_gameUrl = getDownloadPath({
     rom: rom,
     fileIDs: validDiscId ? [validDiscId] : [],
+    purpose: "play",
   });
 
   // BIOS selection persistence
@@ -491,8 +493,10 @@ async function boot() {
     window.EJS_biosUrl = bios
       ? `/api/firmware/${bios.id}/content/${bios.file_name}`
       : "";
+    window.EJS_externalFiles = firmwareExternalFiles(core, firmware);
   } catch {
     window.EJS_biosUrl = "";
+    window.EJS_externalFiles = {};
   }
 
   window.EJS_player = "#game";
@@ -663,20 +667,8 @@ async function boot() {
           if (!resp.ok) throw new Error("Failed to fetch save");
           const buf = new Uint8Array(await resp.arrayBuffer());
           try {
-            const FS = gameManager.FS;
-            const path = gameManager.getSaveFilePath();
-            // Ensure dirs
-            const segs = path.split("/");
-            let accum = "";
-            for (let i = 0; i < segs.length - 1; i++) {
-              if (!segs[i]) continue;
-              accum += "/" + segs[i];
-              if (!FS.analyzePath(accum).exists) FS.mkdir(accum);
-            }
-            if (FS.analyzePath(path).exists) FS.unlink(path);
-            FS.writeFile(path, buf);
-            gameManager.loadSaveFiles?.();
-            console.info("[ConsolePlay] Loaded server save into path", path);
+            bootEmulatorJSSave(buf);
+            console.info("[ConsolePlay] Loaded server save");
           } catch (err) {
             console.warn("[ConsolePlay] Failed writing save file", err);
           }
@@ -793,6 +785,9 @@ onMounted(async () => {
   detachKey = attachKeyboardExit();
   detachPad = attachGamepadExit();
 });
+
+// The unmount below reloads the page.
+onBeforeRouteLeave(leaveFullscreen);
 
 onBeforeUnmount(() => {
   window.EJS_emulator?.callEvent?.("exit");

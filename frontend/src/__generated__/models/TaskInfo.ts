@@ -10,6 +10,6 @@ export type TaskInfo = {
     title: string;
     description: string;
     enabled: boolean;
+    destructive: boolean;
     cron_string: string;
 };
-

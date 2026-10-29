@@ -6,4 +6,3 @@ export type HiddenEntitiesSchema = {
     platforms: Array<number>;
     roms: Array<number>;
 };
-

@@ -294,8 +294,8 @@ test("system navigation, live status, links and refresh recovery", async ({
 for (const theme of ["dark", "light"] as const) {
   test(`${theme} layout from phone to 4K with long names`, async ({ page }) => {
     const data = snapshot();
-    data.active[0].source_name = "LongFilename".repeat(25) + ".3ds";
-    data.history[0].output_file_name = "TranslatedFilename".repeat(20) + ".cci";
+    data.active[0]!.source_name = "LongFilename".repeat(25) + ".3ds";
+    data.history[0]!.output_file_name = "TranslatedFilename".repeat(20) + ".cci";
     const state = await setup(page, { theme, locale: "ko_KR", data });
     await expect(page.locator(".romforge__metric dd")).toHaveText([
       "1",

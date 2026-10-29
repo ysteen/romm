@@ -7,4 +7,3 @@ export type UserCollectionSchema = {
     name: string;
     is_smart?: boolean;
 };
-

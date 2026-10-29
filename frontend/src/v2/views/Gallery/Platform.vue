@@ -1,15 +1,15 @@
 <script setup lang="ts">
-// Platform view — owns the platform-specific load flow (route param →
+// Platform view: owns the platform-specific load flow (route param →
 // ensure platforms loaded → setCurrentPlatform → fetch metadata) and
 // the three-tab surface that sits above the gallery:
-//   • Library  — the gallery (delegated to `GalleryShell`).
-//   • Firmware — `FirmwareTab` (upload / download / delete firmware).
-//   • Settings — `SettingsTab` (details + cover-style picker).
+//   • Library: the gallery (delegated to `GalleryShell`).
+//   • Firmware: `FirmwareTab` (upload / download / delete firmware).
+//   • Settings: `SettingsTab` (details + cover-style picker).
 //
 // Layout choice: `PlatformHead` (InfoPanel + RTabNav) lives INSIDE the
 // scrolling container of whichever branch is active. On Library, it
 // rides in `GalleryShell`'s `#header` slot so it scrolls away with
-// the cards and the toolbar pins below it — the same vocabulary the
+// the cards and the toolbar pins below it, the same vocabulary the
 // pre-tabs gallery had. On Firmware / Settings it sits above the tab body
 // and scrolls with the page (GalleryTabShell).
 //
@@ -39,6 +39,7 @@ import { useCan } from "@/v2/composables/useCan";
 import { useConfirm } from "@/v2/composables/useConfirm";
 import { useIsAlive } from "@/v2/composables/useIsAlive";
 import { usePageTitle } from "@/v2/composables/usePageTitle";
+import { useRouteQueryParam } from "@/v2/composables/useRouteQueryParam";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import storeGalleryRoms from "@/v2/stores/galleryRoms";
 import type { StatRow } from "@/v2/types/stats";
@@ -64,28 +65,20 @@ const deleting = ref(false);
 const scanOpen = ref(false);
 const randomLoading = ref(false);
 
-// Permissions — `useCan` is reactive against the grants store, so the
+// Permissions: `useCan` is reactive against the grants store, so the
 // ribbon buttons hide automatically when the user's role changes.
 const canEditPlatform = useCan("platform.edit");
 const canScan = useCan("library.scan");
 const canDownload = useCan("rom.download");
 
 // ── Tabs ─────────────────────────────────────────────────────────
-// URL-persistent via `?tab=` (mirrors the GameDetails pattern). The
-// default tab is `library`.
 type TabId = "library" | "firmware" | "settings" | "memory-cards";
-const VALID_TABS = new Set<TabId>([
+const TAB_IDS: readonly TabId[] = [
   "library",
   "firmware",
   "settings",
   "memory-cards",
-]);
-
-function parseTab(v: unknown): TabId {
-  return typeof v === "string" && VALID_TABS.has(v as TabId)
-    ? (v as TabId)
-    : "library";
-}
+];
 
 // The memory-card tab only exists for platforms whose streaming container
 // syncs whole cards (PCSX2 today). `emulator` is the hard key the manager
@@ -95,22 +88,7 @@ const memoryCardEmulator = computed<string | null>(() => {
   return c?.supports_memory_cards ? c.emulator : null;
 });
 
-const tab = ref<TabId>(parseTab(route.query.tab));
-watch(tab, (value) => {
-  if (route.query.tab !== value) {
-    router.replace({
-      path: route.path,
-      query: { ...route.query, tab: value },
-    });
-  }
-});
-watch(
-  () => route.query.tab,
-  (value) => {
-    const next = parseTab(value);
-    if (next !== tab.value) tab.value = next;
-  },
-);
+const tab = useRouteQueryParam("tab", "library", TAB_IDS);
 
 const tabs = computed<RTabNavItem[]>(() => [
   { id: "library", label: t("common.library") },
@@ -186,7 +164,7 @@ const platformStats = computed<StatRow[]>(() => {
 
 // External metadata-provider chips. Each entry knows how to derive its
 // label + outbound URL from the platform; the chip is only rendered
-// when the ID exists. v2 surface — moved inline from v1's
+// when the ID exists. v2 surface, moved inline from v1's
 // PlatformInfoDrawer so users get the providers at a glance without
 // opening any flyout.
 interface ProviderChip {
@@ -331,13 +309,13 @@ async function loadForId(platformId: number) {
       }
     }
   } catch {
-    // Non-fatal — the cached snapshot stays in place, and the tabs
+    // Non-fatal: the cached snapshot stays in place, and the tabs
     // surface what's already known. Logged by the axios interceptor.
   }
 }
 
 onMounted(() => {
-  loadForId(Number(route.params.platform));
+  void loadForId(Number(route.params.platform));
 });
 
 onBeforeRouteUpdate((to, from) => {
@@ -346,13 +324,13 @@ onBeforeRouteUpdate((to, from) => {
   // the new platform's load. A query-only change (sort, filters,
   // search) stays on this platform and must not reload it.
   if (to.path === from.path) return;
-  if (to.name === "platform") loadForId(Number(to.params.platform));
+  if (to.name === "platform") void loadForId(Number(to.params.platform));
 });
 
 watch(
   () => route.params.platform,
   (next) => {
-    if (next != null) loadForId(Number(next));
+    if (next != null) void loadForId(Number(next));
   },
 );
 
@@ -360,7 +338,7 @@ watch(
 function onUploadRoms() {
   const p = currentPlatform.value;
   if (!p) return;
-  router.push({ name: ROUTES.UPLOAD, query: { platform: String(p.id) } });
+  void router.push({ name: ROUTES.UPLOAD, query: { platform: String(p.id) } });
 }
 
 function onScan() {
@@ -377,7 +355,7 @@ function onAddPhysical() {
 // in place, so the id check in `onRandomGame` can't see the user walked away.
 const alive = useIsAlive();
 
-// Random ROM — pick one game from this platform and jump to its
+// Random ROM: pick one game from this platform and jump to its
 // details. Mirrors the Home RandomPickWidget: `/roms/random` samples the
 // pick server-side, so one request resolves it whatever the platform
 // holds. `null` means the platform holds no roms.
@@ -397,7 +375,7 @@ async function onRandomGame() {
       snackbar.info(t("platform.random-rom-empty"));
       return;
     }
-    router.push({ name: ROUTES.ROM, params: { rom: data.id } });
+    void router.push({ name: ROUTES.ROM, params: { rom: data.id } });
   } catch {
     if (!stale()) snackbar.error(t("platform.random-rom-error"));
   } finally {
@@ -438,7 +416,7 @@ async function onDelete() {
     snackbar.success(t("platform.platform-deleted", { name: p.display_name }), {
       icon: "mdi-check-bold",
     });
-    router.push({ name: ROUTES.PLATFORMS_INDEX });
+    void router.push({ name: ROUTES.PLATFORMS_INDEX });
   } catch (err) {
     const e = err as {
       response?: { data?: { msg?: string } };
@@ -458,7 +436,7 @@ async function onDelete() {
 </script>
 
 <template>
-  <!-- LIBRARY — full GalleryShell with PlatformHead in #header so the
+  <!-- LIBRARY: full GalleryShell with PlatformHead in #header so the
        head band scrolls naturally with the cards and the toolbar pins
        below it. Same scroll vocabulary as the pre-tabs gallery. -->
   <GalleryShell
@@ -540,7 +518,7 @@ async function onDelete() {
     </template>
   </GalleryTabShell>
 
-  <!-- Per-platform scan dialog — mounted at the view level so it
+  <!-- Per-platform scan dialog, mounted at the view level so it
        survives tab switches without remounting. Gates on `currentPlatform`
        so we never pass a `null` to the dialog body. -->
   <ScanPlatformDialog

@@ -216,9 +216,9 @@ def test_version_listing_flags_an_archive_that_is_gone(
     )
     assert response.status_code == status.HTTP_200_OK
     assert response.json()[0]["missing_from_fs"] is True
-    assert db_memory_card_handler.get_version_by_id(
-        memory_card_version.id
-    ).missing_from_fs
+    version = db_memory_card_handler.get_version_by_id(memory_card_version.id)
+    assert version is not None
+    assert version.missing_from_fs
 
 
 @mock.patch("endpoints.memory_cards.fs_asset_handler.validate_path")
@@ -240,9 +240,9 @@ def test_version_listing_clears_the_flag_when_the_archive_is_back(
     )
     assert response.status_code == status.HTTP_200_OK
     assert response.json()[0]["missing_from_fs"] is False
-    assert not db_memory_card_handler.get_version_by_id(
-        memory_card_version.id
-    ).missing_from_fs
+    version = db_memory_card_handler.get_version_by_id(memory_card_version.id)
+    assert version is not None
+    assert not version.missing_from_fs
 
 
 @mock.patch("endpoints.memory_cards.fs_asset_handler.validate_path")
@@ -450,9 +450,9 @@ def test_upload_memory_card_version(client, access_token: str, memory_card: Memo
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["content_hash"] == "uploaded"
     write_file.assert_awaited_once()
-    assert db_memory_card_handler.get_latest_version(memory_card.id).id == (
-        response.json()["id"]
-    )
+    latest = db_memory_card_handler.get_latest_version(memory_card.id)
+    assert latest is not None
+    assert latest.id == response.json()["id"]
 
 
 def test_upload_of_already_stored_content_still_becomes_newest(
@@ -840,9 +840,9 @@ async def test_version_filename_steps_around_an_occupied_name(
 
     written = write_file.await_args.kwargs["filename"] if write_file.await_args else ""
     assert "(2)" in written
-    assert (
-        db_memory_card_handler.get_latest_version(memory_card.id).file_name == written
-    )
+    latest = db_memory_card_handler.get_latest_version(memory_card.id)
+    assert latest is not None
+    assert latest.file_name == written
 
 
 async def test_a_failed_scan_leaves_no_archive_behind(
@@ -873,3 +873,49 @@ async def test_a_failed_scan_leaves_no_archive_behind(
 
     remove_file.assert_awaited_once()
     assert db_memory_card_handler.get_versions(memory_card.id) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"name": "x" * 256, "emulator": "pcsx2"}, {"name": "card", "emulator": "x" * 51}],
+    ids=["name", "emulator"],
+)
+def test_create_memory_card_overlong_field_rejected(
+    client, access_token: str, payload: dict[str, str]
+):
+    response = client.post(
+        "/api/memory-cards", json=payload, headers=_auth(access_token)
+    )
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+def test_rename_overlong_name_rejected(
+    client, access_token: str, memory_card: MemoryCard
+):
+    response = client.put(
+        f"/api/memory-cards/{memory_card.id}",
+        json={"name": "x" * 256},
+        headers=_auth(access_token),
+    )
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+async def test_version_filename_fits_a_long_multibyte_card_name(
+    admin_user: User, memory_card: MemoryCard, _isolated_assets_dir
+):
+    """A card name within the column limit can still be far over the 255-byte
+    filename limit once encoded; the version file must still be writable."""
+    renamed = db_memory_card_handler.update_card(
+        memory_card.id, {"name": "メモリーカード" * 30}
+    )
+    assert renamed is not None
+
+    assert await store_memory_card_version(
+        admin_user, renamed, b"card data", deduplicate=False
+    )
+
+    latest = db_memory_card_handler.get_latest_version(memory_card.id)
+    assert latest is not None
+    assert len(latest.file_name.encode()) <= 255
+    assert latest.file_name.startswith("メモリーカード")
+    assert latest.file_name.endswith(".card.zip")

@@ -25,11 +25,6 @@ const meta: Meta<typeof RBox3D> = {
   title: "Media/RBox3D",
   component: RBox3D,
   argTypes: {
-    front: { control: "text" },
-    back: { control: "text" },
-    spine: { control: "text" },
-    alt: { control: "text" },
-    autoSpin: { control: "boolean" },
     initialYaw: { control: { type: "range", min: -180, max: 180, step: 1 } },
     initialPitch: { control: { type: "range", min: -32, max: 32, step: 1 } },
   },
@@ -58,7 +53,7 @@ type Story = StoryObj<typeof RBox3D>;
 // ── Default: gentle idle drift, drag / arrows / right-stick to rotate ──
 export const Default: Story = {};
 
-// ── Static (no auto-spin) — easier to read the faces ──
+// ── Static (no auto-spin): easier to read the faces ──
 export const Static: Story = {
   name: "No auto-spin",
   args: { autoSpin: false, initialYaw: 36, initialPitch: -8 },
@@ -83,28 +78,28 @@ export const KeyboardRotate: Story = {
   play: async ({ canvasElement, step }) => {
     const root = canvasElement.querySelector<HTMLElement>(".r-box3d");
     const box = canvasElement.querySelector<HTMLElement>(".r-box3d__box");
-    expect(root).not.toBeNull();
-    expect(box).not.toBeNull();
+    await expect(root).not.toBeNull();
+    await expect(box).not.toBeNull();
 
-    await step("starts at the resting orientation", () => {
-      expect(box!.style.transform).toContain("rotateY(0deg)");
-      expect(box!.style.transform).toContain("rotateX(0deg)");
+    await step("starts at the resting orientation", async () => {
+      await expect(box!.style.transform).toContain("rotateY(0deg)");
+      await expect(box!.style.transform).toContain("rotateX(0deg)");
     });
 
     await step("ArrowRight yaws the box", async () => {
       root!.focus();
       await userEvent.keyboard("{ArrowRight}");
-      expect(box!.style.transform).toContain("rotateY(14deg)");
+      await expect(box!.style.transform).toContain("rotateY(14deg)");
     });
 
     await step("ArrowUp pitches the box up", async () => {
       await userEvent.keyboard("{ArrowUp}");
-      expect(box!.style.transform).toContain("rotateX(-14deg)");
+      await expect(box!.style.transform).toContain("rotateX(-14deg)");
     });
 
     await step("pitch clamps so the box never flips over", async () => {
       for (let i = 0; i < 6; i++) await userEvent.keyboard("{ArrowUp}");
-      expect(box!.style.transform).toContain("rotateX(-32deg)");
+      await expect(box!.style.transform).toContain("rotateX(-32deg)");
     });
   },
 };

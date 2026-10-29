@@ -5,11 +5,12 @@
 import type { ContainerSessionSchema } from './ContainerSessionSchema';
 export type AdminContainerSchema = {
     container: string;
+    name?: string;
     label?: (string | null);
     host: string;
     platforms: Array<string>;
     supports_desktop: boolean;
     configured: boolean;
+    draining?: boolean;
     session?: (ContainerSessionSchema | null);
 };
-

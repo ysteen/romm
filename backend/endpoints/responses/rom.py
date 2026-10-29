@@ -9,6 +9,7 @@ from fastapi import Request
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
 from endpoints.responses.assets import (
+    HIDDEN_ASSET_ANNOTATIONS,
     SaveSchema,
     ScreenshotSchema,
     StateSchema,
@@ -40,6 +41,7 @@ from models.rom import (
     RomUserStatus,
     SaveTargetLayout,
 )
+from utils.conversion_cache import offered_download_formats
 
 from .base import BaseModel, UTCDatetime
 
@@ -157,6 +159,7 @@ ManualMetadata = TypedDict(
         "age_ratings": list[str] | None,
         "first_release_date": int | None,
         "youtube_video_id": str | None,
+        "alternative_names": list[str] | None,
     },
     total=False,
 )
@@ -179,6 +182,7 @@ def rom_user_schema_factory() -> RomUserSchema:
         difficulty=0,
         completion=0,
         status=None,
+        pinned_media=None,
     )
 
 
@@ -199,6 +203,7 @@ class RomUserSchema(BaseModel):
     difficulty: int
     completion: int
     status: RomUserStatus | None
+    pinned_media: list[str] | None
 
     @classmethod
     def for_user(cls, user_id: int, db_rom: Rom) -> RomUserSchema:
@@ -429,6 +434,7 @@ class RomSchema(BaseModel):
     has_simple_single_file: bool
     has_nested_single_file: bool
     has_multiple_files: bool
+    is_easyrpg_game: bool
     full_path: str
     created_at: UTCDatetime
     updated_at: UTCDatetime
@@ -487,7 +493,7 @@ class SiblingRomSchema(BaseModel):
     fs_name_no_ext: str
     is_main_sibling: bool
 
-    @computed_field  # type: ignore
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def sort_comparator(self) -> str:
         return (
@@ -524,7 +530,7 @@ def _visible_siblings(db_rom: Rom, request: Request) -> list[Rom]:
     from handler.auth.dependencies import get_permissions
 
     perms = get_permissions(request)
-    return [s for s in siblings if perms.can_see_rom(s.id, s.platform_id)]
+    return [s for s in siblings if perms.can_see_rom(s)]
 
 
 class SimpleRomSchema(RomSchema):
@@ -625,6 +631,8 @@ class DetailedRomSchema(RomSchema):
     all_user_screenshots: list[UserScreenshotSchema]
     user_collections: list[UserCollectionSchema]
     all_user_notes: list[UserNoteSchema]
+    # What the caller can ask a `?format=` download of the rom's single file for.
+    download_formats: list[str]
 
     @classmethod
     def from_orm_with_request(cls, db_rom: Rom, request: Request) -> DetailedRomSchema:
@@ -646,6 +654,9 @@ class DetailedRomSchema(RomSchema):
         )
         db_rom.included_sibling_roms = sorted_siblings  # type: ignore[attr-defined]
         db_rom.included_files = sorted(db_rom.files, key=lambda x: x.file_name)  # type: ignore[attr-defined]
+        db_rom.download_formats = offered_download_formats(  # type: ignore[attr-defined]
+            db_rom.platform_slug, db_rom.files, request
+        )
 
         db_rom.user_saves = [  # type: ignore[attr-defined]
             SaveSchema.model_validate(s) for s in db_rom.saves if s.user_id == user_id
@@ -719,6 +730,7 @@ class DetailedRomSchema(RomSchema):
             UserSaveSchema.model_validate(
                 {
                     **SaveSchema.model_validate(s).model_dump(),
+                    **({} if s.user_id == user_id else HIDDEN_ASSET_ANNOTATIONS),
                     "username": s.user.username,
                     "user_avatar_path": s.user.avatar_path,
                     "user_updated_at": s.user.updated_at,
@@ -734,6 +746,7 @@ class DetailedRomSchema(RomSchema):
             UserStateSchema.model_validate(
                 {
                     **StateSchema.model_validate(s).model_dump(),
+                    **({} if s.user_id == user_id else HIDDEN_ASSET_ANNOTATIONS),
                     "username": s.user.username,
                     "user_avatar_path": s.user.avatar_path,
                     "user_updated_at": s.user.updated_at,

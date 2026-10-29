@@ -2,7 +2,7 @@
 // ListSortMenu: the sort control a list header shows once its columns are
 // gone (phones and tablets). Shared by the gallery, platforms and collections
 // headers, so the three can't answer "what is this sorted by" three ways.
-import { RIcon, RMenu, RMenuItem } from "@v2/lib";
+import { nextSortDir, RIcon, RMenu, RMenuItem, type RSortDir } from "@v2/lib";
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -10,11 +10,16 @@ const props = defineProps<{
   options: readonly { key: K; label: string }[];
   /** Null when the list's order is one the columns don't carry. */
   sortKey: K | null;
-  sortDir: "asc" | "desc";
+  sortDir: RSortDir;
+  /** Offers the list's order without a sort key (Search's relevance) under this name. */
+  unsortedLabel?: string | undefined;
+  /** Whether that order is the one applied. */
+  unsorted?: boolean;
 }>();
 
 const emit = defineEmits<{
-  (e: "sort", payload: { key: K; dir: "asc" | "desc" }): void;
+  (e: "sort", payload: { key: K; dir: RSortDir }): void;
+  (e: "unsort"): void;
 }>();
 
 const { t } = useI18n();
@@ -26,15 +31,12 @@ const dirIcon = computed(() =>
 const label = computed(
   () =>
     props.options.find((option) => option.key === props.sortKey)?.label ??
+    (props.unsorted ? props.unsortedLabel : undefined) ??
     t("gallery.sort-by"),
 );
 
 function pick(key: K) {
-  // Toggle direction when re-picking the active key; otherwise start the new
-  // one ascending, like every other sortable table in the app.
-  const dir: "asc" | "desc" =
-    props.sortKey === key && props.sortDir === "asc" ? "desc" : "asc";
-  emit("sort", { key, dir });
+  emit("sort", { key, dir: nextSortDir(props.sortKey === key, props.sortDir) });
 }
 </script>
 
@@ -43,9 +45,20 @@ function pick(key: K) {
     <template #activator="{ props: activatorProps }">
       <button v-bind="activatorProps" type="button" class="list-sort-menu">
         <span class="list-sort-menu__label">{{ label }}</span>
-        <RIcon :icon="dirIcon" size="14" class="list-sort-menu__icon" />
+        <RIcon
+          v-if="!unsorted || !unsortedLabel"
+          :icon="dirIcon"
+          size="14"
+          class="list-sort-menu__icon"
+        />
       </button>
     </template>
+    <RMenuItem
+      v-if="unsortedLabel"
+      :label="unsortedLabel"
+      :variant="unsorted ? 'active' : 'default'"
+      @click="emit('unsort')"
+    />
     <RMenuItem
       v-for="option in options"
       :key="option.key"

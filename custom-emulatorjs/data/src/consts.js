@@ -44,3 +44,11 @@ export const cores = {
 export const requiresThreads = ["ppsspp", "dosbox_pure", "azahar"];
 
 export const requiresWebGL2 = ["ppsspp", "azahar"];
+
+// Local multiplayer streaming and the GB/GBA link sessions supported by this player.
+export const netplaySystems = [
+    "atari5200", "arcade", "nes", "gb", "coleco", "segaMS", "segaMD",
+    "segaCD", "sega32x", "sega", "mame", "pce", "pcfx", "psx", "gba",
+    "n64", "3do", "atari7800", "snes", "atari2600", "jaguar", "segaSaturn",
+    "amiga", "c64", "c128", "pet", "plus4", "vic20", "intv"
+];

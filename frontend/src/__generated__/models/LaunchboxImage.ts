@@ -7,4 +7,3 @@ export type LaunchboxImage = {
     type?: string;
     region?: string;
 };
-

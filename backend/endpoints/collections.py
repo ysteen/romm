@@ -1,9 +1,9 @@
 import json
 from datetime import datetime
 from io import BytesIO
-from typing import Annotated, TypeVar
+from typing import Annotated, Any, TypeVar
 
-from fastapi import File, Form, HTTPException
+from fastapi import Body, File, Form, HTTPException
 from fastapi import Path as PathVar
 from fastapi import Query, Request, UploadFile, status
 from pydantic import BaseModel as PydanticBaseModel
@@ -14,22 +14,29 @@ from endpoints.responses.collection import (
     SmartCollectionSchema,
     VirtualCollectionSchema,
 )
-from endpoints.roms import refresh_affected_smart_collections
+from endpoints.roms import (
+    refresh_affected_smart_collections,
+    refresh_scoped_smart_collections,
+)
 from exceptions.endpoint_exceptions import (
     CollectionAlreadyExistsException,
     CollectionNotFoundInDatabaseException,
     CollectionPermissionError,
 )
+from handler.audit_handler import AuditTarget, changed_fields, record
 from handler.auth.constants import Scope
-from handler.auth.dependencies import get_permissions
+from handler.auth.dependencies import get_rom_visibility_filter
 from handler.database import db_collection_handler, db_rom_handler
+from handler.database.rom_filters import RomFilterParams
 from handler.filesystem import fs_resource_handler
 from handler.filesystem.assets_handler import validate_image_upload
 from handler.filesystem.base_handler import CoverSize
 from logger.formatter import BLUE
 from logger.formatter import highlight as hl
 from logger.logger import log
+from models.audit_event import AuditAction
 from models.collection import (
+    COLLECTION_NAME_MAX_LENGTH,
     Collection,
     SmartCollection,
     VirtualCollection,
@@ -55,31 +62,53 @@ CollectionSchemaT = TypeVar(
 def _hide_collection_roms(
     schemas: list[CollectionSchemaT], request: Request
 ) -> list[CollectionSchemaT]:
-    """Drop hidden roms from each collection's `rom_ids`/`rom_count` for the caller.
+    """Drop hidden roms from each collection's `rom_ids` for the caller.
 
     Without this a collection leaks the ids (and inflated count) of roms hidden
     from the user via the opt-out visibility model.
     """
-    if not request.user.is_authenticated or not schemas:
+    if not schemas:
         return schemas
-    perms = get_permissions(request)
-    if perms.is_admin or (not perms.hidden_platform_ids and not perms.hidden_rom_ids):
+    visibility = get_rom_visibility_filter(request)
+    if visibility.is_unrestricted:
         return schemas
 
     all_ids = {rid for s in schemas for rid in s.rom_ids}
-    hidden = db_rom_handler.get_hidden_rom_ids_among(
-        list(all_ids),
-        list(perms.hidden_platform_ids),
-        list(perms.hidden_rom_ids),
-    )
+    hidden = db_rom_handler.get_hidden_rom_ids_among(list(all_ids), visibility)
     if not hidden:
         return schemas
     for s in schemas:
-        visible = set(s.rom_ids) - hidden
-        if len(visible) != len(s.rom_ids):
-            s.rom_ids = visible
-            s.rom_count = len(visible)
+        s.rom_ids = set(s.rom_ids) - hidden
     return schemas
+
+
+def _record_collection(
+    request: Request,
+    action: AuditAction,
+    collection: Collection | SmartCollection,
+    data: dict[str, Any] | None = None,
+) -> None:
+    # Every heart toggle goes through the favourites collection; that's not news.
+    if getattr(collection, "is_favorite", False):
+        return
+    record(action, request, AuditTarget.of_collection(collection), data)
+
+
+def _criteria_collection_id(criteria: object) -> int | None:
+    filters = RomFilterParams.from_stored_criteria(criteria)
+    return filters.collection_id if filters else None
+
+
+def _check_criteria_collection(
+    criteria: object, user_id: int, kept_id: int | None = None
+) -> None:
+    """Refuse criteria newly scoped to a collection the owner can't see."""
+    collection_id = _criteria_collection_id(criteria)
+    if not collection_id or collection_id == kept_id:
+        return
+    collection = db_collection_handler.get_collection(collection_id)
+    if not collection or (collection.user_id != user_id and not collection.is_public):
+        raise CollectionNotFoundInDatabaseException(collection_id)
 
 
 @protected_route(router.post, "", [Scope.COLLECTIONS_WRITE])
@@ -88,7 +117,7 @@ async def add_collection(
     is_public: bool | None = None,
     is_favorite: bool | None = None,
     artwork: UploadFile | None = COLLECTION_ARTWORK_FILE,
-    name: str = Form(default=""),
+    name: str = Form(default="", max_length=COLLECTION_NAME_MAX_LENGTH),
     description: str = Form(default=""),
     url_cover: str = Form(
         default="", description="Remote URL to fetch and use as cover artwork."
@@ -152,6 +181,7 @@ async def add_collection(
         },
     )
 
+    _record_collection(request, AuditAction.COLLECTION_CREATE, created_collection)
     return CollectionSchema.model_validate(created_collection)
 
 
@@ -159,7 +189,7 @@ async def add_collection(
 async def add_smart_collection(
     request: Request,
     is_public: bool | None = None,
-    name: str = Form(default=""),
+    name: str = Form(default="", max_length=COLLECTION_NAME_MAX_LENGTH),
     description: str = Form(default=""),
     filter_criteria: str = Form(
         default="{}",
@@ -182,6 +212,7 @@ async def add_smart_collection(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid JSON for filter_criteria field",
         ) from e
+    _check_criteria_collection(parsed_filter_criteria, request.user.id)
 
     cleaned_data = {
         "name": name,
@@ -206,6 +237,7 @@ async def add_smart_collection(
         db_collection_handler.refresh_smart_collection(created_smart_collection.id)
         or created_smart_collection
     )
+    _record_collection(request, AuditAction.SMART_COLLECTION_CREATE, smart_collection)
 
     return SmartCollectionSchema.model_validate(smart_collection)
 
@@ -426,7 +458,7 @@ async def update_collection(
         ...,
         description="Collection ROM IDs as a JSON array string (e.g. [1,2,3]).",
     ),
-    name: str | None = Form(default=None),
+    name: str | None = Form(default=None, max_length=COLLECTION_NAME_MAX_LENGTH),
     description: str | None = Form(default=None),
     url_cover: str | None = Form(default=None, description="Updated remote cover URL."),
 ) -> CollectionSchema:
@@ -445,8 +477,10 @@ async def update_collection(
     if collection.user_id != request.user.id:
         raise CollectionPermissionError(id)
 
-    if not collection:
-        raise CollectionNotFoundInDatabaseException(id)
+    if name is not None:
+        namesake = db_collection_handler.get_collection_by_name(name, request.user.id)
+        if namesake and namesake.id != collection.id:
+            raise CollectionAlreadyExistsException(name)
 
     try:
         parsed_rom_ids = json.loads(rom_ids)
@@ -514,6 +548,62 @@ async def update_collection(
     updated_collection = db_collection_handler.update_collection(
         id, cleaned_data, parsed_rom_ids
     )
+    changed = changed_fields(
+        collection, cleaned_data, ("name", "description", "is_public")
+    )
+    if "is_public" in changed:
+        refresh_scoped_smart_collections(id)
+    new_artwork = artwork is not None and artwork.filename is not None
+    if (
+        remove_cover
+        or new_artwork
+        or changed_fields(collection, cleaned_data, ["url_cover"])
+    ):
+        changed.append("cover")
+    before_ids, after_ids = set(collection.rom_ids), set(updated_collection.rom_ids)
+    if before_ids != after_ids:
+        refresh_affected_smart_collections(
+            sorted(before_ids ^ after_ids), membership_only=True
+        )
+    if changed or before_ids != after_ids:
+        _record_collection(
+            request,
+            AuditAction.COLLECTION_EDIT,
+            updated_collection,
+            {
+                "changed": changed,
+                "added": len(after_ids - before_ids),
+                "removed": len(before_ids - after_ids),
+            },
+        )
+
+    return CollectionSchema.model_validate(updated_collection)
+
+
+@protected_route(
+    router.put,
+    "/{id}/visibility",
+    [Scope.COLLECTIONS_WRITE],
+    responses={status.HTTP_403_FORBIDDEN: {}, status.HTTP_404_NOT_FOUND: {}},
+)
+def update_collection_visibility(
+    request: Request,
+    id: int,
+    is_public: Annotated[bool, Body(embed=True)],
+) -> CollectionSchema:
+    """Share or unshare a collection (owner only), leaving its games and cover."""
+    collection = db_collection_handler.get_collection(id)
+    if not collection:
+        raise CollectionNotFoundInDatabaseException(id)
+
+    if collection.user_id != request.user.id:
+        raise CollectionPermissionError(id)
+
+    updated_collection = db_collection_handler.update_collection(
+        id, {"is_public": is_public}
+    )
+    if collection.is_public != is_public:
+        refresh_scoped_smart_collections(id)
 
     return CollectionSchema.model_validate(updated_collection)
 
@@ -545,10 +635,18 @@ async def add_roms_to_collection(
     if collection.user_id != request.user.id:
         raise CollectionPermissionError(id)
 
+    before = set(collection.rom_ids)
     updated_collection = db_collection_handler.add_roms_to_collection(
         id, payload.rom_ids
     )
     refresh_affected_smart_collections(payload.rom_ids, membership_only=True)
+    if added := sorted(set(updated_collection.rom_ids) - before):
+        _record_collection(
+            request,
+            AuditAction.COLLECTION_ADD_ROMS,
+            collection,
+            {"count": len(added), "rom_ids": added},
+        )
     return CollectionSchema.model_validate(updated_collection)
 
 
@@ -575,10 +673,18 @@ async def remove_roms_from_collection(
     if collection.user_id != request.user.id:
         raise CollectionPermissionError(id)
 
+    before = set(collection.rom_ids)
     updated_collection = db_collection_handler.remove_roms_from_collection(
         id, payload.rom_ids
     )
     refresh_affected_smart_collections(payload.rom_ids, membership_only=True)
+    if removed := sorted(before - set(updated_collection.rom_ids)):
+        _record_collection(
+            request,
+            AuditAction.COLLECTION_REMOVE_ROMS,
+            collection,
+            {"count": len(removed), "rom_ids": removed},
+        )
     return CollectionSchema.model_validate(updated_collection)
 
 
@@ -587,7 +693,7 @@ async def update_smart_collection(
     request: Request,
     id: int,
     is_public: bool | None = None,
-    name: str | None = Form(default=None),
+    name: str | None = Form(default=None, max_length=COLLECTION_NAME_MAX_LENGTH),
     description: str | None = Form(default=None),
     filter_criteria: str | None = Form(
         default=None,
@@ -610,6 +716,13 @@ async def update_smart_collection(
     if smart_collection.user_id != request.user.id:
         raise CollectionPermissionError(id)
 
+    if name is not None:
+        namesake = db_collection_handler.get_smart_collection_by_name(
+            name, request.user.id
+        )
+        if namesake and namesake.id != smart_collection.id:
+            raise CollectionAlreadyExistsException(name)
+
     # Parse filter criteria if provided
     parsed_filter_criteria = smart_collection.filter_criteria
     if filter_criteria is not None:
@@ -620,6 +733,13 @@ async def update_smart_collection(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid JSON for filter_criteria field",
             ) from e
+        # The form resends the stored scope on every edit; the ROM filters
+        # already match nothing for one the owner has since lost.
+        _check_criteria_collection(
+            parsed_filter_criteria,
+            request.user.id,
+            kept_id=_criteria_collection_id(smart_collection.filter_criteria),
+        )
 
     cleaned_data = {
         "name": name if name is not None else smart_collection.name,
@@ -638,8 +758,33 @@ async def update_smart_collection(
     smart_collection = (
         db_collection_handler.refresh_smart_collection(id) or updated_smart_collection
     )
+    _record_collection(request, AuditAction.SMART_COLLECTION_EDIT, smart_collection)
 
     return SmartCollectionSchema.model_validate(smart_collection)
+
+
+@protected_route(
+    router.put,
+    "/smart/{id}/visibility",
+    [Scope.COLLECTIONS_WRITE],
+    responses={status.HTTP_403_FORBIDDEN: {}, status.HTTP_404_NOT_FOUND: {}},
+)
+def update_smart_collection_visibility(
+    request: Request,
+    id: int,
+    is_public: Annotated[bool, Body(embed=True)],
+) -> SmartCollectionSchema:
+    """Share or unshare a smart collection (owner only), leaving its filters."""
+    smart_collection = db_collection_handler.get_smart_collection(id)
+    if not smart_collection:
+        raise CollectionNotFoundInDatabaseException(id)
+
+    if smart_collection.user_id != request.user.id:
+        raise CollectionPermissionError(id)
+
+    return SmartCollectionSchema.model_validate(
+        db_collection_handler.update_smart_collection(id, {"is_public": is_public})
+    )
 
 
 @protected_route(
@@ -662,6 +807,8 @@ async def delete_collection(
 
     log.info(f"Deleting {hl(collection.name, color=BLUE)} from database")
     db_collection_handler.delete_collection(id)
+    refresh_scoped_smart_collections(id)
+    _record_collection(request, AuditAction.COLLECTION_DELETE, collection)
 
     try:
         await fs_resource_handler.remove_directory(collection.fs_resources_path)
@@ -691,3 +838,4 @@ async def delete_smart_collection(
 
     log.info(f"Deleting {hl(smart_collection.name, color=BLUE)} from database")
     db_collection_handler.delete_smart_collection(id)
+    _record_collection(request, AuditAction.SMART_COLLECTION_DELETE, smart_collection)

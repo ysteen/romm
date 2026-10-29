@@ -10,4 +10,3 @@ export type ClaimStreamingSessionRequest = {
     card_import?: ('adopt' | 'discard' | null);
     multiplayer?: boolean;
 };
-

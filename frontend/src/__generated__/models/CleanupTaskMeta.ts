@@ -8,4 +8,3 @@ import type { OrphanedResourcesCleanupStats } from './OrphanedResourcesCleanupSt
 export type CleanupTaskMeta = {
     cleanup_stats: (OrphanedResourcesCleanupStats | MissingRomsCleanupStats | MissingFirmwareCleanupStats | null);
 };
-

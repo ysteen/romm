@@ -1,9 +1,11 @@
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from endpoints.sockets.netplay import (
+    AUTH_USER_SESSION_KEY,
     RoomData,
     join_room,
     link_ready,
@@ -12,6 +14,26 @@ from endpoints.sockets.netplay import (
     open_room,
 )
 from handler.netplay_handler import LinkCartridge, NetplayRoom, get_link_cartridge
+
+
+@pytest.fixture
+def authenticated_link_sockets(mocker, admin_user, rom):
+    sessions: dict[str, dict[str, Any]] = {
+        sid: {AUTH_USER_SESSION_KEY: admin_user.id} for sid in ("host", "host-socket")
+    }
+
+    async def get_session(sid: str, namespace: str | None = None) -> dict[str, Any]:
+        return sessions.get(sid, {})
+
+    async def save_session(sid: str, value: dict[str, Any]) -> None:
+        sessions[sid] = value
+
+    server = "endpoints.sockets.netplay.netplay_socket_handler.socket_server"
+    mocker.patch(f"{server}.get_session", AsyncMock(side_effect=get_session))
+    mocker.patch(f"{server}.save_session", AsyncMock(side_effect=save_session))
+    mocker.patch(
+        "endpoints.sockets.netplay.db_rom_handler.get_rom_visibility", return_value=rom
+    )
 
 
 @pytest.mark.parametrize("rom_id", [None, True, "22", -1, 0, 2**53])
@@ -28,11 +50,14 @@ def test_invalid_cartridge_ids_do_not_query_the_library(rom_id: object):
         ("gbc", "Silver.GBC", "gb"),
         ("gba", "Ruby.gba", "gba"),
         ("gba", "Ruby.zip", "gba"),
+        ("gba", "Game folder", "gba"),
+        ("gbc", "Game folder", "gb"),
+        ("snes", "Game.gba", None),
         ("gbc", "Silver.ZIP", "gb"),
-        ("gba", "Ruby.7z", None),
+        ("gba", "Ruby.7z", "gba"),
         ("nds", "Game.zip", None),
         ("nds", "Game.nds", None),
-        ("gb", "Game.gba", None),
+        ("gb", "Game.gba", "gb"),
     ],
 )
 def test_cartridge_validation_uses_library_metadata(
@@ -41,7 +66,10 @@ def test_cartridge_validation_uses_library_metadata(
     with patch(
         "handler.netplay_handler.db_rom_handler.get_rom",
         return_value=SimpleNamespace(
-            id=22, platform_slug=platform, fs_name=filename, name="Game"
+            id=22,
+            platform_slug=platform,
+            fs_name=filename,
+            name="Game",
         ),
     ):
         cartridge = get_link_cartridge(22)
@@ -63,9 +91,10 @@ def room_data(player: str, rom_id: int, password: str = "secret") -> RoomData:
 
 
 @pytest.mark.parametrize("count", [2, 3, 4])
-async def test_room_discovers_cartridges_and_waits_for_host(count: int):
+async def test_room_discovers_cartridges_and_waits_for_host(
+    count: int, authenticated_link_sockets
+):
     rooms: dict[str, NetplayRoom] = {}
-    sessions: dict[str, dict[str, str]] = {}
     cartridges = {
         22: LinkCartridge(id=22, system="gba", name="Test 1"),
         21: LinkCartridge(id=21, system="gba", name="Test 2"),
@@ -74,9 +103,6 @@ async def test_room_discovers_cartridges_and_waits_for_host(count: int):
 
     async def set_room(key: str, value: NetplayRoom):
         rooms[key] = value
-
-    async def save_session(sid: str, value: dict[str, str]):
-        sessions[sid] = value
 
     with (
         patch(
@@ -93,14 +119,6 @@ async def test_room_discovers_cartridges_and_waits_for_host(count: int):
         patch(
             "endpoints.sockets.netplay.netplay_socket_handler.socket_server.enter_room",
             AsyncMock(),
-        ),
-        patch(
-            "endpoints.sockets.netplay.netplay_socket_handler.socket_server.save_session",
-            AsyncMock(side_effect=save_session),
-        ),
-        patch(
-            "endpoints.sockets.netplay.netplay_socket_handler.socket_server.get_session",
-            AsyncMock(side_effect=sessions.get),
         ),
         patch(
             "endpoints.sockets.netplay.netplay_socket_handler.socket_server.emit",
@@ -146,7 +164,8 @@ async def test_room_discovers_cartridges_and_waits_for_host(count: int):
             await link_seat("host-socket", {"slot": 0})
             == "This player slot is already taken"
         )
-        for invalid in [True, -1, 4, "1"]:
+        invalid_slots: list[Any] = [True, -1, 4, "1"]
+        for invalid in invalid_slots:
             assert (
                 await link_seat("host-socket", {"slot": invalid})
                 == "Invalid player slot"
@@ -190,7 +209,7 @@ async def test_room_discovers_cartridges_and_waits_for_host(count: int):
             == "This link game has already started"
         )
         assert [p["link_slot"] for p in players.values()] == list(range(count))
-        emit.assert_awaited_with("link-started", players, room="link-room")
+        emit.assert_awaited_with("link-started", players, room="netplay-room:link-room")
         assert await link_start("host-socket") == "This link game has already started"
         assert (
             await join_room("late", room_data("late", 21))
@@ -227,15 +246,12 @@ async def test_rejects_invalid_link_capacity(system, capacity):
 
 
 @pytest.mark.parametrize("system", ["gb", "gba"])
-async def test_concurrent_joins_and_slot_claims_are_serialized(system):
+async def test_concurrent_joins_and_slot_claims_are_serialized(
+    system, authenticated_link_sockets
+):
     import asyncio
 
     from handler.netplay_handler import netplay_handler
-
-    sessions = {}
-
-    async def save_session(sid, value):
-        sessions[sid] = value
 
     await netplay_handler.delete(["link-room"])
     host = room_data("host", 22)
@@ -252,14 +268,6 @@ async def test_concurrent_joins_and_slot_claims_are_serialized(system):
         patch(
             "endpoints.sockets.netplay.netplay_socket_handler.socket_server.emit",
             AsyncMock(),
-        ),
-        patch(
-            "endpoints.sockets.netplay.netplay_socket_handler.socket_server.save_session",
-            AsyncMock(side_effect=save_session),
-        ),
-        patch(
-            "endpoints.sockets.netplay.netplay_socket_handler.socket_server.get_session",
-            AsyncMock(side_effect=sessions.get),
         ),
     ):
         assert await open_room("host", host) is None

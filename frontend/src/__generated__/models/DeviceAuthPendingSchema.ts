@@ -12,4 +12,3 @@ export type DeviceAuthPendingSchema = {
     allowed_scopes: Array<string>;
     expires_at: string;
 };
-

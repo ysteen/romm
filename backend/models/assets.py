@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
+from urllib.parse import quote
 
 from sqlalchemy import BigInteger, ForeignKey, Index, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import (
     FILE_EXTENSION_MAX_LENGTH,
     FILE_NAME_MAX_LENGTH,
     FILE_PATH_MAX_LENGTH,
     BaseModel,
-    compute_file_name_parts,
+    FileNamePartsMixin,
+    compute_file_extension,
 )
+from utils.database import CustomJSON, ExactString
 
 if TYPE_CHECKING:
     from models.device_save_sync import DeviceSaveSync
@@ -22,9 +25,29 @@ if TYPE_CHECKING:
 
 
 SAVE_SLOT_MAX_LENGTH = 255
+# Where a client with no slot of its own files new progress.
+AUTOSAVE_SLOT = "autosave"
+# A slot's versions, newest last: pruning locks exactly these rows through it.
+SAVE_SLOT_VERSIONS_INDEX = "ix_saves_rom_user_slot_updated"
+EMULATOR_MAX_LENGTH = 50
+MEMORY_CARD_NAME_MAX_LENGTH = 255
+ASSET_LABEL_MAX_LENGTH = 255
+ASSET_LABELS_MAX = 20
+CONTENT_HASH_MAX_LENGTH = 32
 
 
-class BaseAsset(BaseModel):
+class SaveLineage(NamedTuple):
+    """One emulator's saves in one format, whose versions in a slot are pruned together."""
+
+    emulator: str | None
+    file_extension: str
+
+    @classmethod
+    def of(cls, emulator: str | None, file_name: str) -> SaveLineage:
+        return cls(emulator, compute_file_extension(file_name).lower())
+
+
+class BaseAsset(FileNamePartsMixin, BaseModel):
     __abstract__ = True
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -39,28 +62,17 @@ class BaseAsset(BaseModel):
 
     missing_from_fs: Mapped[bool] = mapped_column(default=False, nullable=False)
 
-    @validates("file_name")
-    def _sync_file_name_parts(self, _key: str, file_name: str) -> str:
-        """Derive the stored `file_name_no_tags` / `file_name_no_ext` /
-        `file_extension` columns whenever `file_name` is assigned.
-
-        Defined on the abstract base so every asset subclass inherits it.
-        """
-        parts = compute_file_name_parts(file_name)
-        self.file_name_no_tags = parts.no_tags
-        self.file_name_no_ext = parts.no_ext
-        self.file_extension = parts.extension
-        return file_name
-
     @cached_property
     def full_path(self) -> str:
         return f"{self.file_path}/{self.file_name}"
 
     @cached_property
     def download_path(self) -> str:
-        # Served by the per-type `/{id}/content` route
+        # Served by the per-type `/{id}/content` route. A rename keeps
+        # `updated_at`, so the name joins the cache key.
         return (
-            f"/api/{self.__tablename__}/{self.id}/content?timestamp={self.updated_at}"
+            f"/api/{self.__tablename__}/{self.id}/content"
+            f"?timestamp={self.updated_at}&name={quote(self.file_name)}"
         )
 
 
@@ -82,7 +94,7 @@ class Screenshot(RomAsset):
 
     # `is_gallery` distinguishes intentionally-uploaded gallery screenshots from
     # the auto-captured save/state thumbnails that also live in this table.
-    # `is_public` mirrors RomNote — lets other users browse a user's public
+    # `is_public` mirrors RomNote: it lets other users browse a user's public
     # screenshots (community). Both default false; save/state thumbnails keep the
     # defaults, only the gallery upload endpoint sets `is_gallery=True`.
     is_gallery: Mapped[bool] = mapped_column(default=False)
@@ -97,23 +109,31 @@ class Save(RomAsset):
     __table_args__ = (
         Index("ix_saves_rom_user_hash", "rom_id", "user_id", "content_hash"),
         Index("idx_saves_public", "is_public"),
+        Index(SAVE_SLOT_VERSIONS_INDEX, "rom_id", "user_id", "slot", "updated_at"),
         {"extend_existing": True},
     )
 
-    emulator: Mapped[str | None] = mapped_column(String(length=50))
+    emulator: Mapped[str | None] = mapped_column(String(length=EMULATOR_MAX_LENGTH))
+    # Exact, so the database pairs slots as sync negotiation does in Python.
     slot: Mapped[str | None] = mapped_column(
-        String(length=SAVE_SLOT_MAX_LENGTH), index=True
+        ExactString(SAVE_SLOT_MAX_LENGTH), index=True
     )
-    content_hash: Mapped[str | None] = mapped_column(String(length=32))
+    content_hash: Mapped[str | None] = mapped_column(
+        String(length=CONTENT_HASH_MAX_LENGTH)
+    )
     origin_device_id: Mapped[str | None] = mapped_column(
         String(length=255),
         ForeignKey("devices.id", ondelete="SET NULL"),
         default=None,
         index=True,
     )
-    # `is_public` mirrors Screenshot/RomNote — lets other users browse and
+    # `is_public` mirrors Screenshot/RomNote: it lets other users browse and
     # download a user's public saves (community). Defaults false (private).
     is_public: Mapped[bool] = mapped_column(default=False)
+    # Owner-only annotations: favorites sort ahead of the rest, labels tell
+    # apart runs a filename and a timestamp cannot (a route, a seed, a run).
+    is_favorite: Mapped[bool] = mapped_column(default=False)
+    labels: Mapped[list[str] | None] = mapped_column(CustomJSON(), default=[])
 
     rom: Mapped[Rom] = relationship(lazy="joined", back_populates="saves")
     user: Mapped[User] = relationship(lazy="joined", back_populates="saves")
@@ -122,6 +142,10 @@ class Save(RomAsset):
         cascade="all, delete-orphan",
         lazy="raise",
     )
+
+    @property
+    def lineage(self) -> SaveLineage:
+        return SaveLineage.of(self.emulator, self.file_name)
 
     @cached_property
     def screenshot(self) -> Screenshot | None:
@@ -143,10 +167,14 @@ class State(RomAsset):
         {"extend_existing": True},
     )
 
-    emulator: Mapped[str | None] = mapped_column(String(length=50))
-    # `is_public` mirrors Screenshot/RomNote — lets other users browse and
+    emulator: Mapped[str | None] = mapped_column(String(length=EMULATOR_MAX_LENGTH))
+    # `is_public` mirrors Screenshot/RomNote: it lets other users browse and
     # download a user's public states (community). Defaults false (private).
     is_public: Mapped[bool] = mapped_column(default=False)
+    # Owner-only annotations: favorites sort ahead of the rest, labels tell
+    # apart runs a filename and a timestamp cannot (a route, a seed, a run).
+    is_favorite: Mapped[bool] = mapped_column(default=False)
+    labels: Mapped[list[str] | None] = mapped_column(CustomJSON(), default=[])
     # The disc mounted when this state was captured, so a resume can put the
     # same one back. SET NULL rather than CASCADE: losing the file row must
     # not take the player's save with it.
@@ -156,9 +184,23 @@ class State(RomAsset):
         default=None,
         index=True,
     )
+    # The libretro core that wrote this RetroArch state. NULL is the platform's
+    # default core, which wrote every state stored before cores were recorded.
+    core: Mapped[str | None] = mapped_column(
+        String(length=EMULATOR_MAX_LENGTH), nullable=True, default=None
+    )
+    # NULL on states stored before they were hashed.
+    content_hash: Mapped[str | None] = mapped_column(
+        String(length=CONTENT_HASH_MAX_LENGTH), nullable=True, default=None
+    )
 
     rom: Mapped[Rom] = relationship(lazy="joined", back_populates="states")
     user: Mapped[User] = relationship(lazy="joined", back_populates="states")
+
+    @property
+    def is_stream_capture(self) -> bool:
+        """Whether a streaming session captured this state: only a stream records its core."""
+        return self.core is not None
 
     @cached_property
     def screenshot(self) -> Screenshot | None:
@@ -191,7 +233,7 @@ class MemoryCard(BaseModel):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     # `emulator` is the hard scoping key: a card is looked up by (user, emulator)
     # at session claim, so one Dolphin card serves both GameCube and Wii roms.
-    emulator: Mapped[str] = mapped_column(String(length=50))
+    emulator: Mapped[str] = mapped_column(String(length=EMULATOR_MAX_LENGTH))
     # `platform_id` is a loose, nullable hint (which platform the card was
     # created under) for display/filtering only. It never scopes the lookup, so
     # a card stays visible across every platform its emulator drives.
@@ -199,7 +241,7 @@ class MemoryCard(BaseModel):
         ForeignKey("platforms.id", ondelete="SET NULL"),
         default=None,
     )
-    name: Mapped[str] = mapped_column(String(length=255))
+    name: Mapped[str] = mapped_column(String(length=MEMORY_CARD_NAME_MAX_LENGTH))
     # Only slot 1 is used today; kept so a future multi-slot layout needs no
     # schema change.
     slot: Mapped[int] = mapped_column(default=1)
@@ -233,7 +275,9 @@ class MemoryCardVersion(BaseAsset):
     memory_card_id: Mapped[int] = mapped_column(
         ForeignKey("memory_cards.id", ondelete="CASCADE")
     )
-    content_hash: Mapped[str | None] = mapped_column(String(length=32))
+    content_hash: Mapped[str | None] = mapped_column(
+        String(length=CONTENT_HASH_MAX_LENGTH)
+    )
 
     memory_card: Mapped[MemoryCard] = relationship(
         lazy="joined", back_populates="versions"

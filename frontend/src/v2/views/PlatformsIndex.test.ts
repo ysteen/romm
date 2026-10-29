@@ -1,14 +1,12 @@
 /* eslint-disable vue/one-component-per-file */
 import { mount } from "@vue/test-utils";
-import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, ref } from "vue";
 import storePlatforms, { type Platform } from "@/stores/platforms";
+import { platformFixture } from "@/utils/platform.fixtures";
 import PlatformsIndex from "./PlatformsIndex.vue";
 
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}));
+vi.mock("vue-i18n");
 
 // Plain object rather than a reactive route: every test sets the query
 // before mounting, which is when the view reads it.
@@ -69,7 +67,7 @@ vi.mock("@/v2/components/Platforms/PlatformTile.vue", () => ({
 vi.mock("@/v2/components/shared/IndexShell.vue", () => ({
   default: defineComponent({
     template:
-      '<main><slot name="header" /><slot name="toolbar" /><slot name="listHeader" /><slot /></main>',
+      '<main><slot name="header" /><slot name="toolbar" /><slot name="listHeader" /><slot name="listRows" /><slot /></main>',
   }),
 }));
 
@@ -101,8 +99,9 @@ vi.mock("@/v2/composables/useGalleryViewModeUrl", () => ({
 }));
 
 // Slugs the mocked composable treats as streaming-capable.
-const { streamableSlugs } = vi.hoisted(() => ({
+const { streamableSlugs, nativeSlugs } = vi.hoisted(() => ({
   streamableSlugs: new Set<string>(),
+  nativeSlugs: new Set<string>(),
 }));
 
 vi.mock("@/v2/composables/usePlatformPlayable", () => ({
@@ -111,6 +110,9 @@ vi.mock("@/v2/composables/usePlatformPlayable", () => ({
     isStreamable: ref((slug: string | null | undefined) =>
       slug ? streamableSlugs.has(slug) : false,
     ),
+    isNativeSupported: ref((slug: string | null | undefined) =>
+      slug ? nativeSlugs.has(slug) : false,
+    ),
   }),
 }));
 
@@ -118,8 +120,8 @@ vi.mock("@/v2/composables/useTileSearchUrl", () => ({
   useTileSearchUrl: () => ref(searchState.term),
 }));
 
-vi.mock("@/v2/composables/useWrapGridNav", () => ({
-  useWrapGridNav: vi.fn(),
+vi.mock("@/v2/composables/useGridNav", () => ({
+  useGridNav: vi.fn(),
 }));
 
 function platform(
@@ -128,24 +130,22 @@ function platform(
   romCount: number,
   overrides: Partial<Platform> = {},
 ): Platform {
-  return {
+  return platformFixture({
     id,
-    display_name: displayName,
     name: displayName,
     slug: displayName.toLowerCase().replaceAll(" ", "-"),
-    fs_slug: displayName.toLowerCase().replaceAll(" ", "-"),
     rom_count: romCount,
     ...overrides,
-  } as Platform;
+  });
 }
 
 describe("PlatformsIndex", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
     routeState.query = {};
     galleryModeState.groupBy = "none";
     galleryModeState.layout = "grid";
     streamableSlugs.clear();
+    nativeSlugs.clear();
     searchState.term = "";
   });
 
@@ -181,6 +181,23 @@ describe("PlatformsIndex", () => {
     expect(wrapper.text()).toContain("platform.no-platforms-with-games");
   });
 
+  // Inside the desktop shell a platform with no in-browser core and no
+  // container is still playable, PS2 being the case the feature exists for.
+  it("counts a native-only platform as playable when grouping by playable", () => {
+    galleryModeState.groupBy = "playable";
+    nativeSlugs.add("ps2");
+    const platforms = storePlatforms();
+    platforms.set([platform(1, "PlayStation 2", 5, { slug: "ps2" })]);
+
+    const wrapper = mount(PlatformsIndex);
+
+    const headings = wrapper
+      .findAll(".r-v2-pidx__group-heading")
+      .map((h) => h.text());
+    expect(headings).toContain("platform.playable");
+    expect(headings).not.toContain("platform.not-playable");
+  });
+
   it("counts a streaming-only platform as playable when grouping by playable", () => {
     galleryModeState.groupBy = "playable";
     streamableSlugs.add("dreamcast");
@@ -210,6 +227,8 @@ describe("PlatformsIndex", () => {
           fs_slug: "nintendo-64",
           category: "console",
           family_name: "Nintendo",
+          abbreviation: "N64",
+          alternative_names: ["Ultra 64"],
         }),
         platform(3, "Game Boy Advance", 5, {
           slug: "gba",
@@ -285,6 +304,35 @@ describe("PlatformsIndex", () => {
 
       expect(wrapper.text()).toContain("Game Boy Advance 5");
       expect(wrapper.text()).toContain("Nintendo 64 12");
+      expect(wrapper.text()).not.toContain("PlayStation 30");
+    });
+
+    it("matches on an alternative name", () => {
+      seed();
+      searchState.term = "ultra";
+
+      const wrapper = mount(PlatformsIndex);
+
+      expect(wrapper.text()).toContain("Nintendo 64 12");
+      expect(wrapper.text()).not.toContain("PlayStation 30");
+      expect(wrapper.text()).not.toContain("Game Boy Advance 5");
+    });
+
+    it("matches a renamed platform on its original name", () => {
+      storePlatforms().set([
+        platform(1, "Game Boy Advance", 7, {
+          custom_name: "My Handhelds",
+          display_name: "My Handhelds",
+          slug: "gba",
+          fs_slug: "gba",
+        }),
+        platform(2, "PlayStation", 30, { slug: "ps", fs_slug: "psx" }),
+      ]);
+      searchState.term = "advance";
+
+      const wrapper = mount(PlatformsIndex);
+
+      expect(wrapper.text()).toContain("My Handhelds 7");
       expect(wrapper.text()).not.toContain("PlayStation 30");
     });
 

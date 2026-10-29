@@ -73,6 +73,7 @@ function manager(core, rom = ncch()) {
     gm.FS = {
         analyzePath: path => ({ exists: exists(path) }),
         mkdir() {},
+        unlink: path => files.delete(path),
         stat: path => ({ mode: files.has(path) ? 1 : 2, mtime: files.get(path)?.mtime }),
         isFile: mode => mode === 1,
         isDir: mode => mode === 2,
@@ -291,4 +292,26 @@ test("DOSBox imports reject another core's paths before writing any files", () =
         { filename: "OtherCore/progress.sav", bytes: new Uint8Array([2]) }
     ]), /Not a DOSBox Pure save path/);
     assert.equal(writes.length, 0);
+});
+
+
+test("DOSBox cloud snapshots remove obsolete deltas without touching another game", async () => {
+    const { gm, files, add } = manager("dosbox_pure");
+    add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [1]);
+    add("/data/saves/DOSBox-pure/Example-DDRIVE.sav", [2]);
+    add("/data/saves/DOSBox-pure/Other-CDRIVE.sav", [3]);
+    await gm.getSaveFileAdapter().restore(zip({ "DOSBox-pure/Example-CDRIVE.sav": [4] }));
+    assert.equal(files.has("/data/saves/DOSBox-pure/Example-DDRIVE.sav"), false);
+    assert.deepEqual([...files.get("/data/saves/DOSBox-pure/Example-CDRIVE.sav").bytes], [4]);
+    assert.equal(files.has("/data/saves/DOSBox-pure/Other-CDRIVE.sav"), true);
+    await gm.getSaveFileAdapter().restore(zip({}));
+    assert.equal(files.has("/data/saves/DOSBox-pure/Example-CDRIVE.sav"), false);
+    assert.equal(files.has("/data/saves/DOSBox-pure/Other-CDRIVE.sav"), true);
+});
+
+test("DOSBox validates an entire cloud snapshot before removing current deltas", async () => {
+    const { gm, files, add } = manager("dosbox_pure");
+    add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [1]);
+    await assert.rejects(gm.getSaveFileAdapter().restore(zip({ "Other-CDRIVE.sav": [2] })), /this game/);
+    assert.deepEqual([...files.get("/data/saves/DOSBox-pure/Example-CDRIVE.sav").bytes], [1]);
 });

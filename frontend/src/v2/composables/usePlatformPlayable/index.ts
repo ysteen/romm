@@ -1,10 +1,10 @@
-// usePlatformPlayable — reactive "can any ROM on this platform run
+// usePlatformPlayable: reactive "can any ROM on this platform run
 // in-browser?" check. Companion to useCanPlay (which takes a rom);
 // platform-level surfaces (PlatformTile, PlatformListRow) only know the
 // slug, so they read this instead. Reuses the same engine-support utils
 // so the marker on the tile and the Play button on the ROM agree.
 //
-// `usePlatformPlayableChecker` is the batch sibling — returns a plain
+// `usePlatformPlayableChecker` is the batch sibling: returns a plain
 // function (no per-call computed) for surfaces that need to test many
 // slugs at once (sort comparators, group-by buckets in PlatformsIndex).
 //
@@ -12,7 +12,8 @@
 // platform: "ruffle" for Flash, "jsdos" for Windows 3.x/9x, "dosbox" when
 // the EJS catalogue picks the dosbox_pure core (DOS is wrapped by EJS but
 // distinctive enough to surface by name in the UI), "emulatorjs" for
-// everything else playable, and `null` when nothing on the server can run it.
+// everything else playable, and `null` when nothing on the server can run it
+// or the user lacks the in-browser play grant.
 //
 // `mode` folds the in-browser answer together with streaming: a platform
 // served by a configured streaming container is playable too, just not in
@@ -23,18 +24,21 @@ import { computed, type ComputedRef } from "vue";
 import i18n from "@/locales";
 import storeConfig, { type Config } from "@/stores/config";
 import storeHeartbeat, { type Heartbeat } from "@/stores/heartbeat";
+import { useNativeStore } from "@/stores/native";
 import { useStreamingStore } from "@/stores/streaming";
 import {
   getSupportedEJSCores,
+  isEasyRpgEmulationSupported,
   isEJSEmulationSupported,
   isJsDosEmulationSupported,
   isPico8EmulationSupported,
   isRuffleEmulationSupported,
   resolvePlatformSlug,
 } from "@/utils";
+import { useCan } from "@/v2/composables/useCan";
 
 export type PlatformEmulator =
-  "emulatorjs" | "ruffle" | "jsdos" | "pico8" | "dosbox" | null;
+  "emulatorjs" | "ruffle" | "jsdos" | "pico8" | "easyrpg" | "dosbox" | null;
 
 export type PlatformPlayMode = "browser" | "stream" | "both" | null;
 
@@ -45,7 +49,7 @@ function resolveMode(playable: boolean, streamable: boolean): PlatformPlayMode {
   return null;
 }
 
-/** Pure helper — picks the engine that would actually run a platform.
+/** Pure helper: picks the engine that would actually run a platform.
  * Shared between the reactive and the batch composables so both surface
  * the same label for the same slug. */
 function resolveEmulator(
@@ -57,6 +61,7 @@ function resolveEmulator(
   if (isRuffleEmulationSupported(slug, heartbeat, config)) return "ruffle";
   if (isJsDosEmulationSupported(slug, heartbeat, config)) return "jsdos";
   if (isPico8EmulationSupported(slug, heartbeat, config)) return "pico8";
+  if (isEasyRpgEmulationSupported(slug, heartbeat, config)) return "easyrpg";
   if (!isEJSEmulationSupported(slug, heartbeat, config)) return null;
   const cores = getSupportedEJSCores(resolvePlatformSlug(slug, config));
   if (cores.includes("dosbox_pure")) return "dosbox";
@@ -74,8 +79,11 @@ export function usePlatformPlayable(getSlug: () => string | null | undefined): {
   const streamingStore = useStreamingStore();
   const { value: heartbeat } = storeToRefs(heartbeatStore);
 
+  const canPlayInBrowser = useCan("rom.play");
   const emulator = computed<PlatformEmulator>(() =>
-    resolveEmulator(getSlug(), heartbeat.value, configStore.config),
+    canPlayInBrowser.value
+      ? resolveEmulator(getSlug(), heartbeat.value, configStore.config)
+      : null,
   );
 
   const playable = computed(() => emulator.value !== null);
@@ -105,20 +113,24 @@ export function usePlatformPlayableChecker(): {
     (slug: string | null | undefined) => PlatformEmulator
   >;
   isStreamable: ComputedRef<(slug: string | null | undefined) => boolean>;
+  isNativeSupported: ComputedRef<(slug: string | null | undefined) => boolean>;
 } {
   const heartbeatStore = storeHeartbeat();
   const configStore = storeConfig();
   const streamingStore = useStreamingStore();
+  const nativeStore = useNativeStore();
   const { value: heartbeat } = storeToRefs(heartbeatStore);
 
   // Expose computed functions so callers that consume them inside another
   // computed (sort comparator, bucket discriminator) re-run when the
   // heartbeat or admin-toggle state changes.
+  const canPlayInBrowser = useCan("rom.play");
   const getEmulator = computed(() => {
     const hb = heartbeat.value;
     const cfg = configStore.config;
+    const allowed = canPlayInBrowser.value;
     return (slug: string | null | undefined): PlatformEmulator =>
-      resolveEmulator(slug, hb, cfg);
+      allowed ? resolveEmulator(slug, hb, cfg) : null;
   });
 
   const isPlayable = computed(() => {
@@ -134,7 +146,16 @@ export function usePlatformPlayableChecker(): {
       cfg.enabled && streamingStore.containerForPlatform(slug) !== null;
   });
 
-  return { isPlayable, getEmulator, isStreamable };
+  // Whether the desktop shell can launch this platform locally. Deliberately
+  // not folded into `mode`: the badge answers a question about the server, and
+  // this one is about the machine the page is open on.
+  const isNativeSupported = computed(() => {
+    const probed = nativeStore.support;
+    return (slug: string | null | undefined): boolean =>
+      Boolean(probed) && nativeStore.isSupportedPlatform(slug);
+  });
+
+  return { isPlayable, getEmulator, isStreamable, isNativeSupported };
 }
 
 /** Human-readable tooltip for the play badge / column. Shared by every
@@ -158,6 +179,8 @@ export function playTooltip(
           return t("platform.playable-browser-jsdos");
         case "pico8":
           return t("platform.playable-browser-pico8");
+        case "easyrpg":
+          return t("platform.playable-browser-easyrpg");
         case "dosbox":
           return t("platform.playable-browser-dosbox");
         default:

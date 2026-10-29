@@ -1,7 +1,8 @@
 import { mount } from "@vue/test-utils";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, nextTick, ref, type Ref } from "vue";
 import romApi from "@/services/api/rom";
+import { stubResizeObserver } from "@/test-utils/resizeObserver";
 import { useReadingProgress } from "./index";
 
 vi.mock("@/services/api/rom", () => ({
@@ -42,10 +43,6 @@ beforeEach(() => {
   updateFileProgress.mockResolvedValue({ data: {} } as never);
 });
 
-afterEach(() => {
-  vi.useRealTimers();
-});
-
 describe("useReadingProgress", () => {
   it("saves the outgoing document's position when the tracked file changes", async () => {
     const fileId = ref<number | null>(10);
@@ -64,7 +61,7 @@ describe("useReadingProgress", () => {
     });
   });
 
-  it("saves a pending position on unmount", async () => {
+  it("saves a pending position on unmount", () => {
     const { api, wrapper } = withComposable(
       ref(3),
       ref<number | null>(20),
@@ -81,7 +78,7 @@ describe("useReadingProgress", () => {
     });
   });
 
-  it("derives progress from the page for paginated documents", async () => {
+  it("derives progress from the page for paginated documents", () => {
     const { api } = withComposable(ref(2), ref<number | null>(30));
 
     api.setPage(3, 12);
@@ -95,7 +92,7 @@ describe("useReadingProgress", () => {
     });
   });
 
-  it("tracks progress without saving when no file backs the document", async () => {
+  it("tracks progress without saving when no file backs the document", () => {
     const { api } = withComposable(
       ref(1),
       ref<number | null>(null),
@@ -109,7 +106,7 @@ describe("useReadingProgress", () => {
     expect(updateFileProgress).not.toHaveBeenCalled();
   });
 
-  it("does not re-send a position that was already saved", async () => {
+  it("does not re-send a position that was already saved", () => {
     const { api } = withComposable(
       ref(1),
       ref<number | null>(10),
@@ -123,5 +120,48 @@ describe("useReadingProgress", () => {
     // A second debounce window with no further scrolling must stay quiet.
     vi.advanceTimersByTime(1000);
     expect(updateFileProgress).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves once scrolling has paused", () => {
+    const el = makeScrollEl(100);
+    const { api } = withComposable(ref(1), ref<number | null>(10), ref(el));
+
+    api.onScroll();
+    vi.advanceTimersByTime(500);
+    el.scrollTop = 250;
+    api.onScroll();
+    vi.advanceTimersByTime(500);
+    expect(updateFileProgress).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(300);
+    expect(updateFileProgress).toHaveBeenCalledTimes(1);
+    expect(updateFileProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ progress: 0.5 }),
+      }),
+    );
+  });
+
+  it("holds a restore on a hidden panel until it is laid out", async () => {
+    const ro = stubResizeObserver();
+    getFileProgress.mockResolvedValue({ data: { progress: 0.5 } } as never);
+    const el = document.createElement("div");
+    let scrollHeight = 0;
+    Object.defineProperty(el, "scrollHeight", { get: () => scrollHeight });
+    Object.defineProperty(el, "clientHeight", { get: () => 0 });
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    const { api } = withComposable(ref(1), ref<number | null>(10), ref(el));
+
+    await api.restore();
+    await nextTick();
+    expect(el.scrollTop).toBe(0);
+    expect(ro.isObserved(el)).toBe(true);
+
+    scrollHeight = 1000;
+    ro.resize(el, 300, 1000);
+    await nextTick();
+
+    expect(el.scrollTop).toBe(500);
+    expect(ro.isObserved(el)).toBe(false);
   });
 });

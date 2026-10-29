@@ -16,26 +16,41 @@ import sqlalchemy as sa
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import Table, UniqueConstraint
+from sqlalchemy import DefaultClause, FetchedValue, Table, UniqueConstraint
+from sqlalchemy.sql.schema import NULL_UNSPECIFIED
+from tests.factories import make_platform, make_rom
 
 import models
+from handler.database import db_collection_handler, db_rom_handler
 from handler.database.base_handler import sync_engine
 from models.base import BaseModel
+from models.collection import Collection, SmartCollection
+from models.platform import Platform
 from models.rom import FULL_PATH_HASH_LENGTH, Rom, compute_full_path_hash
+from models.user import User
 from utils.database import (
     AUTOGENERATE_EXEMPT_INDEX_NAMES,
+    HLTB_MAIN_STORY_COLUMN,
     POSTGRESQL_FK_INDEXES,
+    ROMS_SEARCH_FULLTEXT_INDEX,
+    ROMS_SEARCH_TITLES_TRGM_INDEX,
+    SEARCH_TITLES_COLUMN,
+    SORTABLE_NULLABLE_ROM_COLUMNS,
+    exact_collation,
     full_path_digest_sql,
     has_column,
     is_mariadb,
     is_postgresql,
+    rom_desc_index_name,
+    rom_sort_index_name,
+    rom_unset_flag_column,
 )
 from utils.roms_columns import (
     FULL_PATH_HASH_COLUMN,
-    HLTB_MAIN_STORY_COLUMN,
     ROMS_METADATA_VIEW_COLUMNS,
     STEAM_FED_COLUMNS,
     STEAM_METADATA_COLUMN,
+    drop_roms_columns,
     ensure_roms_columns,
     has_server_default,
     rebuild_generated_columns,
@@ -80,6 +95,58 @@ def test_no_index_drift_between_models_and_migrations():
     assert drift == []
 
 
+def test_no_column_drift_between_models_and_migrations():
+    """Every mapped column exists in the migrated schema with the same nullability."""
+    models.load_all_models()
+
+    with sync_engine.connect() as connection:
+        inspector = sa.inspect(connection)
+        # A view reflects every column as nullable, whatever the model says.
+        views = set(inspector.get_view_names())
+        drift = []
+        for table in BaseModel.metadata.sorted_tables:
+            if table.name in views:
+                continue
+            reflected = {
+                column["name"]: column["nullable"]
+                for column in inspector.get_columns(table.name)
+            }
+            for column in table.columns:
+                if column.name not in reflected:
+                    drift.append(f"missing: {table.name}.{column.name}")
+                elif column.nullable != reflected[column.name]:
+                    drift.append(
+                        f"nullable: {table.name}.{column.name} "
+                        f"model={column.nullable} db={reflected[column.name]}"
+                    )
+
+    assert drift == []
+
+
+def _is_database_filled(value: object) -> bool:
+    # `DefaultClause` is a literal default the ORM could write itself.
+    return isinstance(value, FetchedValue) and not isinstance(value, DefaultClause)
+
+
+def test_database_filled_columns_declare_their_nullability():
+    """Every database-filled column passes `nullable=`, or autogenerate never compares it."""
+    models.load_all_models()
+
+    undeclared = [
+        f"{table.name}.{column.name}"
+        for table in BaseModel.metadata.sorted_tables
+        for column in table.columns
+        if any(
+            _is_database_filled(value)
+            for value in (column.server_default, column.server_onupdate)
+        )
+        # The same private flag alembic's `_nullability_might_be_unset` reads.
+        and column._user_defined_nullable is NULL_UNSPECIFIED
+    ]
+
+    assert undeclared == []
+
+
 def test_postgresql_fk_indexes_cover_every_unindexed_foreign_key():
     """`POSTGRESQL_FK_INDEXES` holds exactly the foreign keys that need it.
 
@@ -117,7 +184,7 @@ def test_the_migrated_full_path_digest_matches_the_models(
     A mismatch would make every pre-existing rom look new to the unique index.
     """
     with sync_engine.connect() as connection:
-        digest = connection.execute(
+        digest: str = connection.execute(
             sa.text(
                 f"SELECT {full_path_digest_sql(connection)} FROM "
                 "(SELECT :fs_path AS fs_path, :fs_name AS fs_name) AS one_rom"
@@ -169,9 +236,28 @@ def _replay(connection: sa.Connection, filename: str) -> None:
         ("0111_physical_roms.py", "roms"),
         ("0120_container_adoptions.py", "streaming_container_adoptions"),
         ("0122_rom_similarity.py", "rom_similarity"),
-        ("0123_recommendation_metadata.py", "roms"),
         ("0126_unique_rom_full_path.py", "roms"),
         ("0128_hltb_main_story_column.py", "roms"),
+        ("0130_notifications.py", "notifications"),
+        ("0131_notification_channels.py", "notification_channels"),
+        ("0132_audit_events.py", "audit_events"),
+        ("0135_drop_play_session_sync_link.py", "play_sessions"),
+        ("0136_deleted_assets.py", "deleted_assets"),
+        ("0138_exact_save_slots.py", "saves"),
+        ("0139_rom_user_pinned_media.py", "rom_user"),
+        ("0140_device_save_sync_baseline.py", "device_save_sync"),
+        ("0141_device_capabilities.py", "devices"),
+        ("0142_state_core.py", "states"),
+        ("0143_sibling_platform_names.py", "platforms"),
+        ("0144_user_oidc_sub.py", "users"),
+        ("0145_drop_derivable_columns.py", "rom_file_doc_meta"),
+        ("0146_roms_search_aliases.py", "roms"),
+        ("0147_rom_file_title_ids.py", "rom_files"),
+        ("0148_rom_age_limits.py", "roms"),
+        ("0148_rom_age_limits.py", "roms_facets"),
+        ("0148_rom_age_limits.py", "permission_groups"),
+        ("0148_rom_age_limits.py", "users"),
+        ("0151_state_content_hash.py", "states"),
     ],
 )
 def test_a_revision_replayed_over_the_migrated_schema_is_a_no_op(
@@ -182,6 +268,359 @@ def test_a_revision_replayed_over_the_migrated_schema_is_a_no_op(
         _replay(connection, filename)
 
         assert _schema_of(connection, table) == before
+
+
+def test_the_play_session_sync_link_revision_reverses_and_replays():
+    """0135 drops a column whose constraint each dialect handles differently.
+
+    MariaDB and MySQL index the foreign key themselves and refuse to drop the
+    column while it stands; PostgreSQL takes both with the column and needs the
+    index 0124 made. Each step is guarded, so both directions replay.
+    """
+    migration = _load_migration("0135_drop_play_session_sync_link.py")
+
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "play_sessions")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert has_column(connection, "play_sessions", "sync_session_id")
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert not has_column(connection, "play_sessions", "sync_session_id")
+        assert _schema_of(connection, "play_sessions") == before
+
+
+def test_the_device_capabilities_revision_reverses_and_replays():
+    migration = _load_migration("0141_device_capabilities.py")
+
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "devices")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not has_column(connection, "devices", "capabilities")
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert _schema_of(connection, "devices") == before
+
+
+def test_the_state_core_revision_reverses_and_replays():
+    migration = _load_migration("0142_state_core.py")
+
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "states")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not has_column(connection, "states", "core")
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert _schema_of(connection, "states") == before
+
+
+def test_the_state_content_hash_revision_reverses_and_replays():
+    migration = _load_migration("0151_state_content_hash.py")
+
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "states")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not has_column(connection, "states", "content_hash")
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert _schema_of(connection, "states") == before
+
+
+def test_the_cross_user_smart_scopes_revision_empties_only_those_caches(
+    admin_user: User, editor_user: User
+):
+    migration = _load_migration("0152_cross_user_smart_scopes.py")
+    private, public = (
+        db_collection_handler.add_collection(
+            Collection(
+                name=name, description="", user_id=admin_user.id, is_public=is_public
+            )
+        )
+        for name, is_public in (("Secret", False), ("Shared", True))
+    )
+    borrowed, own, borrowed_public = (
+        db_collection_handler.add_smart_collection(
+            SmartCollection(
+                name="Scoped",
+                user_id=owner.id,
+                rom_ids=[1, 2],
+                path_covers_small=["cover"],
+                filter_criteria={"collection_id": scope.id},
+            )
+        )
+        for owner, scope in (
+            (editor_user, private),
+            (admin_user, private),
+            (editor_user, public),
+        )
+    )
+
+    with sync_engine.begin() as connection:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+
+    cleared = db_collection_handler.get_smart_collection(borrowed.id)
+    assert cleared is not None
+    assert (cleared.rom_ids, cleared.path_covers_small) == ([], [])
+    for kept_id in (own.id, borrowed_public.id):
+        kept = db_collection_handler.get_smart_collection(kept_id)
+        assert kept is not None
+        assert (kept.rom_ids, kept.path_covers_small) == ([1, 2], ["cover"])
+
+
+def test_the_user_oidc_sub_revision_reverses_and_replays():
+    migration = _load_migration("0144_user_oidc_sub.py")
+
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "users")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not has_column(connection, "users", "oidc_sub")
+            assert not has_column(connection, "users", "oidc_issuer")
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert _schema_of(connection, "users") == before
+
+
+def test_the_derivable_columns_revision_reverses_and_replays(admin_user: User):
+    """0145 drops a foreign key MariaDB and MySQL named for themselves in 0110."""
+    migration = _load_migration("0145_drop_derivable_columns.py")
+    tables = ("smart_collections", "rom_file_doc_meta")
+    smart = db_collection_handler.add_smart_collection(
+        SmartCollection(
+            name="Smart",
+            user_id=admin_user.id,
+            rom_ids=[1, 2, 3],
+            filter_criteria={},
+        )
+    )
+
+    with sync_engine.begin() as connection:
+        before = {table: _schema_of(connection, table) for table in tables}
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            columns = {
+                (table, c["name"]): c
+                for table in tables
+                for c in sa.inspect(connection).get_columns(table)
+            }
+            assert not columns[("rom_file_doc_meta", "rom_id")]["nullable"]
+            assert columns[("smart_collections", "rom_count")]["default"] is None
+            rom_count: int = connection.execute(
+                sa.text("SELECT rom_count FROM smart_collections WHERE id = :id"),
+                {"id": smart.id},
+            ).scalar_one()
+            assert rom_count == 3
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert {table: _schema_of(connection, table) for table in tables} == before
+
+
+def test_the_search_titles_revision_reverses_replays_and_fills(platform: Platform):
+    """0146 swaps the search index and fills existing rows, resuming a partial run."""
+    migration = _load_migration("0146_roms_search_aliases.py")
+    first = make_rom(
+        platform, "Final Fantasy VII", igdb_metadata={"alternative_names": ["FF7"]}
+    )
+    second = make_rom(platform, "Chrono Trigger")
+
+    def titles(connection: sa.Connection) -> dict[int, str | None]:
+        rows = connection.execute(
+            sa.text("SELECT id, search_titles FROM roms WHERE id IN (:a, :b)"),
+            {"a": first.id, "b": second.id},
+        )
+        return dict(rows.all())
+
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "roms")
+        expected = titles(connection)
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not has_column(connection, "roms", SEARCH_TITLES_COLUMN)
+            indexes = _schema_of(connection, "roms")[1]
+            assert ROMS_SEARCH_FULLTEXT_INDEX not in indexes
+            assert ROMS_SEARCH_TITLES_TRGM_INDEX not in indexes
+            migration.downgrade()
+
+            migration.upgrade()
+            assert titles(connection) == expected
+
+            connection.execute(
+                sa.text("UPDATE roms SET search_titles = NULL WHERE id = :id"),
+                {"id": second.id},
+            )
+            migration.upgrade()
+            assert titles(connection) == expected
+
+        assert _schema_of(connection, "roms") == before
+    assert expected[first.id] == "\x1ffinal fantasy vii\x1fff7\x1f"
+
+
+def test_the_rom_file_title_ids_revision_reverses_and_replays():
+    migration = _load_migration("0147_rom_file_title_ids.py")
+
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "rom_files")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not has_column(connection, "rom_files", "converto_read_at")
+            assert not has_column(connection, "rom_files", "title_id")
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert _schema_of(connection, "rom_files") == before
+
+
+def test_the_age_limits_revision_reverses_replays_and_fills(platform: Platform):
+    """0148 rates existing ROMs and keeps mirroring the rating into roms_facets."""
+    migration = _load_migration("0148_rom_age_limits.py")
+    rated = make_rom(
+        platform,
+        "Rated",
+        igdb_metadata={"age_ratings": [{"category": "PEGI", "rating": "16"}]},
+    )
+    unrated = make_rom(platform, "Unrated")
+
+    def ages(connection: sa.Connection, table: str, key: str) -> dict[int, int | None]:
+        rows = connection.execute(
+            sa.text(
+                f"SELECT {key}, min_age FROM {table} WHERE {key} IN (:a, :b)"
+            ),  # nosec B608
+            {"a": rated.id, "b": unrated.id},
+        )
+        return dict(rows.all())
+
+    tables = ("roms", "roms_facets", "permission_groups", "users")
+    with sync_engine.begin() as connection:
+        before = {table: _schema_of(connection, table) for table in tables}
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            assert not has_column(connection, "roms", "min_age")
+            assert not has_column(connection, "users", "age_limit")
+            migration.downgrade()
+
+            migration.upgrade()
+            migration.upgrade()
+
+        assert ages(connection, "roms", "id") == {rated.id: 16, unrated.id: None}
+        assert ages(connection, "roms_facets", "rom_id") == {
+            rated.id: 16,
+            unrated.id: None,
+        }
+        assert {table: _schema_of(connection, table) for table in tables} == before
+
+    # The rebuilt triggers still mirror a later write.
+    db_rom_handler.update_rom(
+        unrated.id,
+        {"ss_metadata": {"age_ratings": [{"category": "PEGI", "rating": "7"}]}},
+    )
+    with sync_engine.connect() as connection:
+        assert ages(connection, "roms_facets", "rom_id")[unrated.id] == 7
+
+
+def _slot_collations(connection: sa.Connection) -> dict[str, str | None]:
+    inspector = sa.inspect(connection)
+    collations = {}
+    for table in ("saves", "deleted_assets"):
+        [slot_type] = [
+            column["type"]
+            for column in inspector.get_columns(table)
+            if column["name"] == "slot"
+        ]
+        assert isinstance(slot_type, sa.String)
+        collations[table] = slot_type.collation
+    return collations
+
+
+def test_save_slots_are_compared_exactly():
+    """Both slot columns match as sync negotiation pairs them in Python."""
+    with sync_engine.connect() as connection:
+        expected = exact_collation(connection)
+        assert _slot_collations(connection) == {
+            "saves": expected,
+            "deleted_assets": expected,
+        }
+
+
+def test_the_exact_save_slots_revision_reverses_and_replays():
+    migration = _load_migration("0138_exact_save_slots.py")
+
+    with sync_engine.begin() as connection:
+        exact = exact_collation(connection)
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            if exact is not None:
+                assert _slot_collations(connection)["saves"] != exact
+
+            migration.downgrade()
+            migration.upgrade()
+            migration.upgrade()
+
+        assert _slot_collations(connection)["saves"] == exact
+
+
+def test_the_exact_save_slots_revision_fixes_an_early_deleted_assets_table():
+    """A deleted_assets slot left with the table's folding collation is made exact."""
+    migration = _load_migration("0138_exact_save_slots.py")
+
+    with sync_engine.begin() as connection:
+        exact = exact_collation(connection)
+        if exact is None:
+            pytest.skip("PostgreSQL compares slots exactly already")
+        with Operations.context(MigrationContext.configure(connection)) as op:
+            op.alter_column(
+                "deleted_assets",
+                "slot",
+                existing_type=sa.String(length=255),
+                type_=sa.String(length=255),
+                existing_nullable=False,
+            )
+            assert _slot_collations(connection)["deleted_assets"] != exact
+
+            migration.upgrade()
+
+        assert _slot_collations(connection)["deleted_assets"] == exact
+
+
+def test_the_exact_save_slots_revision_rebuilds_no_table_already_exact():
+    """A replay after a run that died partway skips the collations it finished."""
+    migration = _load_migration("0138_exact_save_slots.py")
+    statements: list[str] = []
+
+    with sync_engine.begin() as connection:
+
+        @sa.event.listens_for(connection, "before_cursor_execute")
+        def _record(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+            if re.match(r"ALTER TABLE \S+ MODIFY", statement.lstrip(), re.I):
+                statements.append(statement)
+
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+
+    assert statements == []
 
 
 def test_the_rom_similarity_revision_fills_in_a_missing_index():
@@ -236,7 +675,7 @@ def test_the_full_path_hash_migration_resumes_an_interrupted_run(rom: Rom):
             migration.upgrade()
 
         columns, indexes = _schema_of(connection, "roms")
-        digest = connection.execute(
+        digest: str = connection.execute(
             sa.text(
                 f"SELECT {migration.COLUMN_NAME} FROM roms WHERE id = :rom_id"
             ),  # nosec B608
@@ -321,6 +760,65 @@ def test_the_roms_columns_helper_adds_every_missing_column_at_once():
 
         assert _schema_of(connection, "roms") == before
         assert len(alters) == 1
+
+
+def test_the_roms_columns_helper_rebuilds_a_narrowed_sort_index():
+    """PostgreSQL drops a `_sort` index with its column; MariaDB narrows it."""
+    # `roms_metadata` does not project this one, so PostgreSQL lets it go
+    # without the view being dropped first.
+    column = HLTB_MAIN_STORY_COLUMN
+    spanned = (rom_unset_flag_column(column), column, "id")
+
+    with sync_engine.begin() as connection:
+        connection.execute(sa.text(f"ALTER TABLE roms DROP COLUMN {column}"))
+        assert _schema_of(connection, "roms")[1].get(rom_sort_index_name(column)) != (
+            spanned,
+            False,
+        )
+
+        ensure_roms_columns(connection)
+        # 0128 owns the value column's own index, so its replay finishes the schema.
+        _replay(connection, "0128_hltb_main_story_column.py")
+
+        assert _schema_of(connection, "roms")[1][rom_sort_index_name(column)] == (
+            spanned,
+            False,
+        )
+
+
+def test_the_roms_columns_helper_rebuilds_the_search_index_with_the_titles_column():
+    """A rebuild of the titles column must not leave the gallery search unindexed."""
+    with sync_engine.begin() as connection:
+        before = _schema_of(connection, "roms")
+        connection.execute(
+            sa.text(f"ALTER TABLE roms DROP COLUMN {SEARCH_TITLES_COLUMN}")
+        )
+
+        ensure_roms_columns(connection)
+
+        assert _schema_of(connection, "roms") == before
+
+
+def test_dropping_the_roms_columns_takes_the_sort_indexes_with_them():
+    """A descending sort index reads an inherited column, so nothing else drops it."""
+    # Those indexes are PostgreSQL's alone, and only its DDL rolls back, which
+    # is what keeps this teardown out of the schema the other tests share.
+    with sync_engine.connect() as connection:
+        if not is_postgresql(connection):
+            pytest.skip("descending sort indexes are PostgreSQL-only")
+
+        transaction = connection.begin()
+        try:
+            descending = {
+                rom_desc_index_name(column) for column in SORTABLE_NULLABLE_ROM_COLUMNS
+            }
+            assert descending <= set(_schema_of(connection, "roms")[1])
+
+            drop_roms_columns(connection)
+
+            assert descending & set(_schema_of(connection, "roms")[1]) == set()
+        finally:
+            transaction.rollback()
 
 
 def test_the_roms_columns_helper_redefines_a_column_that_predates_steam():
@@ -444,7 +942,7 @@ def test_the_roms_columns_helper_fills_the_full_path_digest_where_it_can(rom: Ro
             assert columns[FULL_PATH_HASH_COLUMN] is not is_mariadb(connection)
             assert not has_server_default(connection, FULL_PATH_HASH_COLUMN)
             if is_mariadb(connection):
-                digest = connection.execute(
+                digest: str = connection.execute(
                     sa.text(
                         f"SELECT {FULL_PATH_HASH_COLUMN} FROM roms WHERE id = :rom_id"  # nosec B608
                     ),
@@ -491,3 +989,233 @@ def test_the_state_disc_file_migration_resumes_an_interrupted_run(drop_column: b
     assert "disc_file_id" in columns
     assert index
     assert "fk_states_disc_file_id" in foreign_keys
+
+
+def _is_system_sql(connection: sa.Connection) -> str:
+    # Before 0137 the seeded groups are flagged by `is_system`, after it by a key.
+    if has_column(connection, "permission_groups", "system_key"):
+        return "system_key IS NOT NULL"
+    return "is_system"
+
+
+def _system_groups(connection: sa.Connection) -> dict[str, str]:
+    rows = connection.execute(
+        sa.text(
+            "SELECT name, description FROM permission_groups "
+            f"WHERE {_is_system_sql(connection)}"
+        )
+    )
+    return {name: description for name, description in rows}
+
+
+def _system_keys(connection: sa.Connection) -> dict[str, str]:
+    rows = connection.execute(
+        sa.text(
+            "SELECT system_key, name FROM permission_groups "
+            "WHERE system_key IS NOT NULL"
+        )
+    )
+    return {key: name for key, name in rows}
+
+
+GROUP_RENAME = _load_migration("0137_rename_system_groups.py")
+
+
+def _upgrade_group_rename(connection: sa.Connection) -> None:
+    # MariaDB commits the column DDL implicitly, so tests restore head by hand
+    # rather than rolling back.
+    with Operations.context(MigrationContext.configure(connection)):
+        GROUP_RENAME.upgrade()
+    connection.commit()
+
+
+def test_the_group_rename_round_trips_the_seeded_groups():
+    with sync_engine.connect() as connection:
+        renamed = _system_groups(connection)
+        try:
+            with Operations.context(MigrationContext.configure(connection)):
+                GROUP_RENAME.downgrade()
+            legacy = _system_groups(connection)
+        finally:
+            _upgrade_group_rename(connection)
+        replayed = _system_groups(connection)
+        keys = _system_keys(connection)
+        flag_dropped = not has_column(connection, "permission_groups", "is_system")
+
+    assert set(renamed) == {"Viewer", "Editor"}
+    assert set(legacy) == {"Viewer (legacy)", "Editor (legacy)"}
+    assert "pre-upgrade" in legacy["Viewer (legacy)"]
+    assert replayed == renamed
+    assert keys == {"viewer": "Viewer", "editor": "Editor"}
+    assert flag_dropped
+
+
+def test_the_group_rename_leaves_admin_changes_alone():
+    """A taken name skips that group, and an edited description survives."""
+    with sync_engine.connect() as connection:
+        try:
+            with Operations.context(MigrationContext.configure(connection)):
+                GROUP_RENAME.downgrade()
+            legacy = _system_groups(connection)
+            connection.execute(
+                sa.text(
+                    "INSERT INTO permission_groups "
+                    "(name, description, is_default, is_system, created_at, updated_at) "
+                    "VALUES ('Viewer', '', false, false, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "UPDATE permission_groups SET description = 'Custom' "
+                    "WHERE name = 'Editor (legacy)'"
+                )
+            )
+            _upgrade_group_rename(connection)
+            groups = _system_groups(connection)
+            keys = _system_keys(connection)
+        finally:
+            _, _, _, _, editor_description = GROUP_RENAME.RENAMES[1]
+            connection.execute(
+                sa.text(
+                    "DELETE FROM permission_groups "
+                    f"WHERE name = 'Viewer' AND NOT ({_is_system_sql(connection)})"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "UPDATE permission_groups SET description = :description "
+                    f"WHERE {_is_system_sql(connection)} AND description = 'Custom'"
+                ),
+                {"description": editor_description},
+            )
+            _upgrade_group_rename(connection)
+
+    assert groups == {
+        "Viewer (legacy)": legacy["Viewer (legacy)"],
+        "Editor": "Custom",
+    }
+    assert keys == {"viewer": "Viewer (legacy)", "editor": "Editor"}
+
+
+def test_the_sibling_platform_names_revision_renames_only_the_stale_name():
+    migration = _load_migration("0143_sibling_platform_names.py")
+    for name, slug, fs_slug in (
+        ("Commodore 64", "c128", "c128"),
+        ("Videopac G7000", "videopac-g7400", "videopac-g7400"),
+        ("Commodore 64", "c64", "c64"),
+        ("C128 (custom)", "c128", "c128-custom"),
+    ):
+        make_platform(slug, name=name, fs_slug=fs_slug)
+
+    with sync_engine.begin() as connection:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+        names = set(
+            connection.execute(sa.text("SELECT fs_slug, name FROM platforms")).all()
+        )
+
+    assert names == {
+        ("c128", "Commodore 128"),
+        ("videopac-g7400", "Videopac+ G7400"),
+        ("c64", "Commodore 64"),
+        ("c128-custom", "C128 (custom)"),
+    }
+
+
+_GROUPS = sa.table(
+    "permission_groups",
+    sa.column("id", sa.Integer),
+    sa.column("name", sa.String),
+    sa.column("description", sa.String),
+    sa.column("is_default", sa.Boolean),
+    sa.column("hide_unrated_roms", sa.Boolean),
+)
+_GRANTS = sa.table(
+    "permission_group_grants",
+    sa.column("group_id", sa.Integer),
+    sa.column("entity", sa.String),
+    sa.column("action", sa.String),
+    sa.column("own_only", sa.Boolean),
+)
+_OVERRIDES = sa.table(
+    "user_permission_overrides",
+    sa.column("user_id", sa.Integer),
+    sa.column("entity", sa.String),
+    sa.column("action", sa.String),
+    sa.column("granted", sa.Boolean),
+    sa.column("own_only", sa.Boolean),
+)
+
+
+_PLAY_ENTITIES = ("streaming", "emulation")
+
+
+def _play_grants(connection: sa.Connection) -> set[tuple[int, str, str, bool]]:
+    return {
+        (row.group_id, row.entity, row.action, bool(row.own_only))
+        for row in connection.execute(
+            sa.select(
+                _GRANTS.c.group_id,
+                _GRANTS.c.entity,
+                _GRANTS.c.action,
+                _GRANTS.c.own_only,
+            ).where(_GRANTS.c.entity.in_(_PLAY_ENTITIES))
+        )
+    }
+
+
+def _play_overrides(connection: sa.Connection) -> int:
+    return connection.execute(
+        sa.select(sa.func.count())
+        .select_from(_OVERRIDES)
+        .where(_OVERRIDES.c.entity.in_(_PLAY_ENTITIES))
+    ).scalar_one()
+
+
+def test_the_play_permissions_revision_backfills_reverses_and_replays(
+    admin_user: User,
+):
+    """0153 grants streaming and emulation to every existing group and downgrades cleanly."""
+    migration = _load_migration("0153_play_permissions.py")
+
+    with sync_engine.begin() as connection:
+        connection.execute(
+            _GROUPS.insert().values(
+                name="Locked down",
+                description="",
+                is_default=False,
+                hide_unrated_roms=False,
+            )
+        )
+        connection.execute(
+            _OVERRIDES.insert(),
+            [
+                {
+                    "user_id": admin_user.id,
+                    "entity": entity,
+                    "action": "write",
+                    "granted": False,
+                    "own_only": False,
+                }
+                for entity in _PLAY_ENTITIES
+            ],
+        )
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            migration.downgrade()
+            assert _play_grants(connection) == set()
+            assert _play_overrides(connection) == 0
+
+            migration.upgrade()
+            migration.upgrade()
+
+        group_ids: set[int] = set(connection.execute(sa.select(_GROUPS.c.id)).scalars())
+        assert len(group_ids) >= 3
+        assert _play_grants(connection) == {
+            (group_id, entity, action, False)
+            for group_id in group_ids
+            for entity in _PLAY_ENTITIES
+            for action in ("read", "write")
+        }
+        connection.execute(_GROUPS.delete().where(_GROUPS.c.name == "Locked down"))

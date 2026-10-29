@@ -6,6 +6,7 @@ on:
       - "frontend/**"
       - "backend/**"
       - ".github/workflows/e2e.yml"
+      - ".github/actions/setup-frontend/**"
       - ".github/scripts/**"
       - pyproject.toml
       - uv.lock
@@ -17,20 +18,27 @@ on:
       - "frontend/**"
       - "backend/**"
       - ".github/workflows/e2e.yml"
+      - ".github/actions/setup-frontend/**"
       - ".github/scripts/**"
       - pyproject.toml
       - uv.lock
       - .python-version
+
+# A new push cancels a PR's superseded run; each master commit keeps its own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       mariadb:
-        image: mariadb:12.3.3
+        image: mariadb:13.0.2
         ports:
           - 3306
         env:
@@ -65,34 +73,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install mariadb connectors
+      - name: Set up the backend
+        uses: ./.github/actions/setup-backend
+
+      - name: Set up the frontend
+        uses: ./.github/actions/setup-frontend
+
+      # Builds while the backend is set up; "Wait for the frontend build" checks it.
+      - name: Start the frontend build
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb3 libmariadb-dev
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-
-      - name: Install python
-        run: uv python install
-
-      # pyproject.toml lives at the repo root, so sync from there
-      - name: Install backend dependencies
-        run: uv sync --frozen
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: frontend/.nvmrc
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: npm ci
+          (
+            npm run build > "$RUNNER_TEMP/frontend-build.log" 2>&1
+            echo $? > "$RUNNER_TEMP/frontend-build.tmp"
+            mv "$RUNNER_TEMP/frontend-build.tmp" "$RUNNER_TEMP/frontend-build.exit"
+          ) &
         working-directory: frontend
 
+      # Headless runs use only the headless shell, so skip the full Chrome build. The runner
+      # image already has its system libraries, and --with-deps can hang on a stalled apt mirror.
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --only-shell chromium
         working-directory: frontend
 
       # ROMM_BASE_PATH must be writable (the app creates config/, resources/ and
@@ -140,19 +140,24 @@ jobs:
           exit 1
         working-directory: backend
 
-      # Starts the Vite dev server and waits for port 3000.
+      - name: Wait for the frontend build
+        run: |
+          while [ ! -f "$RUNNER_TEMP/frontend-build.exit" ]; do sleep 2; done
+          cat "$RUNNER_TEMP/frontend-build.log"
+          exit "$(cat "$RUNNER_TEMP/frontend-build.exit")"
+
+      # Serves that build through playwright.config.ts's webServer.
       - name: Run Playwright tests
         run: npm run test:e2e
         working-directory: frontend
 
       - name: Upload Playwright report
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report
           path: |
-            frontend/playwright-report/
-            frontend/test-results/
+            frontend/e2e/.output/specs/
           retention-days: 7
 
       - name: Dump backend log

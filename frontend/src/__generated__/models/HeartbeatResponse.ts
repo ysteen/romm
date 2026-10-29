@@ -2,10 +2,13 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { ConvertoDict } from './ConvertoDict';
+import type { DeviceInstallDict } from './DeviceInstallDict';
 import type { EmulationDict } from './EmulationDict';
 import type { FilesystemDict } from './FilesystemDict';
 import type { FrontendDict } from './FrontendDict';
 import type { MetadataSourcesDict } from './MetadataSourcesDict';
+import type { NotificationsDict } from './NotificationsDict';
 import type { OIDCDict } from './OIDCDict';
 import type { SystemDict } from './SystemDict';
 import type { TasksDict } from './TasksDict';
@@ -16,6 +19,8 @@ export type HeartbeatResponse = {
     EMULATION: EmulationDict;
     FRONTEND: FrontendDict;
     OIDC: OIDCDict;
+    NOTIFICATIONS: NotificationsDict;
+    DEVICE_INSTALL: DeviceInstallDict;
+    CONVERTO: ConvertoDict;
     TASKS: TasksDict;
 };
-

@@ -75,6 +75,7 @@
 #   # Skip file hash calculations on low power devices (eg. Raspberry PI)
 #   skip_hash_calculation: false
 #   # Skip reading platform-native title IDs out of ROM binaries during scans
+#   # (rom-converto's per-file title IDs follow `converto.scan_metadata` instead)
 #   skip_title_id_extraction: false
 #   # Rename Switch ROMs to embed ` [TITLEID][vVERSION]` in their filename
 #   embed_switch_title_ids: false
@@ -221,11 +222,12 @@
 #   containers:
 #     # One container can serve many platforms. Container keys are defaults
 #     # for every platform it serves; a platform block may override emulator,
-#     # label, memory_card_sync, and clears_stale_saves.
+#     # label, memory_card_sync, clears_stale_saves, core and
+#     # experimental_cores.
 #     - protocol: webstation
 #       host: https://192.168.1.56:3010  # browser-facing UI, must be https
 #       subfolder: /streaming            # matches the container's SUBFOLDER
-#       library_path: /romm              # where it mounts your ROM library
+#       # library_path: /mnt/games/library  # only if the container can't mount the library at /romm/library
 #       broker_secret: change-me         # matches the container's BROKER_SECRET
 #       label: Emulation station
 #       broker_host: http://192.168.1.56:3010  # server-to-broker URL, when RomM can't dial `host` itself
@@ -241,3 +243,37 @@
 #         wii:
 #           emulator: dolphin
 #           clears_stale_saves: true
+#         # RetroArch boots the broker's best-tested core for each platform.
+#         # To pick another libretro core, name it after the emulator...
+#         gba: retroarch:gpsp
+#         # ...or set `core` in a block. The broker refuses a core it doesn't
+#         # know and warns about one nobody has tested yet; see
+#         # https://github.com/romm-streaming/romm-broker (retroarch-cores docs).
+#         n64:
+#           emulator: retroarch
+#           core: parallel_n64
+#           # Lets a core listed as broken by the broker run anyway.
+#           # experimental_cores: true
+
+# converto:
+#   # Convert a single-file download into a format the client lists with
+#   # ?format=, e.g. ?format=zso,iso (needs ROM_CONVERTO_ENABLED)
+#   download_conversion_enabled: false
+#   # Read per-file title IDs with rom-converto during scans
+#   scan_metadata: true
+#   # Hours a converted download stays cached after it was last downloaded
+#   cache_ttl_hours: 24
+#   # Cache size before the least recently downloaded copies are evicted (0: unbounded)
+#   cache_max_size_gb: 20
+#   # Platform slug -> the format the "Convert library" task stores its matched
+#   # roms in, replacing the original files. Formats per platform:
+#   #   3ds: cci, cia, z3ds
+#   #   psp, ps2: chd, cso, iso, zso
+#   #   psx, saturn, segacd, dc: chd
+#   #   ngc: iso, rvz
+#   #   wii: iso, rvz, wbfs
+#   #   switch, switch-2: nsp, nsz, xci, xcz
+#   #   xbox360: zar
+#   platform_formats:
+#     psx: chd
+#     ngc: rvz

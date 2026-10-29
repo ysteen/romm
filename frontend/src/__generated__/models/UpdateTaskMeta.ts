@@ -6,4 +6,3 @@ import type { UpdateStats } from './UpdateStats';
 export type UpdateTaskMeta = {
     update_stats: (UpdateStats | null);
 };
-

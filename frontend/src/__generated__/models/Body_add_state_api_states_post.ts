@@ -12,4 +12,3 @@ export type Body_add_state_api_states_post = {
      */
     screenshotFile?: (string | null);
 };
-

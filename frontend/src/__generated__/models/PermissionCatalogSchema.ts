@@ -11,4 +11,3 @@ export type PermissionCatalogSchema = {
     entities: Array<PermEntity>;
     actions: Array<PermAction>;
 };
-

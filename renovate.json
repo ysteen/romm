@@ -3,7 +3,13 @@
   "extends": ["config:recommended", ":semanticCommitTypeAll(chore)"],
   "description": "Updates wait out a week before Renovate proposes them, so a compromised release has time to be pulled before it reaches a PR here.",
   "minimumReleaseAge": "7 days",
-  "enabledManagers": ["github-actions", "docker-compose", "custom.regex"],
+  "enabledManagers": [
+    "github-actions",
+    "docker-compose",
+    "npm",
+    "pep621",
+    "custom.regex"
+  ],
   "ignorePaths": ["examples/**"],
   "packageRules": [
     {
@@ -20,6 +26,18 @@
       "allowedVersions": "<9.1"
     },
     {
+      "description": "TypeScript 7 ships no JavaScript compiler API, which vue-tsc, typescript-eslint and vue-component-meta load. Raise this bound once they support it.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
+      "description": "From 0.30, json-schema-ref-parser 14 refuses localhost URLs, so `npm run generate` can't read the schema from the local backend. The CLI has no flag to allow them.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["openapi-typescript-codegen"],
+      "allowedVersions": "<0.30"
+    },
+    {
       "matchDatasources": ["docker"],
       "matchPackageNames": ["postgres"],
       "groupName": "postgres"
@@ -28,6 +46,44 @@
       "matchManagers": ["github-actions"],
       "matchDepTypes": ["action"],
       "groupName": "github actions"
+    },
+    {
+      "description": "Keep the ranges maintainers chose in package.json and pyproject.toml; in-range updates only refresh the lockfile.",
+      "matchManagers": ["npm", "pep621"],
+      "rangeStrategy": "update-lockfile"
+    },
+    {
+      "description": "rom-patcher is pinned to a git tag, and its lockfile entry carries the version from upstream's package.json, stuck at 3.0.0. Compare the tag itself, or Renovate keeps proposing the tag already pinned.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["rom-patcher"],
+      "rangeStrategy": "replace"
+    },
+    {
+      "description": "One weekly PR per ecosystem for minor and patch updates, so app dependencies don't open a PR each.",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["frontend/package.json"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "frontend dependencies",
+      "schedule": ["before 6am on monday"]
+    },
+    {
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "backend dependencies",
+      "schedule": ["before 6am on monday"]
+    },
+    {
+      "description": "Storybook packages require matching versions, so a major moves them in one PR. Security PRs ignore groupName and must be widened by hand.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["storybook", "@storybook/**"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "storybook"
+    },
+    {
+      "description": "Major updates usually need code changes, so they wait for approval on the Dependency Dashboard.",
+      "matchManagers": ["npm", "pep621"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
     }
   ],
   "customManagers": [
@@ -39,6 +95,15 @@
         "# renovate: datasource=(?<datasource>[a-z-]+?) depName=(?<depName>[^\\s]+?)\\s+-?\\s*[A-Za-z0-9_-]+?: [\"'](?<currentValue>[^\"'\\s]+)[\"']"
       ],
       "versioningTemplate": "docker"
+    },
+    {
+      "description": "The Trunk plugins release in .trunk/trunk.yaml, which no built-in manager reads. The CLI version publishes no release dates, so minimumReleaseAge can't gate it and it stays a manual bump.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.trunk/trunk\\.yaml$/"],
+      "matchStrings": [
+        "- id: trunk\\s+ref: (?<currentValue>v[^\\s]+)\\s+uri: https://github\\.com/(?<depName>trunk-io/plugins)\\s"
+      ],
+      "datasourceTemplate": "github-tags"
     }
   ]
 }

@@ -1,29 +1,29 @@
 <script setup lang="ts">
-// EditRomDialog — v2 chrome around the ROM-edit form.
+// EditRomDialog: v2 chrome around the ROM-edit form.
 //
 // Scope: identity (name / filename / summary), cover artwork, and the
 // metadata override / raw provider tabs. Manual + soundtrack +
-// screenshots are intentionally absent — those flows now live in the
+// screenshots are intentionally absent: those flows now live in the
 // GameDetails Media tab (`v2/components/GameDetails/MediaTab.vue`).
 // Pulling them out of the edit dialog kept it focused on "data that
 // describes this ROM" and freed the form column from the icon-button
 // row that fought visually with the field stack.
 //
 // Layout: a hero row (cover + name/filename/summary) at the top, and a
-// tabbed editing surface below — "Details" and "Metadata IDs" are
+// tabbed editing surface below: "Details" and "Metadata IDs" are
 // always present; one tab per metadata provider with a populated ID is
 // appended dynamically (and disappears once the rom is unmatched from
 // that provider). Cover actions, AdditionalDetails and MetadataIdSection
 // remain deep domain composites pulled from the EditRom feature folder.
 import { RBtn, RDialog, RIcon, RTabNav, RTextField } from "@v2/lib";
 import type { RTabNavItem } from "@v2/lib/primitives/RTabNav/types";
+import { useObjectUrl } from "@vueuse/core";
 import type { Emitter } from "mitt";
-import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRoute } from "vue-router";
 import romApi, { type UpdateRom } from "@/services/api/rom";
 import storeHeartbeat from "@/stores/heartbeat";
-import storeRoms, { type DetailedRom, type SimpleRom } from "@/stores/roms";
+import type { DetailedRom, SimpleRom } from "@/stores/roms";
 import type { Events } from "@/types/emitter";
 import AdditionalDetails from "@/v2/components/EditRom/AdditionalDetails.vue";
 import MetadataIdSection from "@/v2/components/EditRom/MetadataIdSection.vue";
@@ -32,6 +32,7 @@ import GameCard from "@/v2/components/GameCard/GameCard.vue";
 import DangerZone from "@/v2/components/shared/DangerZone.vue";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
 import { useConfirm } from "@/v2/composables/useConfirm";
+import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
 import { useRomSync } from "@/v2/composables/useRomSync";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import { getMissingCoverImage } from "@/v2/utils/covers";
@@ -41,22 +42,25 @@ defineOptions({ inheritAttrs: false });
 const { t } = useI18n();
 const { lgAndUp } = useBreakpoint();
 const heartbeat = storeHeartbeat();
-const route = useRoute();
 const show = ref(false);
 // `UpdateRom = SimpleRom & {...}` but we keep a DetailedRom-compatible
 // shape internally so the per-provider raw-metadata panels can read
 // their payloads. Widen at edit/emit boundaries.
 type EditableRom = DetailedRom & UpdateRom;
 const rom = ref<EditableRom | null>(null);
-const romsStore = storeRoms();
-const imagePreviewUrl = ref<string | undefined>("");
+const artworkUrl = useObjectUrl(() => rom.value?.artwork);
+// A picked SteamGridDB URL or the missing-cover image, shown over the upload.
+const coverOverride = ref("");
+const imagePreviewUrl = computed(
+  () => coverOverride.value || artworkUrl.value || "",
+);
 const removeCover = ref(false);
 const coverFileInput = ref<HTMLInputElement | null>(null);
-// In-flight flag for the PUT — drives the footer button's spinner so
+// In-flight flag for the PUT: drives the footer button's spinner so
 // the user sees the action is running. v1 leaned on a global
 // `showLoadingDialog` event for the same feedback, but v2 has no
-// listener for it (intentionally — inline `:loading` on the control
-// itself is the v2 pattern, see CLAUDE.md §VI.B), so the emit was a
+// listener for it (intentionally, inline `:loading` on the control
+// itself is the v2 pattern, see the `frontend-v2-patterns` skill), so the emit was a
 // no-op and the dialog appeared frozen during slow uploads / SGDB
 // fetches.
 const saving = ref(false);
@@ -72,7 +76,7 @@ const openHandler = async (romToEdit: SimpleRom) => {
   // have real data to render.
   rom.value = romToEdit as EditableRom;
   removeCover.value = false;
-  imagePreviewUrl.value = "";
+  coverOverride.value = "";
   activeTab.value = "details";
   try {
     const { data } = await romApi.getRom({ romId: romToEdit.id });
@@ -81,15 +85,10 @@ const openHandler = async (romToEdit: SimpleRom) => {
     console.error("Failed to fetch detailed rom", error);
   }
 };
-emitter?.on("showEditRomDialog", openHandler);
+useEmitterEvent("showEditRomDialog", (rom) => void openHandler(rom));
 
 const urlCoverHandler = (url_cover: string) => setUrlCover(url_cover);
-emitter?.on("updateUrlCover", urlCoverHandler);
-
-onBeforeUnmount(() => {
-  emitter?.off("showEditRomDialog", openHandler);
-  emitter?.off("updateUrlCover", urlCoverHandler);
-});
+useEmitterEvent("updateUrlCover", urlCoverHandler);
 
 const missingCoverImage = computed(() =>
   getMissingCoverImage(rom.value?.name || rom.value?.fs_name || ""),
@@ -113,7 +112,7 @@ const fullPath = computed(() => {
 // populated id appends its own tab so the raw-JSON editing surface
 // only ever shows panels that actually have data.
 interface ProviderConfig {
-  /** Tab id — also the discriminant for the rendered panel. */
+  /** Tab id: also the discriminant for the rendered panel. */
   tabId: string;
   idField: keyof SimpleRom;
   metadataField: keyof SimpleRom;
@@ -225,23 +224,19 @@ function previewImage(event: Event) {
   if (!input.files || !input.files[0]) return;
 
   rom.value.artwork = input.files[0];
-  const reader = new FileReader();
-  reader.onload = () => {
-    imagePreviewUrl.value = reader.result?.toString() || "";
-    removeCover.value = false;
-  };
-  reader.readAsDataURL(input.files[0]);
+  coverOverride.value = "";
+  removeCover.value = false;
 }
 
 function setUrlCover(coverUrl: string) {
   if (!coverUrl || !rom.value) return;
   rom.value.url_cover = coverUrl;
-  imagePreviewUrl.value = coverUrl;
+  coverOverride.value = coverUrl;
   removeCover.value = false;
 }
 
 function removeArtwork() {
-  imagePreviewUrl.value = missingCoverImage.value;
+  coverOverride.value = missingCoverImage.value;
   removeCover.value = true;
 }
 
@@ -255,7 +250,6 @@ async function handleRomUpdate(
     const { data } = await romApi.updateRom(options);
     snackbar.success(successMessage, { icon: "mdi-check-bold" });
     applyRomWrite(data as SimpleRom);
-    if (route.name === "rom") romsStore.currentRom = data;
   } catch (error: unknown) {
     console.error(error);
     const axiosErr = error as { response?: { data?: { detail?: string } } };
@@ -297,7 +291,7 @@ async function updateRom() {
 function closeDialog() {
   show.value = false;
   rom.value = null;
-  imagePreviewUrl.value = "";
+  coverOverride.value = "";
 }
 
 function handleRomUpdateFromMetadata(updatedRom: UpdateRom) {
@@ -322,7 +316,7 @@ function handleRomUpdateFromMetadata(updatedRom: UpdateRom) {
     </template>
 
     <template #content>
-      <!-- Hero row — cover + identity fields. Everything else hangs
+      <!-- Hero row: cover + identity fields. Everything else hangs
            off the accordion below. -->
       <div class="r-v2-edit__hero">
         <div class="r-v2-edit__cover-col">
@@ -436,7 +430,7 @@ function handleRomUpdateFromMetadata(updatedRom: UpdateRom) {
         </div>
       </div>
 
-      <!-- Tabbed editing surface — "Details" + "Metadata IDs" always
+      <!-- Tabbed editing surface: "Details" + "Metadata IDs" always
            present, one tab per provider with a populated id appended
            after. Sits under the hero so the dialog reads top-down as
            "identity → editing surface". -->
@@ -506,7 +500,7 @@ function handleRomUpdateFromMetadata(updatedRom: UpdateRom) {
 <style scoped>
 /* ── Hero ──────────────────────────────────────────────────────────
    Cover column sizes to the cover's natural width (`auto`) so the gap to
-   the fields is exactly the grid `gap`, consistent for any cover shape —
+   the fields is exactly the grid `gap`, consistent for any cover shape:
    a fixed-width column would leave variable leftover space beside a
    natural-width cover. `align-items: start` keeps the cover anchored to
    the top so taller field stacks (or the growing summary) don't drag it
@@ -547,7 +541,7 @@ function handleRomUpdateFromMetadata(updatedRom: UpdateRom) {
 
 /* ── Tab surface ─────────────────────────────────────────────────
    The tab nav owns its own bottom border, so the only separator we
-   need above is breathing space — the hero ends, the dialog body's
+   need above is breathing space: the hero ends, the dialog body's
    flex gap beats, then the tab strip begins. The tab content gets its
    own inset so panels don't sit flush against the underlined strip. */
 .r-v2-edit__panels {

@@ -1,4 +1,4 @@
-// useViewTransition — tiny wrapper around the browser View Transitions API
+// useViewTransition: tiny wrapper around the browser View Transitions API
 // for shared-element morphs (e.g. game card cover → GameDetails cover).
 //
 // Usage at the source side (the element you click):
@@ -14,7 +14,7 @@
 //   }
 //
 // At the destination side, just paint a static `view-transition-name` on
-// the matching element — the browser pairs it with the source by name.
+// the matching element: the browser pairs it with the source by name.
 // One element per name on screen at a time; we tag the source imperatively
 // so two visible cards with the same ROM never collide.
 //
@@ -34,6 +34,7 @@ const MORPH_ROM_ROUTES: ReadonlySet<string> = new Set([
   ROUTES.EMULATORJS,
   ROUTES.JSDOS,
   ROUTES.PICO8,
+  ROUTES.EASYRPG,
   ROUTES.RUFFLE,
 ]);
 
@@ -42,7 +43,7 @@ export interface MorphSource {
   name: string;
 }
 
-// Module-level singleton — when set, source-side tiles in the destination
+// Module-level singleton: when set, source-side tiles in the destination
 // view (GameCard, CollectionTile, PlatformTile, GameList row) reactively
 // paint `view-transition-name: <pending>` on their visual element so the
 // browser can morph from the previous view's hero/cover/icon back into
@@ -91,11 +92,11 @@ export function useViewTransition() {
     // capturing, so the browser skips this one.
     void absorbPreemptionSkip(transition.ready);
 
-    // Clean up the inline style after the transition finishes — the
+    // Clean up the inline style after the transition finishes: the
     // source element usually unmounts during navigate(), but if a route
     // keeps it alive (kept-alive view, error mid-nav, …) we don't want a
     // dangling view-transition-name on the page.
-    transition.finished.finally(() => {
+    void transition.finished.finally(() => {
       forwardTransitionActive = false;
       if (source.el.isConnected) {
         source.el.style.viewTransitionName = "";
@@ -111,29 +112,36 @@ export function useViewTransition() {
 // the matching tile so the browser can pair the snapshots.
 function morphNameForRoute(route: RouteLocationNormalized): string | null {
   const name = route.name;
-  const params = route.params as Record<string, string | string[]>;
+  const params = route.params as Record<string, string | string[] | undefined>;
+  const param = (key: string) => {
+    const value = params[key];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const rom = param("rom");
+  const platform = param("platform");
+  const collection = param("collection");
   // `rom` (detail) and the players all own a `rom-cover-<id>` hero, so morph
   // between any of them and the gallery, or each other.
-  if (MORPH_ROM_ROUTES.has(String(name)) && params.rom) {
-    return `rom-cover-${params.rom}`;
+  if (MORPH_ROM_ROUTES.has(String(name)) && rom) {
+    return `rom-cover-${rom}`;
   }
-  if (name === "platform" && params.platform) {
-    return `platform-icon-${params.platform}`;
+  if (name === "platform" && platform) {
+    return `platform-icon-${platform}`;
   }
-  if (name === "collection" && params.collection) {
-    return `coll-cover-regular-${params.collection}`;
+  if (name === "collection" && collection) {
+    return `coll-cover-regular-${collection}`;
   }
-  if (name === "virtual-collection" && params.collection) {
-    return `coll-cover-virtual-${params.collection}`;
+  if (name === "virtual-collection" && collection) {
+    return `coll-cover-virtual-${collection}`;
   }
-  if (name === "smart-collection" && params.collection) {
-    return `coll-cover-smart-${params.collection}`;
+  if (name === "smart-collection" && collection) {
+    return `coll-cover-smart-${collection}`;
   }
   return null;
 }
 
 // Install a router guard that morphs the leaving view's hero element
-// back into the matching tile in the destination view — covers BackBtn,
+// back into the matching tile in the destination view: covers BackBtn,
 // navbar clicks, and the browser back button (all flow through the same
 // Vue Router pipeline). Source-route mapping lives in `morphNameForRoute`
 // so the guard stays generic across rom/platform/collection.
@@ -156,7 +164,7 @@ export function installBackMorph(router: Router): () => void {
     if (forwardTransitionActive) return true;
     if (!isSupported() || useReducedMotion().enabled.value) return true;
     // No morph between two views of the same kind (e.g. /platform/A →
-    // /platform/B) — that would compete with the in-route transition
+    // /platform/B): that would compete with the in-route transition
     // and there's no shared element to pair anyway.
     if (from.name && to.name === from.name) return true;
 
@@ -177,7 +185,7 @@ export function installBackMorph(router: Router): () => void {
       // A navigation during the capture phase preempts this transition, same
       // as the forward morph's.
       void absorbPreemptionSkip(transition.ready);
-      transition.finished.finally(() => {
+      void transition.finished.finally(() => {
         pendingMorphName.value = null;
       });
     });

@@ -1,13 +1,12 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DetailedRomSchema, RomArchiveMember } from "@/__generated__";
+import { detailedRomFixture, romFileFixture } from "@/utils/rom.fixtures";
 import PatcherTab from "./PatcherTab.vue";
 
 const { post } = vi.hoisted(() => ({ post: vi.fn() }));
 
-vi.mock("vue-i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}));
+vi.mock("vue-i18n");
 vi.mock("pinia", async (importOriginal) => ({
   ...(await importOriginal<typeof import("pinia")>()),
   storeToRefs: (store: object) => store,
@@ -73,7 +72,7 @@ const archiveMembers: RomArchiveMember[] = [
 ];
 
 function rom(): DetailedRomSchema {
-  return {
+  return detailedRomFixture({
     id: 1,
     name: "Super Metroid",
     fs_name: "Super Metroid.zip",
@@ -83,27 +82,26 @@ function rom(): DetailedRomSchema {
     platform_display_name: "Super Nintendo Entertainment System",
     missing_from_fs: false,
     files: [
-      {
+      romFileFixture({
         id: 10,
         category: "game",
         file_name: "Super Metroid.zip",
         file_size_bytes: 100,
         archive_members: archiveMembers,
-      },
-      {
+      }),
+      romFileFixture({
         id: 11,
         category: "patch",
         file_name: "translation.bps",
         file_size_bytes: 10,
         archive_members: null,
-      },
+      }),
     ],
-  } as DetailedRomSchema;
+  });
 }
 
 describe("PatcherTab", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     post.mockResolvedValue({ data: new Blob(["patched"]), headers: {} });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   });
@@ -119,7 +117,7 @@ describe("PatcherTab", () => {
           RDropzone: true,
           RExpandTransition: { template: "<div><slot /></div>" },
           RIcon: true,
-          RPlatformIcon: true,
+          PlatformIcon: true,
           RSelect,
           RTextField: true,
           RTooltip: true,
@@ -143,7 +141,7 @@ describe("PatcherTab", () => {
     await applyButton.trigger("click");
     await flushPromises();
 
-    const request = post.mock.calls[0];
+    const request = post.mock.calls[0]!;
     expect(request[0]).toBe("/roms/10/patch");
     expect((request[1] as FormData).get("patch_file_id")).toBe("11");
     expect((request[1] as FormData).get("archive_member_name")).toBe(
@@ -164,20 +162,20 @@ describe("PatcherTab", () => {
     await wrapper.get(APPLY).trigger("click");
     await flushPromises();
 
-    const uploadForm = post.mock.calls[0][1] as FormData;
+    const uploadForm = post.mock.calls[0]![1] as FormData;
     expect(uploadForm.get("patch_file")).toBeInstanceOf(File);
     expect(uploadForm.get("patch_file_id")).toBeNull();
 
     const bundled = rom().files[1];
     wrapper
-      .findAllComponents(RSelect)[2]
+      .findAllComponents(RSelect)[2]!
       .vm.$emit("update:modelValue", bundled);
     await wrapper.vm.$nextTick();
     expect(wrapper.find(".r-v2-patch__uploaded").exists()).toBe(false);
     await wrapper.get(APPLY).trigger("click");
     await flushPromises();
 
-    const bundledForm = post.mock.calls[1][1] as FormData;
+    const bundledForm = post.mock.calls[1]![1] as FormData;
     expect(bundledForm.get("patch_file")).toBeNull();
     expect(bundledForm.get("patch_file_id")).toBe("11");
   });

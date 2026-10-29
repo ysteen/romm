@@ -5,14 +5,14 @@ and performs bidirectional sync operations.
 """
 
 import os
-from datetime import datetime, timezone
 from typing import Any
 
+import asyncssh
 from anyio import Path as AnyioPath
 from anyio import open_file
 
-from config import ENABLE_SYNC_PUSH_PULL, SYNC_PUSH_PULL_CRON
 from handler.database import (
+    db_deleted_asset_handler,
     db_device_handler,
     db_device_save_sync_handler,
     db_platform_handler,
@@ -21,21 +21,22 @@ from handler.database import (
 )
 from handler.filesystem import fs_asset_handler
 from handler.sync.comparison import compare_save_state
-from handler.sync.ssh_handler import get_ssh_sync_handler
+from handler.sync.ssh_handler import RemoteSaveInfo, get_ssh_sync_handler
 from logger.formatter import highlight as hl
 from logger.logger import log
 from models.device import Device, SyncMode
 from models.sync_session import SyncSessionStatus
-from tasks.tasks import PeriodicTask, TaskType
+from tasks.registry import SYNC_PUSH_PULL_SPEC
+from tasks.tasks import PeriodicTask
 
 
 async def run_push_pull_sync(
     device_id: str | None = None,
     session_id: int | None = None,
     force: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Execute push-pull sync for one or all push_pull devices."""
-    if not ENABLE_SYNC_PUSH_PULL and not force:
+    if not SYNC_PUSH_PULL_SPEC.enabled and not force:
         log.info("Push-pull sync not enabled, skipping")
         return {"status": "disabled"}
 
@@ -63,7 +64,7 @@ async def run_push_pull_sync(
     return {"status": "completed", "device_results": results}
 
 
-async def _sync_device(device: Device, session_id: int | None = None) -> dict:
+async def _sync_device(device: Device, session_id: int | None = None) -> dict[str, Any]:
     """Perform push-pull sync for a single device."""
     sync_config = device.sync_config or {}
     if not sync_config.get("ssh_host"):
@@ -72,7 +73,6 @@ async def _sync_device(device: Device, session_id: int | None = None) -> dict:
 
     from endpoints.sockets.sync import (
         emit_sync_completed,
-        emit_sync_conflict,
         emit_sync_error,
         emit_sync_progress,
         emit_sync_started,
@@ -146,16 +146,9 @@ async def _sync_device(device: Device, session_id: int | None = None) -> dict:
 
         for remote_save in remote_saves:
             try:
-                action = await _process_remote_save(device, conn, remote_save)
-                if action == "conflict":
-                    await emit_sync_conflict(
-                        user_id=device.user_id,
-                        device_id=device.id,
-                        session_id=sync_session.id,
-                        file_name=remote_save.file_name,
-                        rom_id=0,
-                        reason=f"Conflict detected for {remote_save.file_name}",
-                    )
+                action = await _process_remote_save(
+                    device, conn, remote_save, session_id=sync_session.id
+                )
                 if action != "skipped":
                     completed += 1
             except Exception:
@@ -175,10 +168,16 @@ async def _sync_device(device: Device, session_id: int | None = None) -> dict:
                 current_file=remote_save.file_name,
             )
 
-        push_count = await _push_missing_saves(
+        pushed, push_failed = await _push_missing_saves(
             device, conn, remote_saves, save_directories
         )
-        completed += push_count
+        completed += pushed
+        failed += push_failed
+        if pushed or push_failed:
+            db_sync_session_handler.update_session(
+                session_id=sync_session.id,
+                data={"operations_planned": operations_planned + pushed + push_failed},
+            )
 
     except Exception as e:
         log.error(f"Push-pull sync failed for device {device.id}: {e}", exc_info=True)
@@ -224,10 +223,13 @@ async def _sync_device(device: Device, session_id: int | None = None) -> dict:
 
 async def _process_remote_save(
     device: Device,
-    conn,
-    remote_save,
+    conn: asyncssh.SSHClientConnection,
+    remote_save: RemoteSaveInfo,
+    session_id: int,
 ) -> str:
     """Process a single remote save file. Returns action taken."""
+    from endpoints.sockets.sync import emit_sync_conflict
+
     ssh_sync_handler = get_ssh_sync_handler()
     # Look up platform
     platform = db_platform_handler.get_platform_by_fs_slug(remote_save.platform_slug)
@@ -271,14 +273,31 @@ async def _process_remote_save(
             server_hash=matched_save.content_hash,
             server_updated_at=matched_save.updated_at,
             device_last_synced_at=device_sync.last_synced_at if device_sync else None,
+            device_last_sync_hash=device_sync.last_sync_hash if device_sync else None,
+            device_last_sync_server_hash=(
+                device_sync.last_sync_server_hash if device_sync else None
+            ),
+            # Identical content is a no_op, which never reads removals.
+            removed_at=(
+                db_deleted_asset_handler.removal_times(
+                    device.user_id, matched_save.rom_id, matched_save.slot
+                )
+                if remote_hash != matched_save.content_hash
+                else None
+            ),
         )
 
         if result.action == "no_op":
-            # Update sync tracking even for no-ops
+            # A timestamp-only no-op can leave the two sides different, so only
+            # identical content is recorded as the baseline.
+            identical = (
+                remote_hash if remote_hash == matched_save.content_hash else None
+            )
             db_device_save_sync_handler.upsert_sync(
                 device_id=device.id,
                 save_id=matched_save.id,
-                synced_at=datetime.now(timezone.utc),
+                last_sync_hash=identical,
+                last_sync_server_hash=identical,
             )
             return "no_op"
 
@@ -289,6 +308,7 @@ async def _process_remote_save(
             )
             async with await open_file(local_path, "rb") as f:
                 file_data = await f.read()
+            replaced_hash = await fs_asset_handler.unrecorded_hash(matched_save)
             await fs_asset_handler.write_file(
                 file=file_data,
                 path=matched_save.file_path,
@@ -300,11 +320,14 @@ async def _process_remote_save(
                     "file_size_bytes": remote_save.file_size,
                     "content_hash": remote_hash,
                 },
+                replaced_hash=replaced_hash,
             )
+            # The server save's hash was just set to remote_hash, so both sides hold it.
             db_device_save_sync_handler.upsert_sync(
                 device_id=device.id,
                 save_id=matched_save.id,
-                synced_at=datetime.now(timezone.utc),
+                last_sync_hash=remote_hash,
+                last_sync_server_hash=remote_hash,
             )
             return "pulled"
 
@@ -318,10 +341,12 @@ async def _process_remote_save(
             await ssh_sync_handler.upload_save(
                 conn, str(server_full_path), remote_save.path
             )
+            # The device now holds the server file, so both halves are its hash.
             db_device_save_sync_handler.upsert_sync(
                 device_id=device.id,
                 save_id=matched_save.id,
-                synced_at=datetime.now(timezone.utc),
+                last_sync_hash=matched_save.content_hash,
+                last_sync_server_hash=matched_save.content_hash,
             )
             return "pushed"
 
@@ -329,6 +354,15 @@ async def _process_remote_save(
             log.warning(
                 f"Push-pull: conflict for {remote_save.file_name} "
                 f"on device {device.id}: {result.reason}"
+            )
+            await emit_sync_conflict(
+                user_id=device.user_id,
+                device_id=device.id,
+                session_id=session_id,
+                file_name=remote_save.file_name,
+                rom_id=matched_save.rom_id,
+                rom_name=matched_save.rom.name or matched_save.rom.fs_name,
+                reason=result.reason,
             )
             return "conflict"
 
@@ -341,13 +375,14 @@ async def _process_remote_save(
 
 async def _push_missing_saves(
     device: Device,
-    conn,
-    remote_saves,
-    save_directories: list[dict],
-) -> int:
-    """Push server saves that are missing from the device."""
+    conn: asyncssh.SSHClientConnection,
+    remote_saves: list[RemoteSaveInfo],
+    save_directories: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Push server saves that are missing from the device; returns (pushed, failed)."""
     ssh_sync_handler = get_ssh_sync_handler()
     pushed = 0
+    failed = 0
 
     # Build set of remote filenames per platform
     remote_files: dict[str, set[str]] = {}
@@ -399,7 +434,8 @@ async def _push_missing_saves(
                     db_device_save_sync_handler.upsert_sync(
                         device_id=device.id,
                         save_id=save.id,
-                        synced_at=datetime.now(timezone.utc),
+                        last_sync_hash=save.content_hash,
+                        last_sync_server_hash=save.content_hash,
                     )
                     pushed += 1
                     log.info(
@@ -411,21 +447,16 @@ async def _push_missing_saves(
                         f"Push-pull: failed to push {save.file_name} to device {device.id}",
                         exc_info=True,
                     )
+                    failed += 1
 
-    return pushed
+    return pushed, failed
 
 
 class SyncPushPullTask(PeriodicTask):
     """Periodic task to run push-pull sync for all configured devices."""
 
     def __init__(self) -> None:
-        super().__init__(
-            title="Push-Pull Sync",
-            description="Sync saves with devices via SSH/SFTP",
-            task_type=TaskType.SYNC,
-            enabled=ENABLE_SYNC_PUSH_PULL,
-            cron_string=SYNC_PUSH_PULL_CRON,
-        )
+        super().__init__(SYNC_PUSH_PULL_SPEC)
 
     async def run(self, *args: Any, **kwargs: Any) -> Any:
         return await run_push_pull_sync(**kwargs)

@@ -1,10 +1,13 @@
 from typing import NotRequired, TypedDict
 
-from fastapi import Request
-
 from decorators.auth import protected_route
+from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
+from fastapi import HTTPException, Request
 from handler.auth.constants import Scope
+from handler.auth.dependencies import assert_rom_visible, can_access, get_permissions
+from handler.database import db_rom_handler
 from handler.netplay_handler import NetplayRoom, get_link_cartridge, netplay_handler
+from models.permission import PermAction, PermEntity
 from utils.router import APIRouter
 
 router = APIRouter(
@@ -72,10 +75,26 @@ class RoomsResponse(TypedDict):
     link_manual_start: NotRequired[bool]
 
 
-@protected_route(router.get, "/list", [Scope.ASSETS_READ])
+@protected_route(router.get, "/list", [Scope.ROMS_READ])
 async def get_rooms(
     request: Request, game_id: str, include_link: bool = False
 ) -> dict[str, RoomsResponse]:
+    linked = _link_roms(game_id)
+    rom_ids: tuple[int, ...]
+    if linked:
+        rom_ids = linked
+    elif game_id.isascii() and game_id.isdecimal() and len(game_id) <= 16:
+        rom_ids = (int(game_id),)
+    else:
+        raise HTTPException(status_code=422, detail="Invalid game id")
+    for rom_id in rom_ids:
+        rom = db_rom_handler.get_rom_visibility(rom_id)
+        if not rom:
+            raise RomNotFoundInDatabaseException(rom_id)
+        assert_rom_visible(request, rom)
+    if not can_access(get_permissions(request), PermEntity.EMULATION, PermAction.READ):
+        return {}
+
     netplay_rooms = await netplay_handler.get_all()
     cartridge = (
         get_link_cartridge(int(game_id))

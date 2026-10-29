@@ -1,11 +1,12 @@
 import asyncio
 import re
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Body, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import Field
 
 from decorators.auth import protected_route
 from endpoints.responses.memory_cards import (
@@ -19,7 +20,12 @@ from handler.filesystem import fs_asset_handler
 from handler.filesystem.assets_handler import build_asset_file_response
 from logger.formatter import highlight as hl
 from logger.logger import log
-from models.assets import MemoryCard, MemoryCardVersion
+from models.assets import (
+    EMULATOR_MAX_LENGTH,
+    MEMORY_CARD_NAME_MAX_LENGTH,
+    MemoryCard,
+    MemoryCardVersion,
+)
 from utils.memory_cards import (
     MEMORY_CARD_MAX_BYTES,
     UnsafeCardArchive,
@@ -42,8 +48,8 @@ EMULATOR_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
 
 
 class MemoryCardCreatePayload(PydanticBaseModel):
-    name: str
-    emulator: str
+    name: str = Field(max_length=MEMORY_CARD_NAME_MAX_LENGTH)
+    emulator: str = Field(max_length=EMULATOR_MAX_LENGTH)
     # Loose display hint only; never scopes lookup (see MemoryCard model).
     platform_id: int | None = None
     is_public: bool = False
@@ -73,7 +79,7 @@ def _owned_card_or_404(card_id: int, user_id: int) -> MemoryCard:
     return card
 
 
-def _apply_card_update(card_id: int, data: dict) -> MemoryCard:
+def _apply_card_update(card_id: int, data: dict[str, Any]) -> MemoryCard:
     """Write a field update, treating a card deleted underneath us as a 404."""
     updated = db_memory_card_handler.update_card(card_id, data)
     if updated is None:
@@ -345,7 +351,7 @@ def get_memory_card_versions(
 def rename_memory_card(
     request: Request,
     id: int,
-    name: Annotated[str, Body(embed=True)],
+    name: Annotated[str, Body(embed=True, max_length=MEMORY_CARD_NAME_MAX_LENGTH)],
 ) -> MemoryCardSchema:
     """Rename a card (owner only)."""
     _owned_card_or_404(id, request.user.id)

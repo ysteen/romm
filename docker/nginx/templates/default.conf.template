@@ -32,6 +32,13 @@ map $request_uri $coop_header {
     ~^/assets/emulatorjs/input-netplay/player\.html(?:\?.*)?$ "same-origin";
 }
 
+# The EasyRPG web player fetches each file of a game from games/<rom id>-<user id>/
+# beside itself. Built from the raw $request_uri, so names keep the client's encoding.
+map $request_uri $easyrpg_backend_uri {
+    default "";
+    ~^/assets/easyrpg/games/(?<rom_id>[0-9]+)-[0-9]+/(?<easyrpg_path>[^?]*) /api/roms/$rom_id/easyrpg/$easyrpg_path;
+}
+
 # Library resources under /assets/romm/resources/ are a mix. Covers (?ts=) and
 # manuals (?v=) are versioned by a known cache-busting query, so they can be
 # frozen; screenshots and RA badges reuse stable filenames (0.jpg, ...) and are
@@ -86,6 +93,13 @@ server {
         try_files $uri $uri/ =404;
     }
 
+    location ^~ /assets/easyrpg/games/ {
+        if ($easyrpg_backend_uri = "") {
+            return 404;
+        }
+        proxy_pass http://wsgi_server$easyrpg_backend_uri;
+    }
+
     # Everything else under /assets keeps a stable URL across image upgrades
     location /assets {
         add_header Cache-Control "public, max-age=3600, must-revalidate";
@@ -123,7 +137,7 @@ server {
     # Internally redirect cached zip file requests (Range-resumable downloads)
     location /cache/ {
         internal;
-        alias "${ROMM_BASE_PATH}/cache/";
+        alias "${ROMM_CACHE_BASE_PATH}/";
     }
 
     # Internal decoding endpoint, used to decode base64 encoded data

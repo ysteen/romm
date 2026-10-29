@@ -11,4 +11,3 @@ export type TaskExecutionResponse = {
     created_at: (string | null);
     enqueued_at: (string | null);
 };
-

@@ -6,4 +6,3 @@ import type { ConversionStats } from './ConversionStats';
 export type ConversionTaskMeta = {
     conversion_stats: (ConversionStats | null);
 };
-

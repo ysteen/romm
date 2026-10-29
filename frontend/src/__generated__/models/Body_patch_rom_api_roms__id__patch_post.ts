@@ -20,4 +20,3 @@ export type Body_patch_rom_api_roms__id__patch_post = {
      */
     patch_file?: (string | null);
 };
-

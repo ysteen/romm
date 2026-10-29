@@ -5,6 +5,8 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
+from logger.logger import log
+
 # Container file extensions treated as compressed archives across modules
 # (roms_handler for hashing decisions, rahasher for skipping disc-platform
 # buffer-hash attempts, feeds for PKGi passthrough).
@@ -17,6 +19,10 @@ COMPRESSED_FILE_SUFFIXES: tuple[str, ...] = tuple(COMPRESSED_FILE_EXTENSIONS)
 
 # tempfile.mkstemp creates files 0600, too narrow for the nginx user to read.
 SERVED_FILE_MODE = 0o644
+
+# Prefix of in-progress writes and staged conversions, renamed into place once
+# complete. Scans skip dot-prefixed names, so these stay unseen.
+TEMP_FILE_PREFIX = ".romm_tmp_"
 
 
 def iter_files(path: str, recursive: bool = False) -> Iterator[tuple[Path, str]]:
@@ -49,7 +55,7 @@ def iter_directories(path: str, recursive: bool = False) -> Iterator[tuple[Path,
 # EXDEV: cross-device link. EPERM: filesystem doesn't permit/support hardlinks
 # (e.g. FAT32, exFAT, some network mounts). EOPNOTSUPP/ENOTSUP: same, on BSD/macOS.
 # EMLINK: source already has the maximum number of hardlinks for the filesystem.
-_LINK_FALLBACK_ERRNOS: frozenset[int] = frozenset(
+LINK_FALLBACK_ERRNOS: frozenset[int] = frozenset(
     e
     for e in (
         getattr(errno, "EXDEV", None),
@@ -100,7 +106,7 @@ def link_or_copy_file(source: Path, dest: Path) -> None:
         try:
             os.link(source, tmp_path)
         except OSError as exc:
-            if exc.errno not in _LINK_FALLBACK_ERRNOS:
+            if exc.errno not in LINK_FALLBACK_ERRNOS:
                 raise
             shutil.copy2(source, tmp_path)
         os.replace(tmp_path, dest)
@@ -112,13 +118,56 @@ def link_or_copy_file(source: Path, dest: Path) -> None:
         raise
 
 
+def place_export_asset(source: Path, dest: Path) -> bool:
+    """Link or copy an exported asset to ``dest``, keeping one already there.
+
+    Returns: whether ``dest`` holds the asset afterwards.
+    """
+    if dest.exists():
+        return True
+
+    # Metadata scanned before unfetched media paths were cleared can still
+    # point at files that were never downloaded.
+    if not source.is_file():
+        log.debug(f"Skipping asset {source}: source file is missing")
+        return False
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        link_or_copy_file(source, dest)
+        return True
+    except OSError as e:
+        log.warning(f"Failed to copy {source} -> {dest}: {e}")
+        return False
+
+
 INVALID_CHARS_HYPHENS = re.compile(r"[\\/:|]")
-INVALID_CHARS_EMPTY = re.compile(r'[*?"<>+]')
+INVALID_CHARS_EMPTY = re.compile(r'[*?"<>]')
 
 # C0 controls plus DEL. Illegal on most filesystems, and a line feed in a name
 # that reaches a line-oriented protocol (the nginx mod_zip manifest) would split
 # the record it sits in.
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+# NAME_MAX on ext4, XFS, Btrfs and ZFS. The limit is in bytes, so a CJK name
+# reaches it at about 85 characters.
+FILE_NAME_MAX_BYTES = 255
+
+
+def check_filename_length(filename: str) -> None:
+    """Raise ValueError if `filename` is too long for the filesystem to create."""
+    if len(filename.encode()) > FILE_NAME_MAX_BYTES:
+        raise ValueError(
+            f"Filename exceeds the filesystem limit of {FILE_NAME_MAX_BYTES} bytes"
+        )
+
+
+def fit_filename(name: str, tail: str) -> str:
+    """`name` cut so `name + tail` fits in FILE_NAME_MAX_BYTES, never splitting
+    a character."""
+    room = max(FILE_NAME_MAX_BYTES - len(tail.encode()), 0)
+    return name.encode()[:room].decode(errors="ignore") + tail
 
 
 def sanitize_filename(filename: str) -> str:

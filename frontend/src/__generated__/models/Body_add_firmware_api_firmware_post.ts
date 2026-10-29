@@ -5,4 +5,3 @@
 export type Body_add_firmware_api_firmware_post = {
     files: Array<string>;
 };
-

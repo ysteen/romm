@@ -9,4 +9,3 @@ export type DeviceSyncSchema = {
     is_untracked: boolean;
     is_current: boolean;
 };
-

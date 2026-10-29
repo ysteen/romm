@@ -9,8 +9,9 @@ from endpoints.responses.assets import StateSchema
 from endpoints.roms import refresh_affected_smart_collections
 from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
 from handler.asset_store import (
+    release_thumbnail,
     remove_asset_file,
-    remove_screenshot,
+    rename_asset,
     store_screenshot,
     store_state_file,
 )
@@ -22,10 +23,15 @@ from handler.filesystem.assets_handler import build_asset_file_response
 from logger.formatter import BLUE
 from logger.formatter import highlight as hl
 from logger.logger import log
-from models.assets import State
-from utils.filesystem import sanitize_filename
+from models.assets import EMULATOR_MAX_LENGTH, State
+from models.base import FILE_NAME_MAX_LENGTH
+from utils.assets import normalize_asset_labels
 from utils.router import APIRouter
-from utils.uploads import check_asset_upload_size
+from utils.uploads import (
+    check_asset_upload_size,
+    check_emulator_folder_name,
+    sanitize_asset_filename,
+)
 from utils.validation import RomIdScope, narrow_rom_id_scope
 
 
@@ -33,7 +39,17 @@ async def _delete_state(state: State) -> None:
     """Drop a state row with its file and screenshot."""
     db_state_handler.delete_state(state.id)
     await remove_asset_file(state.full_path, "State file")
-    await remove_screenshot(state.screenshot)
+    await release_thumbnail(state.screenshot)
+
+
+def _owned_state_or_404(id: int, user_id: int) -> State:
+    state = db_state_handler.get_state_by_id(id)
+    if not state or state.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"State with ID {id} not found",
+        )
+    return state
 
 
 router = APIRouter(
@@ -54,7 +70,7 @@ STATE_SCREENSHOT_UPDATE = File(default=None, description="Updated screenshot fil
 async def add_state(
     request: Request,
     rom_id: int,
-    emulator: str | None = None,
+    emulator: Annotated[str | None, Query(max_length=EMULATOR_MAX_LENGTH)] = None,
     stateFile: UploadFile = STATE_FILE_UPLOAD,
     screenshotFile: UploadFile | None = STATE_SCREENSHOT_UPLOAD,
 ) -> StateSchema:
@@ -73,13 +89,14 @@ async def add_state(
             status_code=status.HTTP_400_BAD_REQUEST, detail="State file has no filename"
         )
 
-    try:
-        sanitized_state_filename = sanitize_filename(stateFile.filename)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid state filename: {str(exc)}",
-        ) from exc
+    sanitized_state_filename = sanitize_asset_filename(stateFile.filename, "state")
+    sanitized_screenshot_filename = (
+        sanitize_asset_filename(screenshotFile.filename, "screenshot")
+        if screenshotFile and screenshotFile.filename
+        else ""
+    )
+
+    check_emulator_folder_name(emulator)
 
     log.info(
         f"Uploading state {hl(sanitized_state_filename)} for {hl(str(rom.name), color=BLUE)}"
@@ -89,15 +106,7 @@ async def add_state(
         request.user, rom, emulator, stateFile, sanitized_state_filename
     )
 
-    if screenshotFile and screenshotFile.filename:
-        try:
-            sanitized_screenshot_filename = sanitize_filename(screenshotFile.filename)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid screenshot filename: {str(exc)}",
-            ) from exc
-
+    if screenshotFile and sanitized_screenshot_filename:
         await store_screenshot(
             request.user, rom, screenshotFile, sanitized_screenshot_filename
         )
@@ -223,22 +232,26 @@ async def update_state(
         log.error(error)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error)
 
+    sanitized_screenshot_filename = (
+        sanitize_asset_filename(screenshotFile.filename, "screenshot")
+        if screenshotFile and screenshotFile.filename
+        else ""
+    )
+
     if stateFile:
         await fs_asset_handler.write_file(
             file=stateFile, path=db_state.file_path, filename=db_state.file_name
         )
         db_state = db_state_handler.update_state(
-            db_state.id, {"file_size_bytes": stateFile.size}
+            db_state.id,
+            {
+                "file_size_bytes": stateFile.size,
+                "content_hash": await fs_asset_handler.compute_content_hash(
+                    db_state.full_path
+                ),
+            },
         )
-    if screenshotFile and screenshotFile.filename:
-        try:
-            sanitized_screenshot_filename = sanitize_filename(screenshotFile.filename)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid screenshot filename: {str(exc)}",
-            ) from exc
-
+    if screenshotFile and sanitized_screenshot_filename:
         await store_screenshot(
             request.user,
             db_state.rom,
@@ -270,14 +283,9 @@ def update_state_visibility(
     is_public: Annotated[bool, Body(embed=True)],
 ) -> StateSchema:
     """Toggle a state's public/private visibility (owner only)."""
-    state = db_state_handler.get_state_by_id(id)
-    if not state or state.user_id != request.user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"State with ID {id} not found",
-        )
+    state = _owned_state_or_404(id, request.user.id)
 
-    updated = db_state_handler.update_state(id, {"is_public": is_public})
+    updated = db_state_handler.update_state(id, {"is_public": is_public}, touch=False)
 
     # Keep the auto-captured thumbnail's visibility in sync so a shared state
     # still renders its preview for other users.
@@ -290,6 +298,67 @@ def update_state_visibility(
     refresh_affected_smart_collections([state.rom_id], membership_only=True)
 
     return StateSchema.model_validate(updated)
+
+
+@protected_route(
+    router.put,
+    "/{id}/favorite",
+    [Scope.ASSETS_WRITE],
+    responses={status.HTTP_404_NOT_FOUND: {}},
+)
+def update_state_favorite(
+    request: Request,
+    id: int,
+    is_favorite: Annotated[bool, Body(embed=True)],
+) -> StateSchema:
+    """Favorite a state, sorting it ahead of the rest (owner only)."""
+    _owned_state_or_404(id, request.user.id)
+
+    return StateSchema.model_validate(
+        db_state_handler.update_state(id, {"is_favorite": is_favorite}, touch=False)
+    )
+
+
+@protected_route(
+    router.put,
+    "/{id}/labels",
+    [Scope.ASSETS_WRITE],
+    responses={status.HTTP_404_NOT_FOUND: {}},
+)
+def update_state_labels(
+    request: Request,
+    id: int,
+    labels: Annotated[list[str], Body(embed=True)],
+) -> StateSchema:
+    """Replace a state's free-text labels (owner only)."""
+    _owned_state_or_404(id, request.user.id)
+
+    return StateSchema.model_validate(
+        db_state_handler.update_state(
+            id, {"labels": normalize_asset_labels(labels)}, touch=False
+        )
+    )
+
+
+@protected_route(
+    router.put,
+    "/{id}/file-name",
+    [Scope.ASSETS_WRITE],
+    responses={
+        status.HTTP_400_BAD_REQUEST: {},
+        status.HTTP_404_NOT_FOUND: {},
+        status.HTTP_409_CONFLICT: {},
+    },
+)
+async def rename_state(
+    request: Request,
+    id: int,
+    file_name: Annotated[str, Body(embed=True, max_length=FILE_NAME_MAX_LENGTH)],
+) -> StateSchema:
+    """Rename a state's file, its screenshot following along (owner only)."""
+    state = _owned_state_or_404(id, request.user.id)
+
+    return StateSchema.model_validate(await rename_asset(state, file_name))
 
 
 @protected_route(

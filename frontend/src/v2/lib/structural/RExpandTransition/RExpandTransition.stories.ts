@@ -8,16 +8,12 @@ import RExpandTransition from "./RExpandTransition.vue";
 const meta: Meta<typeof RExpandTransition> = {
   title: "Structural/RExpandTransition",
   component: RExpandTransition,
-  argTypes: {
-    appear: { control: "boolean" },
-    duration: { control: "text" },
-  },
 };
 
 export default meta;
 type Story = StoryObj<typeof RExpandTransition>;
 
-// ── v-if — mount/unmount ─────────────────────────────────────────
+// ── v-if: mount/unmount ─────────────────────────────────────────
 
 export const VIf: Story = {
   name: "v-if (mount/unmount)",
@@ -47,7 +43,7 @@ export const VIf: Story = {
   }),
 };
 
-// ── v-show — display toggle ─────────────────────────────────────
+// ── v-show: display toggle ─────────────────────────────────────
 
 export const VShow: Story = {
   name: "v-show (display toggle)",

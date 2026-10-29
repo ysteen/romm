@@ -29,4 +29,3 @@ export type SearchRomSchema = {
     is_unidentified: boolean;
     is_identified: boolean;
 };
-

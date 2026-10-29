@@ -1,12 +1,12 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, NotRequired, TypedDict
+from typing import Any, Final, NotRequired, TypedDict
 
 from config import ROMM_BASE_PATH
 from utils.cache import VersionedCacheStore
 
-from ..base_handler import BaseRom
+from ..base_handler import BaseRom, provider_tag_regex
 
 LAUNCHBOX_PLATFORMS_KEY: Final[str] = "romm:launchbox_platforms"
 LAUNCHBOX_METADATA_DATABASE_ID_KEY: Final[str] = "romm:launchbox_metadata_database_id"
@@ -47,7 +47,7 @@ LAUNCHBOX_MANUALS_DIR: Final[Path] = LAUNCHBOX_LOCAL_DIR / "Manuals"
 LAUNCHBOX_VIDEOS_DIR: Final[Path] = LAUNCHBOX_LOCAL_DIR / "Videos"
 
 # Regex to detect LaunchBox ID tags in filenames like (launchbox-12345)
-LAUNCHBOX_TAG_REGEX = re.compile(r"\(launchbox-(\d+)\)", re.IGNORECASE)
+LAUNCHBOX_TAG_REGEX = provider_tag_regex("launchbox")
 DASH_COLON_REGEX = re.compile(r"\s?-\s")
 
 
@@ -88,8 +88,17 @@ class LaunchboxMetadata(TypedDict):
     publishers: NotRequired[list[str]]
     developers: NotRequired[list[str]]
     images: list[LaunchboxImage]
+    box2d_url: NotRequired[str]
+    box2d_back_url: NotRequired[str]
+    box2d_side_url: NotRequired[str]
+    box3d_url: NotRequired[str]
     video_url: NotRequired[str]
-    video_path: NotRequired[str]
+    # A path is cleared to None when its download fails
+    box2d_path: NotRequired[str | None]
+    box2d_back_path: NotRequired[str | None]
+    box2d_side_path: NotRequired[str | None]
+    box3d_path: NotRequired[str | None]
+    video_path: NotRequired[str | None]
 
 
 class LaunchboxRom(BaseRom):
@@ -101,6 +110,7 @@ class LocalMediaContext(TypedDict):
     base: Path
     stems: list[str]
     preferred_regions: list[str]
+    region_shortcodes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +119,7 @@ class MediaRequest:
     fs_name: str
     title: str
     region_hint: str | None
-    remote_images: list[dict] | None
+    remote_images: list[dict[str, Any]] | None
     remote_enabled: bool
     # Provider region shortcodes (e.g. "us", "eu") ordered by preference, used
     # to pick a region-matched remote cover. Derived from the ROM filename.

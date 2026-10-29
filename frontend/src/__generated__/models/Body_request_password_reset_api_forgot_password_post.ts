@@ -5,4 +5,3 @@
 export type Body_request_password_reset_api_forgot_password_post = {
     username: string;
 };
-

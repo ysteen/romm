@@ -10,4 +10,3 @@ export type DeviceAuthInitPayload = {
     client_version?: (string | null);
     requested_scopes: Array<string>;
 };
-

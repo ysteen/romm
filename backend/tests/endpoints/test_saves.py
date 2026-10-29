@@ -1,31 +1,46 @@
-import asyncio
 import os
 import re
+import time
+import uuid
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
 import pytest
-from fastapi import UploadFile, status
-from fastapi.testclient import TestClient
+from fastapi import status
+from sqlalchemy import update
+from tests.factories import make_save, make_screenshot, make_state
 
 from config import OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS
-from handler.auth import oauth_handler
+from handler.asset_store import apply_datetime_tag, reserve_version_name
+from handler.auth.base_handler import oauth_handler
 from handler.auth.constants import Scope
 from handler.database import (
+    db_deleted_asset_handler,
     db_device_handler,
     db_device_save_sync_handler,
     db_save_handler,
+    db_screenshot_handler,
 )
 from handler.database.base_handler import sync_session
-from models.assets import Save
+from handler.sync.comparison import compare_save_state
+from models.assets import (
+    ASSET_LABEL_MAX_LENGTH,
+    ASSET_LABELS_MAX,
+    EMULATOR_MAX_LENGTH,
+    Save,
+    Screenshot,
+)
 from models.device import Device
+from models.device_save_sync import DeviceSaveSync
 from models.permission import HiddenEntity, PermEntity
 from models.platform import Platform
 from models.rom import Rom
 from models.user import User
 from utils import uploads
+from utils.datetime import to_utc
 from utils.validation import MAX_ROM_IDS_PER_QUERY
 
 
@@ -406,7 +421,7 @@ class TestSaveUploadWithSync:
         "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
     )
     @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
-    def test_reupload_updates_file_path_and_emulator(
+    def test_reupload_under_another_emulator_keeps_both_saves(
         self,
         mock_scan,
         _mock_write,
@@ -417,22 +432,16 @@ class TestSaveUploadWithSync:
         platform: Platform,
         admin_user: User,
     ):
-        """Re-uploading the same filename under a different emulator must move
-        the row's file_path/emulator to where the new bytes landed, so the
-        stored hash never disagrees with the served content."""
-        existing = db_save_handler.add_save(
-            Save(
-                file_name="test.sav",
-                file_name_no_tags="test",
-                file_name_no_ext="test",
-                file_extension="sav",
-                file_path=f"{platform.slug}/saves/old_emu",
-                file_size_bytes=100,
-                content_hash="0" * 32,
-                emulator="old_emu",
-                rom_id=rom.id,
-                user_id=admin_user.id,
-            )
+        """A same-named upload for another core is a separate save in that
+        core's folder, so the first core's save is left untouched."""
+        existing = make_save(
+            rom,
+            admin_user,
+            "test.sav",
+            file_path=f"{platform.slug}/saves/old_emu",
+            file_size_bytes=100,
+            content_hash="0" * 32,
+            emulator="old_emu",
         )
 
         new_path = f"{platform.slug}/saves/new_emu"
@@ -461,17 +470,16 @@ class TestSaveUploadWithSync:
         )
 
         assert response.status_code == status.HTTP_200_OK
+        assert response.json()["id"] != existing.id
+        assert response.json()["emulator"] == "new_emu"
+        assert response.json()["file_path"] == new_path
 
-        updated = db_save_handler.get_save(user_id=admin_user.id, id=existing.id)
-        assert updated is not None
-        assert updated.file_path == new_path
-        assert updated.emulator == "new_emu"
-        assert updated.content_hash == "f" * 32
-        assert updated.file_size_bytes == 200
-        # full_path now points at the freshly written bytes, not the stale ones.
-        assert updated.full_path == f"{new_path}/test.sav"
-        # The orphaned bytes at the old location are cleaned up.
-        mock_remove.assert_awaited_once_with(f"{platform.slug}/saves/old_emu/test.sav")
+        kept = db_save_handler.get_save(user_id=admin_user.id, id=existing.id)
+        assert kept is not None
+        assert kept.emulator == "old_emu"
+        assert kept.file_path == f"{platform.slug}/saves/old_emu"
+        assert kept.content_hash == "0" * 32
+        mock_remove.assert_not_awaited()
 
     @mock.patch(
         "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
@@ -1094,20 +1102,13 @@ class TestSaveConflictDetection:
         """
         from datetime import datetime, timedelta, timezone
 
-        from handler.database import db_save_handler
-
-        existing_slot_save = Save(
-            file_name="existing_slot_save.sav",
-            file_name_no_tags="existing_slot_save",
-            file_name_no_ext="existing_slot_save",
-            file_extension="sav",
-            file_path=f"{platform.slug}/saves",
+        db_slot_save = make_save(
+            rom,
+            admin_user,
+            "existing_slot_save.sav",
             file_size_bytes=100,
-            rom_id=rom.id,
-            user_id=admin_user.id,
             slot="TestSlot",
         )
-        db_slot_save = db_save_handler.add_save(existing_slot_save)
 
         old_sync_time = datetime.now(timezone.utc) - timedelta(hours=1)
         db_device_save_sync_handler.upsert_sync(
@@ -1200,20 +1201,10 @@ class TestSaveConflictDetection:
         device: Device,
     ):
         """Upload to slot succeeds when device has synced the latest save."""
-        from handler.database import db_save_handler
 
-        existing_slot_save = Save(
-            file_name="synced_save.sav",
-            file_name_no_tags="synced_save",
-            file_name_no_ext="synced_save",
-            file_extension="sav",
-            file_path=f"{platform.slug}/saves",
-            file_size_bytes=100,
-            rom_id=rom.id,
-            user_id=admin_user.id,
-            slot="SyncedSlot",
+        db_slot_save = make_save(
+            rom, admin_user, "synced_save.sav", file_size_bytes=100, slot="SyncedSlot"
         )
-        db_slot_save = db_save_handler.add_save(existing_slot_save)
 
         db_device_save_sync_handler.upsert_sync(
             device_id=device.id,
@@ -1264,20 +1255,14 @@ class TestSaveConflictDetection:
         device: Device,
     ):
         """Device that never synced any save in slot should get out_of_sync."""
-        from handler.database import db_save_handler
 
-        existing_slot_save = Save(
-            file_name="never_synced.sav",
-            file_name_no_tags="never_synced",
-            file_name_no_ext="never_synced",
-            file_extension="sav",
-            file_path=f"{platform.slug}/saves",
+        make_save(
+            rom,
+            admin_user,
+            "never_synced.sav",
             file_size_bytes=100,
-            rom_id=rom.id,
-            user_id=admin_user.id,
             slot="NeverSyncedSlot",
         )
-        db_save_handler.add_save(existing_slot_save)
 
         mock_scan.return_value = Save(
             file_name="upload_attempt.sav",
@@ -1389,23 +1374,13 @@ class TestSlotFiltering:
     def saves_with_slots(
         self, admin_user: User, rom: Rom, platform: Platform
     ) -> list[Save]:
-        from handler.database import db_save_handler
 
-        saves = []
-        for i, slot in enumerate([None, "Slot 1", "Slot 1", "Slot 2"]):
-            save = Save(
-                file_name=f"save_{i}.sav",
-                file_name_no_tags=f"save_{i}",
-                file_name_no_ext=f"save_{i}",
-                file_extension="sav",
-                file_path=f"{platform.slug}/saves",
-                file_size_bytes=100 + i,
-                rom_id=rom.id,
-                user_id=admin_user.id,
-                slot=slot,
+        return [
+            make_save(
+                rom, admin_user, f"save_{i}.sav", file_size_bytes=100 + i, slot=slot
             )
-            saves.append(db_save_handler.add_save(save))
-        return saves
+            for i, slot in enumerate([None, "Slot 1", "Slot 1", "Slot 2"])
+        ]
 
     def test_get_saves_without_slot_filter(
         self, client, access_token: str, saves_with_slots: list[Save]
@@ -1597,9 +1572,7 @@ class TestDatetimeTagging:
         mock_write.assert_called_once()
         call_args = mock_write.call_args
         written_filename = call_args[1].get("filename") or call_args[0][2]
-        assert re.search(
-            r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{6}\]", written_filename
-        )
+        assert re.search(r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\]", written_filename)
 
     @mock.patch("endpoints.saves.scan_screenshot", new_callable=mock.AsyncMock)
     @mock.patch(
@@ -1656,7 +1629,49 @@ class TestDatetimeTagging:
         save_stem, _ = os.path.splitext(written[0])
         screenshot_stem, _ = os.path.splitext(written[1])
         assert save_stem == screenshot_stem
-        assert re.search(r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{6}\]$", save_stem)
+        assert re.search(r" \[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\]$", save_stem)
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_upload_with_slot_rejects_a_screenshot_name_over_255_bytes(
+        self,
+        mock_scan,
+        mock_write,
+        client,
+        access_token: str,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+    ):
+        # The tagged save fills all 255 bytes; the screenshot takes its stem
+        # but keeps its own longer extension.
+        save_name = "a" * 229 + ".srm"
+        mock_scan.return_value = Save(
+            file_name=save_name,
+            file_name_no_tags="a" * 229,
+            file_name_no_ext="a" * 229,
+            file_extension="srm",
+            file_path=f"{platform.slug}/saves",
+            file_size_bytes=100,
+            rom_id=rom.id,
+            user_id=admin_user.id,
+            slot="main",
+        )
+
+        response = client.post(
+            f"/api/saves?rom_id={rom.id}&slot=main",
+            files={
+                "saveFile": (save_name, BytesIO(b"save"), "application/octet-stream"),
+                "screenshotFile": ("shot.jpeg", BytesIO(b"jpg"), "image/jpeg"),
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "255 bytes" in response.json()["detail"]
+        mock_write.assert_not_called()
 
     @mock.patch(
         "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
@@ -1744,7 +1759,7 @@ class TestDatetimeTagging:
         call_args = mock_write.call_args
         written_filename = call_args[1].get("filename") or call_args[0][2]
         datetime_matches = re.findall(
-            r"\[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{6}\]", written_filename
+            r"\[\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\]", written_filename
         )
         assert len(datetime_matches) == 1
         assert "2020-01-01" not in written_filename
@@ -1765,17 +1780,15 @@ class TestSlotValidation:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
-def _seed_slot_saves(
-    admin_user: User, rom: Rom, platform: Platform, slot: str, count: int
-) -> list[Save]:
+def _seed_slot_saves(admin_user: User, rom: Rom, slot: str, count: int) -> list[Save]:
     """``count`` versions of ``slot``, one hour apart, oldest first."""
     from datetime import datetime, timedelta, timezone
 
     saves = []
     base_time = datetime.now(timezone.utc) - timedelta(hours=20)
     for i in range(count):
-        created = db_save_handler.add_save(
-            _slot_save(admin_user, rom, platform, f"{slot}_{i}", slot, 100 + i)
+        created = make_save(
+            rom, admin_user, f"{slot}_{i}.sav", file_size_bytes=100 + i, slot=slot
         )
         db_save_handler.update_save(
             created.id, {"updated_at": base_time + timedelta(hours=i)}
@@ -1807,8 +1820,8 @@ def _slot_save(
 
 class TestAutocleanup:
     @pytest.fixture
-    def slot_saves(self, admin_user: User, rom: Rom, platform: Platform) -> list[Save]:
-        return _seed_slot_saves(admin_user, rom, platform, "autosave", 15)
+    def slot_saves(self, admin_user: User, rom: Rom) -> list[Save]:
+        return _seed_slot_saves(admin_user, rom, "autosave", 15)
 
     @mock.patch(
         "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
@@ -1864,6 +1877,122 @@ class TestAutocleanup:
 
         assert response.status_code == status.HTTP_200_OK
         assert mock_remove.call_count == 6
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.compute_content_hash",
+        new_callable=mock.AsyncMock,
+    )
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.remove_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_autocleanup_records_versions_never_hashed(
+        self,
+        mock_scan,
+        mock_remove,
+        mock_write,
+        mock_hash,
+        client,
+        access_token: str,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+        slot_saves: list[Save],
+    ):
+        mock_hash.side_effect = lambda path: f"hash of {path.rsplit('/', 1)[-1]}"
+        mock_scan.return_value = _slot_save(
+            admin_user, rom, platform, "new_autosave", "autosave"
+        )
+
+        response = client.post(
+            f"/api/saves?rom_id={rom.id}&slot=autosave&autocleanup=true&autocleanup_limit=10",
+            files={
+                "saveFile": (
+                    "new_autosave.sav",
+                    BytesIO(b"new"),
+                    "application/octet-stream",
+                )
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        [record] = db_deleted_asset_handler.get_deletions(
+            user_id=admin_user.id, rom_ids=[rom.id]
+        )
+        # The six oldest of the fifteen seeded versions, oldest first.
+        assert record.content_hashes == [
+            f"hash of autosave_{index}.sav" for index in range(6)
+        ]
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.compute_content_hash",
+        new_callable=mock.AsyncMock,
+    )
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.remove_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_autocleanup_records_versions_pushed_past_the_limit_while_hashing(
+        self,
+        mock_scan,
+        mock_remove,
+        mock_write,
+        mock_hash,
+        client,
+        access_token: str,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+        slot_saves: list[Save],
+    ):
+        raced: list[Save] = []
+
+        def hash_while_another_upload_lands(path: str) -> str:
+            if not raced:
+                raced.append(
+                    make_save(
+                        rom,
+                        admin_user,
+                        "raced.sav",
+                        file_size_bytes=100,
+                        slot="autosave",
+                        content_hash="raced",
+                    )
+                )
+            return f"hash of {path.rsplit('/', 1)[-1]}"
+
+        mock_hash.side_effect = hash_while_another_upload_lands
+        mock_scan.return_value = _slot_save(
+            admin_user, rom, platform, "new_autosave", "autosave"
+        )
+
+        response = client.post(
+            f"/api/saves?rom_id={rom.id}&slot=autosave&autocleanup=true&autocleanup_limit=10",
+            files={
+                "saveFile": (
+                    "new_autosave.sav",
+                    BytesIO(b"new"),
+                    "application/octet-stream",
+                )
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        [record] = db_deleted_asset_handler.get_deletions(
+            user_id=admin_user.id, rom_ids=[rom.id]
+        )
+        # The race pushed a seventh version past the limit.
+        assert record.content_hashes == [
+            f"hash of autosave_{index}.sav" for index in range(7)
+        ]
 
     @mock.patch(
         "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
@@ -2006,10 +2135,8 @@ class TestAutocleanup:
 
 class TestSlotRetention:
     @pytest.fixture
-    def named_slot_saves(
-        self, admin_user: User, rom: Rom, platform: Platform
-    ) -> list[Save]:
-        return _seed_slot_saves(admin_user, rom, platform, "main_quest", 5)
+    def named_slot_saves(self, admin_user: User, rom: Rom) -> list[Save]:
+        return _seed_slot_saves(admin_user, rom, "main_quest", 5)
 
     def _upload(self, client, access_token: str, rom: Rom, query: str = ""):
         return client.post(
@@ -2064,6 +2191,98 @@ class TestSlotRetention:
         assert "main_quest_new" in remaining
         assert {"main_quest_0", "main_quest_1", "main_quest_2"}.isdisjoint(remaining)
         assert mock_remove.call_count == 3
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.remove_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_pruning_leaves_other_emulators_and_formats_alone(
+        self,
+        mock_scan,
+        mock_remove,
+        mock_write,
+        client,
+        access_token: str,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+        named_slot_saves: list[Save],
+    ):
+        make_save(
+            rom, admin_user, "main_quest.srm", emulator="mesen", slot="main_quest"
+        )
+        make_save(rom, admin_user, "main_quest.rtc", slot="main_quest")
+        mock_scan.return_value = _slot_save(
+            admin_user, rom, platform, "main_quest_new", "main_quest"
+        )
+
+        with mock.patch("endpoints.saves.MAX_SAVES_PER_SLOT", 1):
+            response = self._upload(client, access_token, rom, "&slot=main_quest")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert {
+            save.file_name
+            for save in db_save_handler.get_saves(
+                user_id=admin_user.id, rom_ids=[rom.id], slot="main_quest"
+            )
+        } == {"main_quest.srm", "main_quest.rtc", "main_quest_new.sav"}
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.remove_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_pruning_counts_a_dotted_name_by_its_stored_extension(
+        self,
+        mock_scan,
+        mock_remove,
+        mock_write,
+        client,
+        access_token: str,
+        rom: Rom,
+        admin_user: User,
+    ):
+        for second in (1, 2):
+            make_save(
+                rom,
+                admin_user,
+                f"quest.rev [2025-01-01_00-00-0{second}].srm",
+                slot="side_quest",
+            )
+        mock_scan.side_effect = lambda file_name, **_: Save(
+            file_name=file_name,
+            file_path=f"{rom.platform.fs_slug}/saves",
+            file_size_bytes=8,
+            rom_id=rom.id,
+            user_id=admin_user.id,
+            slot="side_quest",
+        )
+
+        with mock.patch("endpoints.saves.MAX_SAVES_PER_SLOT", 1):
+            response = client.post(
+                f"/api/saves?rom_id={rom.id}&slot=side_quest",
+                files={
+                    "saveFile": (
+                        "quest.rev.srm",
+                        BytesIO(b"new save"),
+                        "application/octet-stream",
+                    )
+                },
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert [
+            save.id
+            for save in db_save_handler.get_saves(
+                user_id=admin_user.id, rom_ids=[rom.id], slot="side_quest"
+            )
+        ] == [response.json()["id"]]
 
     @mock.patch(
         "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
@@ -2249,38 +2468,20 @@ class TestAutocleanupScreenshots:
         admin_user: User,
     ):
         from handler.database import db_save_handler, db_screenshot_handler
-        from models.assets import Screenshot
 
         base_time = rom.created_at
         for i in range(3):
-            save = db_save_handler.add_save(
-                Save(
-                    file_name=f"autosave_{i}.sav",
-                    file_name_no_tags=f"autosave_{i}",
-                    file_name_no_ext=f"autosave_{i}",
-                    file_extension="sav",
-                    file_path=f"{platform.slug}/saves",
-                    file_size_bytes=100,
-                    rom_id=rom.id,
-                    user_id=admin_user.id,
-                    slot="autosave",
-                )
+            save = make_save(
+                rom,
+                admin_user,
+                f"autosave_{i}.sav",
+                file_size_bytes=100,
+                slot="autosave",
             )
             db_save_handler.update_save(
                 save.id, {"updated_at": base_time + timedelta(hours=i)}
             )
-            db_screenshot_handler.add_screenshot(
-                Screenshot(
-                    file_name=f"autosave_{i}.png",
-                    file_name_no_tags=f"autosave_{i}",
-                    file_name_no_ext=f"autosave_{i}",
-                    file_extension="png",
-                    file_path=f"{platform.slug}/screenshots",
-                    file_size_bytes=10,
-                    rom_id=rom.id,
-                    user_id=admin_user.id,
-                )
-            )
+            make_screenshot(rom, admin_user, f"autosave_{i}.png", file_size_bytes=10)
 
         mock_scan.return_value = Save(
             file_name="autosave_new.sav",
@@ -2327,6 +2528,76 @@ class TestAutocleanupScreenshots:
             assert (screenshot is None) == (i in evicted)
 
 
+class TestSaveDeleteThumbnail:
+    """Deleting a save takes its thumbnail only when nothing else shows it."""
+
+    def _add_thumbnail(
+        self, assets_dir, rom: Rom, user: User, file_name: str
+    ) -> tuple[Screenshot, Path]:
+        thumbnail = make_screenshot(rom, user, file_name, file_size_bytes=3)
+        path = assets_dir / thumbnail.file_path / thumbnail.file_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"PNG")
+        return thumbnail, path
+
+    def _delete(self, client, token: str, save_id: int):
+        return client.post(
+            "/api/saves/delete",
+            json={"saves": [save_id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    def test_a_thumbnail_a_state_still_shows_stays(
+        self,
+        client,
+        access_token: str,
+        _isolated_assets_dir,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+        save: Save,
+    ):
+        # Same stem as the save, so both resolve `test_save.png`.
+        make_state(rom, admin_user, "test_save.state", file_size_bytes=1)
+        thumbnail, path = self._add_thumbnail(
+            _isolated_assets_dir, rom, admin_user, "test_save.png"
+        )
+
+        response = self._delete(client, access_token, save.id)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert db_screenshot_handler.get_screenshot_by_id(thumbnail.id) is not None
+        assert path.read_bytes() == b"PNG"
+
+    def test_a_thumbnail_a_state_only_matches_by_name_goes(
+        self,
+        client,
+        access_token: str,
+        _isolated_assets_dir,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+    ):
+        save = make_save(rom, admin_user, "Game.01.srm", file_size_bytes=1)
+        make_state(rom, admin_user, "Game.01.p2s", file_size_bytes=1)
+        thumbnail, path = self._add_thumbnail(
+            _isolated_assets_dir, rom, admin_user, "Game.01.png"
+        )
+        # The state matches the save's by stem, but its lookup prefers the one
+        # named after its whole file name.
+        shown, shown_path = self._add_thumbnail(
+            _isolated_assets_dir, rom, admin_user, "Game.01.p2s.png"
+        )
+
+        response = self._delete(client, access_token, save.id)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert db_screenshot_handler.get_screenshot_by_id(thumbnail.id) is None
+        assert not path.exists()
+        assert db_screenshot_handler.get_screenshot_by_id(shown.id) is not None
+        assert shown_path.read_bytes() == b"PNG"
+
+
 class TestUploadSizeLimit:
     def test_rejects_oversized_save_file(self, client, access_token: str, rom: Rom):
         with mock.patch.object(uploads, "MAX_ASSET_UPLOAD_SIZE_BYTES", 32):
@@ -2364,6 +2635,39 @@ class TestUploadSizeLimit:
         assert response.status_code == status.HTTP_413_CONTENT_TOO_LARGE
 
 
+class TestEmulatorValidation:
+    def _upload(self, client, access_token: str, rom: Rom, emulator: str):
+        return client.post(
+            "/api/saves",
+            params={"rom_id": rom.id, "emulator": emulator},
+            files={
+                "saveFile": ("save.sav", BytesIO(b"SAVE"), "application/octet-stream")
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    @pytest.mark.parametrize(
+        "emulator", ["../../escape", "nested/dir", "back\\slash", "..", ".", " padded"]
+    )
+    def test_rejects_emulator_that_is_not_one_folder(
+        self, client, access_token: str, rom: Rom, emulator: str
+    ):
+        with mock.patch(
+            "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+        ) as mock_write:
+            response = self._upload(client, access_token, rom, emulator)
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        mock_write.assert_not_awaited()
+
+    def test_rejects_overlong_emulator(self, client, access_token: str, rom: Rom):
+        response = self._upload(
+            client, access_token, rom, "e" * (EMULATOR_MAX_LENGTH + 1)
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
 class TestSavesSummaryEndpoint:
     @pytest.fixture
     def summary_saves(
@@ -2386,18 +2690,13 @@ class TestSavesSummaryEndpoint:
         ]
 
         for slot, offset in configs:
-            save = Save(
-                file_name=f"summary_save_{offset}.sav",
-                file_name_no_tags=f"summary_save_{offset}",
-                file_name_no_ext=f"summary_save_{offset}",
-                file_extension="sav",
-                file_path=f"{platform.slug}/saves",
+            created = make_save(
+                rom,
+                admin_user,
+                f"summary_save_{offset}.sav",
                 file_size_bytes=100 + offset,
-                rom_id=rom.id,
-                user_id=admin_user.id,
                 slot=slot,
             )
-            created = db_save_handler.add_save(save)
             db_save_handler.update_save(
                 created.id, {"updated_at": base_time + timedelta(hours=offset)}
             )
@@ -3197,24 +3496,6 @@ FIXTURE_B_HASH = "8cf6bb36a82a5ee4d7d15fc98599908d"
 FIXTURE_C_HASH = "c0c992d1f1f883f56065bb13b68dfdee"
 
 
-@pytest.fixture
-def _isolated_assets_dir(tmp_path, monkeypatch):
-    """Redirect the shared fs_asset_handler to a tmp dir for the test's duration.
-
-    Upload, scan, compute_content_hash, and remove_file all dispatch through
-    self.base_path; rebinding base_path to a tmp dir keeps the test from
-    leaking files into the real ROMM_BASE_PATH and lets every IO path resolve
-    consistently.
-    """
-    from pathlib import Path
-
-    from handler.filesystem import fs_asset_handler
-
-    new_base = Path(tmp_path).resolve()
-    monkeypatch.setattr(fs_asset_handler, "base_path", new_base)
-    return new_base
-
-
 class TestUploadHashContract:
     """Round-trip a real zip through the upload endpoint and pin the
     content_hash the server stores.
@@ -3344,6 +3625,159 @@ class TestSlotScopedDedupeMatrix:
         assert second.status_code == status.HTTP_200_OK
         assert second.json()["id"] == first.json()["id"]
 
+    def test_a_deduplicated_device_upload_records_the_device_sync(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        device: Device,
+        _isolated_assets_dir,
+    ):
+        payload = _build_fixture_a_zip()
+
+        def upload(client_hash: str):
+            return client.post(
+                f"/api/saves?rom_id={rom.id}&slot=slot1&emulator=test_emulator"
+                f"&device_id={device.id}&content_hash={client_hash}",
+                files={
+                    "saveFile": (
+                        "matrix.zip",
+                        BytesIO(payload),
+                        "application/octet-stream",
+                    )
+                },
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        first = upload("first_hash")
+        second = upload("retry_hash")
+
+        assert second.status_code == status.HTTP_200_OK
+        assert second.json()["id"] == first.json()["id"]
+        sync = db_device_save_sync_handler.get_sync(device.id, first.json()["id"])
+        assert sync is not None
+        assert sync.last_sync_hash == "retry_hash"
+        assert sync.last_sync_server_hash == first.json()["content_hash"]
+
+    def _device_upload(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        device: Device,
+        payload: bytes,
+        filename: str,
+        extra: str = "",
+    ):
+        return client.post(
+            f"/api/saves?rom_id={rom.id}&slot=slot1&emulator=test_emulator"
+            f"&device_id={device.id}&content_hash=client_hash{extra}",
+            files={
+                "saveFile": (filename, BytesIO(payload), "application/octet-stream")
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    def _upload_then_supersede(
+        self, client, access_token: str, rom: Rom, device: Device, payload: bytes
+    ) -> tuple[int, int]:
+        """Upload ``payload`` then newer bytes, both backdated so a bump is visible."""
+        old = self._device_upload(client, access_token, rom, device, payload, "old.sav")
+        new = self._device_upload(
+            client, access_token, rom, device, b"a newer save", "new.sav"
+        )
+        assert new.status_code == status.HTTP_200_OK
+        base_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        db_save_handler.update_save(old.json()["id"], {"updated_at": base_time})
+        db_save_handler.update_save(
+            new.json()["id"], {"updated_at": base_time + timedelta(hours=1)}
+        )
+        return old.json()["id"], new.json()["id"]
+
+    def test_a_deduplicated_upload_of_an_older_version_makes_it_the_slot_head(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        device: Device,
+        _isolated_assets_dir,
+    ):
+        payload = _build_fixture_a_zip()
+        old_id, _ = self._upload_then_supersede(
+            client, access_token, rom, device, payload
+        )
+
+        retry = self._device_upload(
+            client, access_token, rom, device, payload, "old.sav"
+        )
+
+        assert retry.status_code == status.HTTP_200_OK
+        assert retry.json()["id"] == old_id
+        head_ids = db_save_handler.get_save_ids(
+            user_id=device.user_id,
+            rom_ids=[rom.id],
+            slot="slot1",
+            order_by="updated_at",
+        )
+        assert head_ids[0] == old_id
+        bumped = db_save_handler.get_save_by_id(old_id)
+        assert bumped is not None
+        sync = db_device_save_sync_handler.get_sync(device.id, old_id)
+        assert sync is not None
+        assert to_utc(sync.last_synced_at) == to_utc(bumped.updated_at)
+
+    def test_a_deduplicated_retry_of_the_slot_head_keeps_its_timestamp(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        device: Device,
+        _isolated_assets_dir,
+    ):
+        payload = _build_fixture_a_zip()
+        first = self._device_upload(
+            client, access_token, rom, device, payload, "head.sav"
+        )
+        backdated = datetime.now(timezone.utc) - timedelta(hours=1)
+        db_save_handler.update_save(first.json()["id"], {"updated_at": backdated})
+
+        retry = self._device_upload(
+            client, access_token, rom, device, payload, "head.sav"
+        )
+
+        assert retry.json()["id"] == first.json()["id"]
+        head = db_save_handler.get_save_by_id(first.json()["id"])
+        assert head is not None
+        assert to_utc(head.updated_at) <= backdated
+
+    def test_a_deduplicated_upload_survives_the_prune_it_triggers(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        device: Device,
+        _isolated_assets_dir,
+    ):
+        payload = _build_fixture_a_zip()
+        old_id, new_id = self._upload_then_supersede(
+            client, access_token, rom, device, payload
+        )
+
+        retry = self._device_upload(
+            client,
+            access_token,
+            rom,
+            device,
+            payload,
+            "old.sav",
+            "&autocleanup=true&autocleanup_limit=1",
+        )
+
+        assert retry.status_code == status.HTTP_200_OK
+        assert retry.json()["id"] == old_id
+        assert db_save_handler.get_save_by_id(new_id) is None
+        assert db_device_save_sync_handler.get_sync(device.id, old_id) is not None
+
     def test_same_bytes_different_slots_creates_distinct_records(
         self,
         client,
@@ -3414,6 +3848,84 @@ class TestSlotScopedDedupeMatrix:
         assert len(rows) == 1
         assert rows[0]["content_hash"] == FIXTURE_B_HASH
 
+    def test_overwriting_a_colliding_save_never_hashed_records_its_bytes(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        admin_user: User,
+        _isolated_assets_dir,
+    ):
+        slotted = self._upload(
+            client, access_token, rom, _build_fixture_a_zip(), slot="slot1"
+        )
+        with sync_session.begin() as session:
+            session.execute(
+                update(Save)
+                .where(Save.id == slotted.json()["id"])
+                .values(content_hash=None)
+            )
+
+        response = client.post(
+            f"/api/saves?rom_id={rom.id}&emulator=test_emulator",
+            files={
+                "saveFile": (
+                    slotted.json()["file_name"],
+                    BytesIO(_build_fixture_b_zip()),
+                    "application/octet-stream",
+                )
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        [record] = db_deleted_asset_handler.get_deletions(
+            user_id=admin_user.id, rom_ids=[rom.id]
+        )
+        assert (record.slot, record.content_hashes) == (
+            "slot1",
+            [slotted.json()["content_hash"]],
+        )
+
+    def test_updating_a_save_never_hashed_records_its_bytes(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        admin_user: User,
+        _isolated_assets_dir,
+    ):
+        slotted = self._upload(
+            client, access_token, rom, _build_fixture_a_zip(), slot="slot1"
+        )
+        with sync_session.begin() as session:
+            session.execute(
+                update(Save)
+                .where(Save.id == slotted.json()["id"])
+                .values(content_hash=None)
+            )
+
+        response = client.put(
+            f"/api/saves/{slotted.json()['id']}",
+            files={
+                "saveFile": (
+                    slotted.json()["file_name"],
+                    BytesIO(_build_fixture_b_zip()),
+                    "application/octet-stream",
+                )
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        [record] = db_deleted_asset_handler.get_deletions(
+            user_id=admin_user.id, rom_ids=[rom.id]
+        )
+        assert (record.slot, record.content_hashes) == (
+            "slot1",
+            [slotted.json()["content_hash"]],
+        )
+
     def test_different_bytes_same_slot_creates_distinct_records(
         self,
         client,
@@ -3461,18 +3973,10 @@ class TestSaveVisibilityPropagation:
         admin_user: User,
     ):
         from handler.database import db_screenshot_handler
-        from models.assets import Screenshot
 
         # Thumbnail whose filename stem matches the save (how Save.screenshot links).
-        thumb = db_screenshot_handler.add_screenshot(
-            Screenshot(
-                rom_id=rom.id,
-                user_id=admin_user.id,
-                file_name="test_save.png",
-                file_path=f"{platform.slug}/screenshots",
-                file_size_bytes=1,
-                is_public=False,
-            )
+        thumb = make_screenshot(
+            rom, admin_user, "test_save.png", file_size_bytes=1, is_public=False
         )
 
         response = client.put(
@@ -3496,181 +4000,762 @@ class TestSaveVisibilityPropagation:
         assert refreshed is not None and refreshed.is_public is False
 
 
-class TestSaveFilenameCollisions:
-    @pytest.mark.parametrize(
-        "filename",
-        [
-            "게임.srm",
-            "게임 [2020-01-01_00-00-00].srm",
-            "게임 [2020-01-01_00-00-00.123456].srm",
-            "게임 [2020-01-01_00-00-00] [2021-01-01_00-00-00.123456].srm",
-        ],
-    )
-    def test_datetime_tag_replaces_old_and_precise_tags(self, filename: str) -> None:
-        from endpoints.saves import _apply_datetime_tag
+class TestSaveFavoritesAndLabels:
+    """Owner-only annotations on a save: the star and the free-text labels."""
 
-        timestamp = datetime(2026, 10, 5, 12, 34, 56, 123456, tzinfo=timezone.utc)
-        assert _apply_datetime_tag(filename, timestamp) == (
-            "게임 [2026-10-05_12-34-56.123456].srm"
+    def test_starring_and_unstarring_a_save_persists(
+        self, client, access_token: str, save: Save
+    ):
+        response = client.put(
+            f"/api/saves/{save.id}/favorite",
+            json={"is_favorite": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["is_favorite"] is True
+
+        response = client.put(
+            f"/api/saves/{save.id}/favorite",
+            json={"is_favorite": False},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["is_favorite"] is False
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.is_favorite is False
+
+    def test_setting_save_labels_persists(self, client, access_token: str, save: Save):
+        response = client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["100% run", "before the boss"]},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["labels"] == ["100% run", "before the boss"]
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None
+        assert refreshed.labels == ["100% run", "before the boss"]
+
+    def test_setting_save_labels_replaces_the_previous_set(
+        self, client, access_token: str, save: Save
+    ):
+        headers = {"Authorization": f"Bearer {access_token}"}
+        client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["100% run", "seed 42"]},
+            headers=headers,
         )
 
-    def test_frozen_clock_preserves_versions_slots_and_deduped_file(
+        response = client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["speedrun"]},
+            headers=headers,
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["labels"] == ["speedrun"]
+
+        response = client.put(
+            f"/api/saves/{save.id}/labels", json={"labels": []}, headers=headers
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["labels"] == []
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.labels == []
+
+    def test_save_labels_are_trimmed_and_blanks_dropped(
+        self, client, access_token: str, save: Save
+    ):
+        response = client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["  100% run  ", "   ", "", "seed 42"]},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["labels"] == ["100% run", "seed 42"]
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.labels == ["100% run", "seed 42"]
+
+    def test_save_labels_are_deduplicated_case_insensitively(
+        self, client, access_token: str, save: Save
+    ):
+        response = client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["Run", "run", "RUN", "Seed"]},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        # The first spelling wins, and the order the client sent survives.
+        assert response.json()["labels"] == ["Run", "Seed"]
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.labels == ["Run", "Seed"]
+
+    def test_overlong_save_label_is_rejected(
+        self, client, access_token: str, save: Save
+    ):
+        headers = {"Authorization": f"Bearer {access_token}"}
+        client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["seed 42"]},
+            headers=headers,
+        )
+
+        response = client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["ok", "x" * (ASSET_LABEL_MAX_LENGTH + 1)]},
+            headers=headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+        # The request is rejected whole, so not even the valid label lands.
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.labels == ["seed 42"]
+
+    def test_too_many_save_labels_are_rejected(
+        self, client, access_token: str, save: Save
+    ):
+        headers = {"Authorization": f"Bearer {access_token}"}
+        client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["seed 42"]},
+            headers=headers,
+        )
+
+        response = client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": [f"run {i}" for i in range(ASSET_LABELS_MAX + 1)]},
+            headers=headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.labels == ["seed 42"]
+
+    def test_annotating_a_save_leaves_updated_at_untouched(
+        self, client, access_token: str, save: Save
+    ):
+        headers = {"Authorization": f"Bearer {access_token}"}
+        # Backdate the row: the column has second precision, so a stray touch
+        # would otherwise be invisible within the same second.
+        db_save_handler.update_save(
+            save.id, {"updated_at": datetime(2020, 1, 1, tzinfo=timezone.utc)}
+        )
+        before = db_save_handler.get_save_by_id(save.id)
+        assert before is not None
+        stamp = before.updated_at
+
+        client.put(
+            f"/api/saves/{save.id}/favorite",
+            json={"is_favorite": True},
+            headers=headers,
+        )
+        client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["seed 42"]},
+            headers=headers,
+        )
+        client.put(
+            f"/api/saves/{save.id}/visibility",
+            json={"is_public": True},
+            headers=headers,
+        )
+
+        # Annotating is not a write to the save's bytes, and device sync reads
+        # `updated_at` to decide whether a device is stale.
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None
+        assert refreshed.updated_at == stamp
+        assert refreshed.is_favorite is True
+        assert refreshed.labels == ["seed 42"]
+        assert refreshed.is_public is True
+
+    def test_non_owner_cannot_star_a_save(
+        self, client, viewer_access_token: str, save: Save
+    ):
+        response = client.put(
+            f"/api/saves/{save.id}/favorite",
+            json={"is_favorite": True},
+            headers={"Authorization": f"Bearer {viewer_access_token}"},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.is_favorite is False
+
+    def test_non_owner_cannot_label_a_save(
+        self, client, access_token: str, viewer_access_token: str, save: Save
+    ):
+        client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["mine"]},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        response = client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["not mine"]},
+            headers={"Authorization": f"Bearer {viewer_access_token}"},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.labels == ["mine"]
+
+    def test_starring_a_missing_save_returns_not_found(self, client, access_token: str):
+        response = client.put(
+            "/api/saves/99999/favorite",
+            json={"is_favorite": True},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_labelling_a_missing_save_returns_not_found(
+        self, client, access_token: str
+    ):
+        response = client.put(
+            "/api/saves/99999/labels",
+            json={"labels": ["ghost"]},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_a_shared_save_hides_its_owners_annotations(
         self,
-        client: TestClient,
+        client,
+        access_token: str,
+        viewer_access_token: str,
+        rom: Rom,
+        save: Save,
+    ):
+        owner = {"Authorization": f"Bearer {access_token}"}
+        client.put(
+            f"/api/saves/{save.id}/labels",
+            json={"labels": ["seed 42"]},
+            headers=owner,
+        )
+        client.put(
+            f"/api/saves/{save.id}/favorite", json={"is_favorite": True}, headers=owner
+        )
+        client.put(
+            f"/api/saves/{save.id}/visibility", json={"is_public": True}, headers=owner
+        )
+
+        mine = client.get(f"/api/roms/{rom.id}", headers=owner)
+        assert mine.status_code == status.HTTP_200_OK
+        row = next(s for s in mine.json()["all_user_saves"] if s["id"] == save.id)
+        assert row["labels"] == ["seed 42"]
+        assert row["is_favorite"] is True
+
+        theirs = client.get(
+            f"/api/roms/{rom.id}",
+            headers={"Authorization": f"Bearer {viewer_access_token}"},
+        )
+        assert theirs.status_code == status.HTTP_200_OK
+        row = next(s for s in theirs.json()["all_user_saves"] if s["id"] == save.id)
+        assert row["labels"] == []
+        assert row["is_favorite"] is False
+
+
+class TestSaveRename:
+    """Renaming a save moves its file and keeps its screenshot bound."""
+
+    @pytest.fixture
+    def save_file(self, _isolated_assets_dir, save: Save):
+        path = _isolated_assets_dir / save.full_path
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"SAVE_DATA")
+        return path
+
+    def _rename(self, client, token: str, save_id: int, file_name: str):
+        return client.put(
+            f"/api/saves/{save_id}/file-name",
+            json={"file_name": file_name},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    def test_renaming_moves_the_file_and_its_screenshot(
+        self,
+        client,
         access_token: str,
         rom: Rom,
-        _isolated_assets_dir: Path,
-    ) -> None:
-        from handler.filesystem import fs_asset_handler
+        platform: Platform,
+        admin_user: User,
+        save: Save,
+        save_file,
+        _isolated_assets_dir,
+    ):
+        thumbnail = make_screenshot(rom, admin_user, "test_save.png", file_size_bytes=3)
+        screenshots_dir = _isolated_assets_dir / thumbnail.file_path
+        screenshots_dir.mkdir(parents=True)
+        (screenshots_dir / "test_save.png").write_bytes(b"PNG")
 
-        timestamp = datetime(2026, 10, 5, 12, 34, 56, 999999, tzinfo=timezone.utc)
-        responses = []
-        with mock.patch("endpoints.saves.datetime", wraps=datetime) as clock:
-            clock.now.return_value = timestamp
-            for slot, content, overwrite in [
-                ("slot1", b"first", True),
-                ("slot1", b"second", True),
-                ("slot1", b"first", False),
-                ("slot2", b"second", False),
-            ]:
-                response = client.post(
-                    "/api/saves",
-                    params={
-                        "rom_id": rom.id,
-                        "slot": slot,
-                        "emulator": "test_emulator",
-                        "overwrite": overwrite,
-                    },
-                    files={
-                        "saveFile": (
-                            "Game.srm",
-                            BytesIO(content),
-                            "application/octet-stream",
-                        )
-                    },
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                assert response.status_code == status.HTTP_200_OK
-                responses.append(response.json())
+        response = self._rename(client, access_token, save.id, "100% run.srm")
 
-        first, second, duplicate, other_slot = responses
-        assert first["id"] == duplicate["id"]
-        assert len({first["id"], second["id"], other_slot["id"]}) == 3
-        assert first["file_name"] == "Game [2026-10-05_12-34-56.999999].srm"
-        assert second["file_name"] == "Game [2026-10-05_12-34-57.000000].srm"
-        assert other_slot["file_name"] == "Game [2026-10-05_12-34-57.000001].srm"
-        assert other_slot["slot"] == "slot2"
-        for save, content in [
-            (first, b"first"),
-            (second, b"second"),
-            (other_slot, b"second"),
-        ]:
-            path = fs_asset_handler.validate_path(save["file_path"]) / save["file_name"]
-            assert path.read_bytes() == content
-        assert len(list(_isolated_assets_dir.rglob("*.srm"))) == 3
-        assert not list(_isolated_assets_dir.rglob(".romm_tmp_*"))
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["file_name"] == "100% run.srm"
+        assert body["file_extension"] == "srm"
+        assert body["slot"] == "autosave"
+        assert body["screenshot"]["file_name"] == "100% run.png"
 
-    async def test_parallel_uploads_with_frozen_clock_keep_every_payload(
-        self, _isolated_assets_dir: Path
-    ) -> None:
-        from endpoints.saves import _write_slotted_save
+        assert not save_file.exists()
+        assert (save_file.parent / "100% run.srm").read_bytes() == b"SAVE_DATA"
+        assert (screenshots_dir / "100% run.png").read_bytes() == b"PNG"
 
-        timestamp = datetime(2026, 10, 5, 12, 34, 56, tzinfo=timezone.utc)
-        contents = [b"first", b"second", b"third", b"fourth"]
-        with mock.patch("endpoints.saves.datetime", wraps=datetime) as clock:
-            clock.now.return_value = timestamp
-            names = await asyncio.gather(
-                *[
-                    _write_slotted_save(
-                        UploadFile(BytesIO(content), filename="Game.srm"),
-                        "saves",
-                        "Game.srm",
-                    )
-                    for content in contents
-                ]
-            )
-        assert len(set(names)) == len(contents)
-        for name, content in zip(names, contents, strict=True):
-            assert (_isolated_assets_dir / "saves" / name).read_bytes() == content
-        assert not await asyncio.to_thread(
-            lambda: list(_isolated_assets_dir.rglob(".romm_tmp_*"))
+    def test_name_a_save_in_another_slot_holds_is_a_conflict(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+        save: Save,
+        save_file,
+    ):
+        # Slots share a folder on disk, so the name has to be free across them.
+        make_save(
+            rom,
+            admin_user,
+            "archived.sav",
+            emulator="test_emulator",
+            slot=None,
+            file_path=save.file_path,
+            file_size_bytes=1,
         )
 
-    async def test_independent_filesystem_writers_cannot_replace_existing_file(
-        self, tmp_path: Path
-    ) -> None:
-        from handler.filesystem.base_handler import FSHandler
+        response = self._rename(client, access_token, save.id, "archived.sav")
 
-        contents = [b"first", b"second", b"third", b"fourth"]
-        writers = [FSHandler(str(tmp_path)) for _ in contents]
-        results = await asyncio.gather(
-            *[
-                writer.write_file(content, "saves", "Game.srm", overwrite=False)
-                for writer, content in zip(writers, contents, strict=True)
-            ],
-            return_exceptions=True,
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert save_file.read_bytes() == b"SAVE_DATA"
+        refreshed = db_save_handler.get_save_by_id(save.id)
+        assert refreshed is not None and refreshed.file_name == "test_save.sav"
+
+    @pytest.mark.parametrize("shared", [False, True], ids=["moved", "copied"])
+    def test_name_over_255_bytes_is_rejected_before_any_move(
+        self,
+        client,
+        access_token: str,
+        rom: Rom,
+        admin_user: User,
+        save: Save,
+        save_file,
+        _isolated_assets_dir,
+        shared: bool,
+    ):
+        # The save's name fits, but the screenshot keeps its longer extension.
+        thumbnail = make_screenshot(rom, admin_user, "test_save.jpeg")
+        if shared:
+            # A state of the same stem keeps the thumbnail, so it is copied.
+            make_state(rom, admin_user, "test_save.state", file_size_bytes=1)
+        screenshots_dir = _isolated_assets_dir / thumbnail.file_path
+        screenshots_dir.mkdir(parents=True)
+        (screenshots_dir / "test_save.jpeg").write_bytes(b"JPG")
+
+        response = self._rename(client, access_token, save.id, "a" * 251 + ".srm")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "255 bytes" in response.json()["detail"]
+        assert save_file.read_bytes() == b"SAVE_DATA"
+        assert (screenshots_dir / "test_save.jpeg").read_bytes() == b"JPG"
+
+    def test_unchanged_name_is_a_no_op(
+        self, client, access_token: str, save: Save, save_file
+    ):
+        response = self._rename(client, access_token, save.id, "test_save.sav")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["file_name"] == "test_save.sav"
+        assert save_file.exists()
+
+    def test_non_owner_cannot_rename_a_save(
+        self, client, viewer_access_token: str, save: Save, save_file
+    ):
+        db_save_handler.update_save(save.id, {"is_public": True})
+
+        response = self._rename(client, viewer_access_token, save.id, "mine.sav")
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert save_file.exists()
+
+
+class TestApplyDatetimeTag:
+    @pytest.fixture
+    def sao_paulo_tz(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        monkeypatch.setenv("TZ", "America/Sao_Paulo")
+        time.tzset()
+        yield
+        monkeypatch.undo()
+        time.tzset()
+
+    @pytest.mark.usefixtures("sao_paulo_tz")
+    def test_stamps_the_server_local_time(self):
+        captured_at = datetime(2026, 9, 22, 22, 10, 13, tzinfo=timezone.utc)
+
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.fromtimestamp(captured_at.timestamp(), tz)
+
+        with mock.patch("handler.asset_store.datetime", FrozenDatetime):
+            tagged = apply_datetime_tag("suikoden [2020-01-01_00-00-00].srm")
+
+        assert tagged == "suikoden [2026-09-22_19-10-13].srm"
+
+    async def test_a_taken_or_claimed_name_moves_on_a_second(
+        self, admin_user: User, rom: Rom
+    ):
+        saves_path = f"reserve-test-{uuid.uuid4().hex}"
+        frozen = datetime(2026, 1, 1, 12, 0, 0)
+        make_save(
+            rom,
+            admin_user,
+            "game [2026-01-01_12-00-00].srm",
+            file_path=saves_path,
+            slot="autosave",
         )
-        assert results.count(None) == 1
-        assert sum(isinstance(result, FileExistsError) for result in results) == 3
-        target = tmp_path / "saves" / "Game.srm"
-        assert target.read_bytes() == contents[results.index(None)]
-        assert not await asyncio.to_thread(lambda: list(tmp_path.rglob(".romm_tmp_*")))
-        await writers[0].write_file(b"explicit replacement", "saves", "Game.srm")
-        assert target.read_bytes() == b"explicit replacement"
 
-    async def test_collision_after_reading_rewinds_upload(
-        self, _isolated_assets_dir: Path
-    ) -> None:
-        from endpoints.saves import _write_slotted_save
-        from handler.filesystem import fs_asset_handler
-
-        write_file = fs_asset_handler.write_file
-        attempts = 0
-
-        async def collide_once(
-            file: UploadFile, path: str, filename: str, *, overwrite: bool
-        ) -> None:
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                assert file.file.read() == b"complete payload"
-                raise FileExistsError(filename)
-            await write_file(file, path, filename, overwrite=overwrite)
-
-        with mock.patch.object(
-            fs_asset_handler, "write_file", side_effect=collide_once
-        ):
-            name = await _write_slotted_save(
-                UploadFile(BytesIO(b"complete payload"), filename="Game.srm"),
-                "saves",
-                "Game.srm",
+        with mock.patch("handler.asset_store.datetime") as clock:
+            clock.now.return_value = frozen
+            first = await reserve_version_name(
+                admin_user.id, rom.id, saves_path, "game.srm"
             )
-        assert attempts == 2
-        assert (
-            _isolated_assets_dir / "saves" / name
-        ).read_bytes() == b"complete payload"
+            second = await reserve_version_name(
+                admin_user.id, rom.id, saves_path, "game.srm"
+            )
 
-    @pytest.mark.parametrize(
-        "failure", [OSError("write failed"), asyncio.CancelledError()]
+        assert (first, second) == (
+            "game [2026-01-01_12-00-01].srm",
+            "game [2026-01-01_12-00-02].srm",
+        )
+
+
+class TestSyncBaselineWriteSites:
+    """Device-facing save paths record what each side held at the boundary."""
+
+    @staticmethod
+    def _baseline(device: Device, save_id: int) -> DeviceSaveSync:
+        sync = db_device_save_sync_handler.get_sync(
+            device_id=device.id, save_id=save_id
+        )
+        assert sync is not None
+        return sync
+
+    @mock.patch("endpoints.saves.fs_asset_handler.validate_path")
+    def test_optimistic_download_records_only_the_server_hash(
+        self,
+        mock_validate_path,
+        client,
+        access_token: str,
+        save: Save,
+        device: Device,
+        tmp_path,
+    ):
+        db_save_handler.update_save(save.id, {"content_hash": "server_hash"})
+        test_file = tmp_path / "test.sav"
+        test_file.write_bytes(b"save file content")
+        mock_validate_path.return_value = test_file
+
+        response = client.get(
+            f"/api/saves/{save.id}/content?device_id={device.id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.last_sync_hash is None
+        assert sync.last_sync_server_hash == "server_hash"
+
+    def test_confirm_download_pins_the_served_version(
+        self, client, access_token: str, save: Save, device: Device
+    ):
+        """A server write between download and confirm must still reach the device."""
+        served_at = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        db_device_save_sync_handler.upsert_sync(
+            device_id=device.id,
+            save_id=save.id,
+            synced_at=served_at,
+            last_sync_server_hash="served_hash",
+        )
+        db_save_handler.update_save(save.id, {"content_hash": "newer_hash"})
+
+        response = client.post(
+            f"/api/saves/{save.id}/downloaded",
+            json={"device_id": device.id, "content_hash": "client_hash"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.last_sync_hash == "client_hash"
+        assert sync.last_sync_server_hash == "served_hash"
+        assert to_utc(sync.last_synced_at) == served_at
+        result = compare_save_state(
+            client_hash="client_hash",
+            client_updated_at=datetime(2026, 1, 6, tzinfo=timezone.utc),
+            server_hash="newer_hash",
+            server_updated_at=datetime(2026, 1, 7, tzinfo=timezone.utc),
+            device_last_synced_at=sync.last_synced_at,
+            device_last_sync_hash=sync.last_sync_hash,
+            device_last_sync_server_hash=sync.last_sync_server_hash,
+        )
+        assert result.action == "download"
+
+    def test_confirm_download_records_a_client_hash_equal_to_the_server(
+        self, client, access_token: str, save: Save, device: Device
+    ):
+        db_save_handler.update_save(save.id, {"content_hash": "server_hash"})
+
+        response = client.post(
+            f"/api/saves/{save.id}/downloaded",
+            json={"device_id": device.id, "content_hash": "server_hash"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.last_sync_hash == "server_hash"
+        assert sync.last_sync_server_hash == "server_hash"
+
+    @pytest.mark.parametrize("client_hash", ["client_hash", None])
+    def test_confirm_download_without_a_served_version_records_no_hashes(
+        self,
+        client,
+        access_token: str,
+        save: Save,
+        device: Device,
+        client_hash: str | None,
+    ):
+        db_save_handler.update_save(save.id, {"content_hash": "server_hash"})
+
+        response = client.post(
+            f"/api/saves/{save.id}/downloaded",
+            json={"device_id": device.id, "content_hash": client_hash},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.last_sync_hash is None
+        assert sync.last_sync_server_hash is None
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
     )
-    async def test_failed_publish_removes_only_its_reservation(
-        self, tmp_path: Path, failure: BaseException
-    ) -> None:
-        from handler.filesystem.base_handler import FSHandler
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_upload_records_the_client_hash(
+        self,
+        mock_scan,
+        _mock_write,
+        client,
+        access_token: str,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+        device: Device,
+    ):
+        mock_scan.return_value = Save(
+            file_name="baseline.sav",
+            file_name_no_tags="baseline",
+            file_name_no_ext="baseline",
+            file_extension="sav",
+            file_path=f"{platform.slug}/saves",
+            file_size_bytes=100,
+            content_hash="server_hash",
+            rom_id=rom.id,
+            user_id=admin_user.id,
+        )
 
-        writer = FSHandler(str(tmp_path))
-        target = tmp_path / "saves" / "Game.srm"
-        with mock.patch(
-            "handler.filesystem.base_handler.os.replace", side_effect=failure
-        ):
-            with pytest.raises(type(failure)):
-                await writer.write_file(
-                    b"new save", "saves", "Game.srm", overwrite=False
+        response = client.post(
+            f"/api/saves?rom_id={rom.id}&device_id={device.id}"
+            f"&content_hash=client_hash",
+            files={
+                "saveFile": (
+                    "baseline.sav",
+                    BytesIO(b"save data"),
+                    "application/octet-stream",
                 )
-        assert not target.exists()
-        assert not await asyncio.to_thread(lambda: list(tmp_path.rglob(".romm_tmp_*")))
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
 
-        target.write_bytes(b"existing save")
-        with pytest.raises(FileExistsError):
-            await writer.write_file(b"new save", "saves", "Game.srm", overwrite=False)
-        assert target.read_bytes() == b"existing save"
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, response.json()["id"])
+        assert sync.last_sync_hash == "client_hash"
+        assert sync.last_sync_server_hash == "server_hash"
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_upload_with_an_empty_hash_records_only_the_server_hash(
+        self,
+        mock_scan,
+        _mock_write,
+        client,
+        access_token: str,
+        rom: Rom,
+        platform: Platform,
+        admin_user: User,
+        device: Device,
+    ):
+        mock_scan.return_value = Save(
+            file_name="blank_hash.sav",
+            file_name_no_tags="blank_hash",
+            file_name_no_ext="blank_hash",
+            file_extension="sav",
+            file_path=f"{platform.slug}/saves",
+            file_size_bytes=100,
+            content_hash="server_hash",
+            rom_id=rom.id,
+            user_id=admin_user.id,
+        )
+
+        response = client.post(
+            f"/api/saves?rom_id={rom.id}&device_id={device.id}&content_hash=",
+            files={
+                "saveFile": (
+                    "blank_hash.sav",
+                    BytesIO(b"save data"),
+                    "application/octet-stream",
+                )
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, response.json()["id"])
+        assert sync.last_sync_hash is None
+        assert sync.last_sync_server_hash == "server_hash"
+
+    @mock.patch(
+        "endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock
+    )
+    @mock.patch("endpoints.saves.scan_save", new_callable=mock.AsyncMock)
+    def test_update_save_records_the_client_hash(
+        self,
+        mock_scan,
+        _mock_write,
+        client,
+        access_token: str,
+        save: Save,
+        device: Device,
+    ):
+        mock_scan.return_value = Save(file_size_bytes=100, content_hash="server_hash")
+
+        response = client.put(
+            f"/api/saves/{save.id}?device_id={device.id}&content_hash=client_hash",
+            files={"saveFile": (save.file_name, BytesIO(b"v2"), "application/octet")},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.last_sync_hash == "client_hash"
+        assert sync.last_sync_server_hash == "server_hash"
+
+    def test_update_save_without_a_save_file_records_no_client_hash(
+        self, client, access_token: str, save: Save, device: Device
+    ):
+        """A metadata-only update must not mark the device's unsent save as synced."""
+        db_save_handler.update_save(save.id, {"content_hash": "server_hash"})
+
+        response = client.put(
+            f"/api/saves/{save.id}?device_id={device.id}&content_hash=client_hash",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.last_sync_hash is None
+        assert sync.last_sync_server_hash == "server_hash"
+
+    def test_untrack_clears_the_baseline_and_retrack_leaves_it_empty(
+        self, client, access_token: str, save: Save, device: Device
+    ):
+        db_device_save_sync_handler.upsert_sync(
+            device_id=device.id,
+            save_id=save.id,
+            last_sync_hash="client_hash",
+            last_sync_server_hash="server_hash",
+        )
+
+        untrack = client.post(
+            f"/api/saves/{save.id}/untrack",
+            json={"device_id": device.id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert untrack.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.last_sync_hash is None
+        assert sync.last_sync_server_hash is None
+
+        track = client.post(
+            f"/api/saves/{save.id}/track",
+            json={"device_id": device.id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert track.status_code == status.HTTP_200_OK
+        sync = self._baseline(device, save.id)
+        assert sync.is_untracked is False
+        assert sync.last_sync_hash is None
+        assert sync.last_sync_server_hash is None
+
+
+@pytest.mark.parametrize(
+    ("params", "name"),
+    [
+        ({}, "a" * 300 + ".srm"),
+        # 240 bytes, pushed over the limit by the 22-byte datetime tag.
+        ({"slot": "Slot 1"}, "a" * 236 + ".srm"),
+    ],
+    ids=["plain", "tagged"],
+)
+def test_upload_save_over_255_bytes_rejected(
+    client, access_token: str, rom: Rom, params: dict[str, str], name: str
+):
+    response = client.post(
+        "/api/saves",
+        params={"rom_id": rom.id, **params},
+        files={"saveFile": (name, BytesIO(b"save"), "application/octet-stream")},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "255 bytes" in response.json()["detail"]
+
+
+@mock.patch("endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock)
+def test_update_save_rejects_a_screenshot_name_over_255_bytes_before_writing(
+    mock_write, client, access_token: str, save: Save
+):
+    response = client.put(
+        f"/api/saves/{save.id}",
+        files={
+            "saveFile": (save.file_name, BytesIO(b"v2"), "application/octet-stream"),
+            "screenshotFile": ("あ" * 86 + ".png", BytesIO(b"png"), "image/png"),
+        },
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "255 bytes" in response.json()["detail"]
+    mock_write.assert_not_called()
+
+
+@mock.patch("endpoints.saves.fs_asset_handler.write_file", new_callable=mock.AsyncMock)
+def test_hidden_rom_masks_save_upload(
+    mock_write, client, viewer_access_token: str, viewer_user: User, rom: Rom
+):
+    _hide(PermEntity.ROMS, rom.id, viewer_user.id)
+
+    response = client.post(
+        f"/api/saves?rom_id={rom.id}",
+        files={"saveFile": ("game.srm", BytesIO(b"save"), "application/octet-stream")},
+        headers={"Authorization": f"Bearer {viewer_access_token}"},
+    )
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+    mock_write.assert_not_awaited()

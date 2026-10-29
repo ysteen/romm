@@ -1,12 +1,13 @@
 import { flushPromises } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 class FakeURL extends URL {
-  static createObjectURL = vi.fn(() => "blob:cached");
-  static revokeObjectURL = vi.fn();
+  static override createObjectURL = vi.fn(() => "blob:cached");
+  static override revokeObjectURL = vi.fn();
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
+type FakeResponse = { ok: boolean; blob: () => Promise<Blob> };
+let fetchMock: Mock<(url: string) => Promise<FakeResponse>>;
 
 async function load() {
   vi.resetModules();
@@ -26,37 +27,34 @@ function urls() {
 }
 
 function respondWith(available: Record<string, string>) {
-  fetchMock.mockImplementation(async (url: string) => {
+  fetchMock.mockImplementation((url: string) => {
     const type = available[url];
-    return {
+    return Promise.resolve({
       ok: Boolean(type),
-      blob: async () => new Blob([type ?? ""], { type: type ?? "" }),
-    };
+      blob: () => Promise.resolve(new Blob([type ?? ""], { type: type ?? "" })),
+    });
   });
 }
 
 beforeEach(() => {
   vi.stubGlobal("URL", FakeURL);
-  fetchMock = vi.fn();
+  fetchMock = vi.fn<(url: string) => Promise<FakeResponse>>();
   vi.stubGlobal("fetch", fetchMock);
 });
 
 describe("prefetchPlatformIcons", () => {
-  it("falls back to .ico when the platform ships no .svg", async () => {
+  it("fetches the shipped .ico when the platform ships no .svg", async () => {
     respondWith({ "/assets/platforms/saturn.ico": "image/x-icon" });
     const { prefetchPlatformIcons, getCachedPlatformIcon } = await load();
 
     prefetchPlatformIcons(["saturn"]);
     await settle();
 
-    expect(urls()).toEqual([
-      "/assets/platforms/saturn.svg",
-      "/assets/platforms/saturn.ico",
-    ]);
+    expect(urls()).toEqual(["/assets/platforms/saturn.ico"]);
     expect(getCachedPlatformIcon("saturn")).toBe("blob:cached");
   });
 
-  it("stops at .svg when that variant resolves", async () => {
+  it("fetches only the .svg when both variants ship", async () => {
     respondWith({ "/assets/platforms/dc.svg": "image/svg+xml" });
     const { prefetchPlatformIcons, getCachedPlatformIcon } = await load();
 
@@ -67,54 +65,34 @@ describe("prefetchPlatformIcons", () => {
     expect(getCachedPlatformIcon("dc")).toBe("blob:cached");
   });
 
-  it("ignores a non-image body and keeps probing", async () => {
-    respondWith({
-      "/assets/platforms/dc.svg": "text/html",
-      "/assets/platforms/dc.ico": "image/x-icon",
-    });
+  it("caches nothing when the response is not an image", async () => {
+    respondWith({ "/assets/platforms/dc.svg": "text/html" });
     const { prefetchPlatformIcons, getCachedPlatformIcon } = await load();
 
     prefetchPlatformIcons(["dc"]);
     await settle();
 
-    expect(urls()).toEqual([
-      "/assets/platforms/dc.svg",
-      "/assets/platforms/dc.ico",
-    ]);
-    expect(getCachedPlatformIcon("dc")).toBe("blob:cached");
+    expect(getCachedPlatformIcon("dc")).toBeUndefined();
   });
 
-  it("keeps probing after a candidate fails in transport", async () => {
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url.endsWith(".svg")) throw new Error("connection reset");
-      return {
-        ok: true,
-        blob: async () => new Blob(["x"], { type: "image/x-icon" }),
-      };
-    });
+  it("caches nothing when the fetch fails in transport", async () => {
+    fetchMock.mockRejectedValue(new Error("connection reset"));
     const { prefetchPlatformIcons, getCachedPlatformIcon } = await load();
 
-    prefetchPlatformIcons(["saturn"]);
+    prefetchPlatformIcons(["dc"]);
     await settle();
 
-    expect(urls()).toEqual([
-      "/assets/platforms/saturn.svg",
-      "/assets/platforms/saturn.ico",
-    ]);
-    expect(getCachedPlatformIcon("saturn")).toBe("blob:cached");
+    expect(getCachedPlatformIcon("dc")).toBeUndefined();
   });
 
-  it("caches nothing for a platform with no asset at all", async () => {
+  it("does not request a platform that ships no icon", async () => {
     respondWith({});
     const { prefetchPlatformIcons, getCachedPlatformIcon } = await load();
 
     prefetchPlatformIcons(["singe"]);
     await settle();
 
-    expect(urls()).toEqual([
-      "/assets/platforms/singe.svg",
-      "/assets/platforms/singe.ico",
-    ]);
+    expect(urls()).toEqual([]);
     expect(getCachedPlatformIcon("singe")).toBeUndefined();
   });
 

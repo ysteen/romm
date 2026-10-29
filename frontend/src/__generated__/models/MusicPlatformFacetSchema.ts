@@ -11,4 +11,3 @@ export type MusicPlatformFacetSchema = {
     name: string;
     count: number;
 };
-

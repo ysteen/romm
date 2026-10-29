@@ -34,7 +34,7 @@ async function toggleMainSibling() {
   romUser.value.is_main_sibling = !romUser.value.is_main_sibling;
   romApi.updateUserRomProps({
     romId: props.rom.id,
-    data: romUser.value,
+    data: { is_main_sibling: romUser.value.is_main_sibling },
   });
 }
 
@@ -106,7 +106,7 @@ watch(
                       />
                     </template>
                     <v-list-item-subtitle class="mt-1">
-                      <FileSelectItem :item="item.raw" />
+                      <FileSelectItem :item="item" />
                     </v-list-item-subtitle>
                   </v-list-item>
                 </template>

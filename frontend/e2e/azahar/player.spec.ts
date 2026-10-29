@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { expect, test as baseTest, type Page } from "@playwright/test";
-import type { PendingAsset } from "../../src/services/pending-asset";
+import type { PendingAsset } from "../../src/types/pendingAsset";
 
 const endpoint = process.env.AZAHAR_CDP_ENDPOINT;
 const test = endpoint
@@ -678,8 +678,8 @@ for (const theme of ["dark", "light"] as const) {
         .toBe(1);
       const held = await pendingAssets(page);
       expect(held).toHaveLength(1);
-      expect(held[0].bytes).toEqual([80, 75, 3, 4]);
-      expect(held[0].screenshotBytes).toBeNull();
+      expect(held[0]!.bytes).toEqual([80, 75, 3, 4]);
+      expect(held[0]!.screenshotBytes).toBeNull();
       expect(evidence.writes).not.toContain("POST /api/saves");
 
       const reader = await context.newPage();
@@ -739,8 +739,8 @@ for (const theme of ["dark", "light"] as const) {
     await expect.poll(() => evidence.savePreviews.length).toBe(1);
     const held = await pendingAssets(page);
     expect(held).toHaveLength(1);
-    expect(held[0].bytes).toEqual([80, 75, 3, 4]);
-    expect(held[0].screenshotBytes).toEqual([137, 80, 78, 71]);
+    expect(held[0]!.bytes).toEqual([80, 75, 3, 4]);
+    expect(held[0]!.screenshotBytes).toEqual([137, 80, 78, 71]);
     await expect.poll(() => evidence.savePreviews.length).toBeGreaterThan(1);
     expect(await pendingAssets(page)).toEqual(held);
     expect(await page.evaluate(() => window.__azaharFixture.captures)).toBe(1);
@@ -885,7 +885,7 @@ test("Backend Core Options exposes all GPU controls and persists their values", 
     ["citra_graphics_api", "Graphics API", "OpenGL"],
     ["citra_use_hw_shaders", "Hardware Shaders", "enabled"],
     ["citra_use_webgl_hw_draw", "WebGL Hardware Draw", "enabled"],
-  ]) {
+  ] as const) {
     const row = page.locator(`[data-ejs-option="${key}"]`);
     await expect(row).toContainText(title);
     await row.focus();
@@ -1066,7 +1066,7 @@ for (const failure of ["state", "save"] as const) {
       await expect(page).toHaveURL(new RegExp(`/rom/${romId}$`));
       const held = await pendingAssets(page, "state");
       expect(held).toHaveLength(1);
-      expect(held[0].bytes).toEqual([82, 65, 1, 2]);
+      expect(held[0]!.bytes).toEqual([82, 65, 1, 2]);
     } else {
       await expect(
         page.getByText("Error saving game", { exact: true }),
@@ -1077,7 +1077,7 @@ for (const failure of ["state", "save"] as const) {
       ).toBe(false);
       const held = await pendingAssets(page);
       expect(held).toHaveLength(1);
-      expect(held[0].bytes).toEqual([80, 75, 1, 2]);
+      expect(held[0]!.bytes).toEqual([80, 75, 1, 2]);
     }
     expect(evidence.stateUploads).toHaveLength(1);
     expect(evidence.writes).toContain("POST /api/saves");

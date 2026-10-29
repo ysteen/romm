@@ -1,8 +1,7 @@
 import html
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Final, NotRequired, TypedDict
+from typing import Final, NotRequired, TypedDict, cast
 
 import pydash
 from fastapi import HTTPException, status
@@ -17,7 +16,12 @@ from adapters.services.screenscraper import (
     prime_account_limits,
     reset_scan_state,
 )
-from adapters.services.screenscraper_types import SSGame, SSGameDate
+from adapters.services.screenscraper_types import (
+    SSGame,
+    SSGameDate,
+    SSGameMedia,
+    SSGameRom,
+)
 from config import (
     SCREENSCRAPER_DEV_ID,
     SCREENSCRAPER_DEV_PASSWORD,
@@ -27,20 +31,27 @@ from config import (
 from config.config_manager import MetadataMediaType
 from config.config_manager import config_manager as cm
 from handler.filesystem import fs_resource_handler
-from handler.filesystem.base_handler import region_name_to_provider_shortcode
+from handler.filesystem.base_handler import (
+    TRANSLATION_TAG,
+    normalize_provider_languages,
+    normalize_provider_regions,
+    region_name_to_provider_shortcode,
+)
 from logger.formatter import highlight as hl
 from logger.logger import log
-from models.rom import Rom, RomFile
+from models.rom import LookupHashes, Rom, RomFile
+from utils.database import safe_int
+from utils.datetime import parse_utc_timestamp
 from utils.platform_slugs import UniversalPlatformSlug as UPS
 
 from .base_handler import (
-    PS2_OPL_REGEX,
-    SONY_SERIAL_REGEX,
-    SWITCH_TITLEDB_REGEX,
     BaseRom,
+    IndexedFormatPlatforms,
     MetadataHandler,
+    provider_tag_regex,
     restore_sensitive_query_params,
     strip_sensitive_query_params,
+    tag_id_from_filename,
 )
 
 SENSITIVE_KEYS = {"ssid", "sspassword"}
@@ -226,7 +237,11 @@ CPS3_SS_ID: Final = 8
 ARCADES_SS_IDS: Final = [ARCADE_SS_ID, CPS1_SS_ID, CPS2_SS_ID, CPS3_SS_ID]
 
 # Regex to detect ScreenScraper ID tags in filenames like (ssfr-12345)
-SS_TAG_REGEX = re.compile(r"\(ssfr-(\d+)\)", re.IGNORECASE)
+SS_TAG_REGEX = provider_tag_regex("ssfr")
+
+
+# ScreenScraper buckets that name no place, so they must not become facet values.
+_SS_PSEUDO_REGIONS: Final = frozenset({"ss", "cus"})
 
 NOTGAME_NAME_PREFIX: Final = "ZZZ(NOTGAME)"
 
@@ -280,6 +295,12 @@ class SSAgeRating(TypedDict):
     category: str
 
 
+class SSPhysicalDisc(TypedDict):
+    disc: int
+    url: str
+    path: str | None
+
+
 class SSMetadataMedia(TypedDict):
     bezel_url: str | None  # bezel-16-9
     box2d_url: str | None  # box-2D
@@ -293,7 +314,9 @@ class SSMetadataMedia(TypedDict):
     marquee_url: str | None  # screenmarquee
     miximage_url: str | None  # miximage1 | miximage2 | mixrbv1
     miximage_v2_url: str | None  # mixrbv2
-    physical_url: str | None  # support-2D
+    physical_url: str | None  # support-2D of the first disc
+    physical_disc: int | None  # the disc physical_url shows
+    physical_extra_discs: list[SSPhysicalDisc]  # support-2D of every later disc
     screenshot_url: str | None  # ss
     steamgrid_url: str | None  # steamgrid
     title_screen_url: str | None  # sstitle
@@ -329,10 +352,17 @@ class SSMetadata(SSMetadataMedia):
     game_modes: list[str]
     genres: list[str]
     player_count: str
+    # What the dump our hashes matched says of itself, kept by the scan.
+    dump_regions: NotRequired[list[str]]
+    dump_languages: NotRequired[list[str]]
+    dump_tags: NotRequired[list[str]]
 
 
 class SSRom(BaseRom):
     ss_id: int | None
+    regions: NotRequired[list[str]]
+    languages: NotRequired[list[str]]
+    tags: NotRequired[list[str]]
     ss_metadata: NotRequired[SSMetadata]
 
 
@@ -356,8 +386,14 @@ def _get_rom_type(file: RomFile) -> str:
     return "rom"
 
 
+def _ss_disc_number(media: SSGameMedia) -> int:
+    """The disc a media item shows; untagged or unreadable art belongs to the first."""
+    return max(safe_int(media.get("support"), default=1), 1)
+
+
 def extract_media_from_ss_game(rom: Rom, game: SSGame) -> SSMetadataMedia:
     preferred_media_types = get_preferred_media_types()
+    physical_urls: dict[int, str] = {}
 
     ss_media = SSMetadataMedia(
         bezel_url=None,
@@ -373,6 +409,8 @@ def extract_media_from_ss_game(rom: Rom, game: SSGame) -> SSMetadataMedia:
         miximage_url=None,
         miximage_v2_url=None,
         physical_url=None,
+        physical_disc=None,
+        physical_extra_discs=[],
         screenshot_url=None,
         steamgrid_url=None,
         title_screen_url=None,
@@ -486,13 +524,11 @@ def extract_media_from_ss_game(rom: Rom, game: SSGame) -> SSMetadataMedia:
                     ss_media["miximage_v2_path"] = (
                         f"{fs_resource_handler.get_media_resources_path(rom.platform_id, rom.id, MetadataMediaType.MIXIMAGE_V2)}/miximage_v2.png"
                     )
-            elif media.get("type") == "support-2D" and not ss_media["physical_url"]:
-                ss_media["physical_url"] = strip_sensitive_query_params(
-                    media["url"], SENSITIVE_KEYS
-                )
-                if MetadataMediaType.PHYSICAL in preferred_media_types:
-                    ss_media["physical_path"] = (
-                        f"{fs_resource_handler.get_media_resources_path(rom.platform_id, rom.id, MetadataMediaType.PHYSICAL)}/physical.png"
+            elif media.get("type") == "support-2D":
+                disc = _ss_disc_number(media)
+                if disc not in physical_urls:
+                    physical_urls[disc] = strip_sensitive_query_params(
+                        media["url"], SENSITIVE_KEYS
                     )
             elif media.get("type") == "ss" and not ss_media["screenshot_url"]:
                 ss_media["screenshot_url"] = strip_sensitive_query_params(
@@ -546,6 +582,29 @@ def extract_media_from_ss_game(rom: Rom, game: SSGame) -> SSMetadataMedia:
                         f"{fs_resource_handler.get_media_resources_path(rom.platform_id, rom.id, MetadataMediaType.VIDEO_NORMALIZED)}/video-normalized.mp4"
                     )
 
+    if physical_urls:
+        first_disc, *extra_discs = sorted(physical_urls)
+        store_physical = MetadataMediaType.PHYSICAL in preferred_media_types
+        physical_dir = fs_resource_handler.get_media_resources_path(
+            rom.platform_id, rom.id, MetadataMediaType.PHYSICAL
+        )
+        ss_media["physical_url"] = physical_urls[first_disc]
+        ss_media["physical_disc"] = first_disc
+        if store_physical:
+            ss_media["physical_path"] = f"{physical_dir}/physical.png"
+        ss_media["physical_extra_discs"] = [
+            SSPhysicalDisc(
+                disc=disc,
+                url=physical_urls[disc],
+                path=(
+                    f"{physical_dir}/physical_disc{disc}.png"
+                    if store_physical
+                    else None
+                ),
+            )
+            for disc in extra_discs
+        ]
+
     return ss_media
 
 
@@ -560,17 +619,7 @@ def extract_metadata_from_ss_rom(rom: Rom, game: SSGame) -> SSMetadata:
             return ""
 
     def _parse_date(date_text: str) -> int | None:
-        # Release dates are date-only, so pin them to UTC midnight; a naive
-        # `.timestamp()` would read them as local time and shift by the host's
-        # UTC offset.
-        try:
-            dt = datetime.strptime(date_text, "%Y-%m-%d")
-        except ValueError:
-            try:
-                dt = datetime.strptime(date_text, "%Y")
-            except ValueError:
-                return None
-        return int(dt.replace(tzinfo=timezone.utc).timestamp())
+        return parse_utc_timestamp(date_text, ("%Y-%m-%d", "%Y"))
 
     def _get_lowest_date(dates: list[SSGameDate]) -> int | None:
         if not dates:
@@ -657,9 +706,112 @@ def extract_metadata_from_ss_rom(rom: Rom, game: SSGame) -> SSMetadata:
             "franchises": _get_franchises(game),
             "game_modes": _get_game_modes(game),
             "player_count": _get_player_count(game),
-            **extract_media_from_ss_game(rom, game),
+            # The media dict never carries the dump_* keys extra_checks asks about.
+            **extract_media_from_ss_game(rom, game),  # type: ignore[typeddict-item]
         }
     )
+
+
+def find_ss_dump(game: SSGame, hashes: LookupHashes) -> SSGameRom | None:
+    """The entry in `jeu.roms` our own file is, by hash, or None.
+
+    `jeu.romid` names a dump of the game that is not necessarily the one asked
+    about, so the hashes decide instead. Nothing else in the response is
+    specific to the copy on disk.
+    """
+    wanted = {
+        key: value.lower()
+        for key, value in (
+            ("rommd5", hashes.md5),
+            ("romsha1", hashes.sha1),
+            ("romcrc", hashes.crc),
+        )
+        if value
+    }
+    if not wanted:
+        return None
+
+    for dump in game.get("roms") or []:
+        if not isinstance(dump, dict):
+            continue
+        if any(
+            str(dump.get(key, "")).lower() == value for key, value in wanted.items()
+        ):
+            return dump
+
+    return None
+
+
+def extract_regions_from_ss_dump(dump: SSGameRom) -> list[str]:
+    """Regions of one dump. Its buckets name no place, so they are dropped."""
+    codes = (dump.get("regions") or {}).get("regions_shortname") or []
+    return normalize_provider_regions(
+        code
+        for code in codes
+        if isinstance(code, str) and code.strip().lower() not in _SS_PSEUDO_REGIONS
+    )
+
+
+def extract_languages_from_ss_dump(dump: SSGameRom) -> list[str]:
+    """Languages of one dump, which a translation carries its target in."""
+    codes = (dump.get("langues") or {}).get("langues_shortname") or []
+    return normalize_provider_languages(code for code in codes if isinstance(code, str))
+
+
+# The dump flags naming something parse_tags spells the same way, so a hash
+# match and a filename land on one facet value rather than two. ScreenScraper
+# also sends `unl`, left out because no filename tag answers to it.
+_SS_DUMP_FLAG_TAGS: Final = (
+    ("trad", TRANSLATION_TAG),
+    ("hack", "Hack"),
+    ("beta", "Beta"),
+    ("demo", "Demo"),
+)
+
+
+def extract_tags_from_ss_dump(dump: SSGameRom) -> list[str]:
+    """Tags of one dump, from the flags it raises."""
+    # ScreenScraper sends these flags as "1", not 1.
+    return [
+        tag for key, tag in _SS_DUMP_FLAG_TAGS if str(dump.get(key, "")).strip() == "1"
+    ]
+
+
+def _apply_ss_dump(game_rom: SSRom, game: SSGame, file: RomFile | None) -> None:
+    """Attach the tags of the dump our own hashes match, if any is ours."""
+    if file is None:
+        return
+
+    dump = find_ss_dump(
+        game,
+        LookupHashes(crc=file.crc_hash, md5=file.md5_hash, sha1=file.sha1_hash),
+    )
+    if dump is None:
+        return
+
+    game_rom["regions"] = extract_regions_from_ss_dump(dump)
+    game_rom["languages"] = extract_languages_from_ss_dump(dump)
+    game_rom["tags"] = extract_tags_from_ss_dump(dump)
+
+
+def primary_lookup_file(rom: Rom, files: list[RomFile]) -> RomFile | None:
+    """The file whose hashes identify this ROM to ScreenScraper, or None.
+
+    The largest top-level file, which carries the complete digests; a platform
+    that names its own extensions is restricted to those.
+    """
+    filtered_files = [
+        file
+        for file in files
+        if file.file_size_bytes > 0
+        and file.is_top_level
+        and (
+            UPS(rom.platform_slug) not in ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG
+            or file.file_extension
+            in ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG[UPS(rom.platform_slug)]
+        )
+    ]
+    return max(filtered_files, key=lambda f: f.file_size_bytes, default=None)
 
 
 def build_ss_game(rom: Rom, game: SSGame) -> SSRom:
@@ -730,7 +882,7 @@ def build_ss_game(rom: Rom, game: SSGame) -> SSRom:
         "ss_metadata": ss_metadata,
     }
 
-    return SSRom({k: v for k, v in game_rom.items() if v})  # type: ignore[misc]
+    return cast(SSRom, {k: v for k, v in game_rom.items() if v})
 
 
 class SSHandler(MetadataHandler):
@@ -749,24 +901,16 @@ class SSHandler(MetadataHandler):
         return bool(SCREENSCRAPER_DEV_ID and SCREENSCRAPER_DEV_PASSWORD)
 
     async def heartbeat(self) -> bool:
-        if not self.is_enabled():
-            return False
-
-        try:
+        async def probe() -> bool:
             response = await self.ss_service.get_infra_info()
-        except Exception as e:
-            log.error("Error checking ScreenScraper API: %s", e)
-            return False
+            return bool(response and response.get("response"))
 
-        return bool(response.get("response", {}))
+        return await self._heartbeat("ScreenScraper API", probe)
 
     @staticmethod
     def extract_ss_id_from_filename(fs_name: str) -> int | None:
-        """Extract ScreenScraper ID from filename tag like (ss-12345)."""
-        match = SS_TAG_REGEX.search(fs_name)
-        if match:
-            return int(match.group(1))
-        return None
+        """Extract ScreenScraper ID from filename tag like (ssfr-12345)."""
+        return tag_id_from_filename(SS_TAG_REGEX, fs_name)
 
     async def _search_rom(
         self, search_term: str, platform_ss_id: int, split_game_name: bool = False
@@ -817,6 +961,11 @@ class SSHandler(MetadataHandler):
             name=platform["name"],
         )
 
+    def get_platform_alternative_names(self, slug: str) -> list[str]:
+        if slug not in SCREENSAVER_PLATFORM_LIST:
+            return []
+        return SCREENSAVER_PLATFORM_LIST[UPS(slug)].get("alternative_names", [])
+
     async def lookup_rom(
         self, rom: Rom, platform_ss_id: int, files: list[RomFile]
     ) -> tuple[SSRom, bool]:
@@ -826,23 +975,7 @@ class SSHandler(MetadataHandler):
         if not platform_ss_id:
             return SSRom(ss_id=None), False
 
-        filtered_files = [
-            file
-            for file in files
-            if file.file_size_bytes > 0
-            and file.is_top_level
-            and (
-                UPS(rom.platform_slug)
-                not in ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG
-                or file.file_extension
-                in ACCEPTABLE_FILE_EXTENSIONS_BY_PLATFORM_SLUG[UPS(rom.platform_slug)]
-            )
-        ]
-
-        # Select the largest file by size, as it is most likely to be the main ROM file.
-        # This increases the accuracy of metadata lookups, since the largest file is
-        # expected to have the correct and complete hash values for external services.
-        first_file = max(filtered_files, key=lambda f: f.file_size_bytes, default=None)
+        first_file = primary_lookup_file(rom, files)
         if first_file is None:
             return SSRom(ss_id=None), False
 
@@ -859,8 +992,8 @@ class SSHandler(MetadataHandler):
 
         # Files on NON_HASHABLE_PLATFORMS (or any file when SKIP_HASH_CALCULATION
         # is enabled) have no hashes. jeuInfos can still identify the game from the
-        # filename (romnom) + platform (systemeid) — a stronger matcher than the
-        # jeuRecherche name search the get_rom fallback uses — so only bail out when
+        # filename (romnom) + platform (systemeid), which is a stronger matcher than the
+        # jeuRecherche name search the get_rom fallback uses, so only bail out when
         # we have neither a hash nor a filename to match on.
         if not (md5_hash or sha1_hash or crc_hash or rom_name):
             log.info(
@@ -893,7 +1026,13 @@ class SSHandler(MetadataHandler):
             )
             return SSRom(ss_id=None), True
 
-        return build_ss_game(rom, res), False
+        # Tags describe the dump, so they are read only off the entry our own
+        # hash matched: jeuInfos also answers a bare romnom, which identifies a
+        # title the way the name search does.
+        game_rom = build_ss_game(rom, res)
+        _apply_ss_dump(game_rom, res, first_file)
+
+        return game_rom, False
 
     async def get_rom(self, rom: Rom, file_name: str, platform_ss_id: int) -> SSRom:
         from handler.filesystem import fs_rom_handler
@@ -925,65 +1064,14 @@ class SSHandler(MetadataHandler):
         if not search_term:
             return fallback_rom
 
-        # Support for PS2 OPL filename format
-        match = PS2_OPL_REGEX.match(file_name)
-        if platform_ss_id == PS2_SS_ID and match:
-            search_term = await self._ps2_opl_format(match, search_term)
-            fallback_rom = SSRom(ss_id=None, name=search_term)
-
-        # Support for sony serial filename format (PS, PS3, PS3)
-        match = SONY_SERIAL_REGEX.search(file_name)
-        if platform_ss_id == PS1_SS_ID and match:
-            search_term = await self._ps1_serial_format(match, search_term)
-            fallback_rom = SSRom(ss_id=None, name=search_term)
-
-        if platform_ss_id == PS2_SS_ID and match:
-            search_term = await self._ps2_serial_format(match, search_term)
-            fallback_rom = SSRom(ss_id=None, name=search_term)
-
-        if platform_ss_id == PSP_SS_ID and match:
-            search_term = await self._psp_serial_format(match, search_term)
-            fallback_rom = SSRom(ss_id=None, name=search_term)
-
-        # Support for switch titleID filename format
-        match = SWITCH_TITLEDB_REGEX.search(file_name)
-        if platform_ss_id == SWITCH_SS_ID and match:
-            search_term, index_entry = await self._switch_titledb_format(
-                match, search_term
-            )
-            if index_entry:
-                fallback_rom = SSRom(
-                    ss_id=None,
-                    name=index_entry["name"],
-                    summary=index_entry.get("description", ""),
-                    url_cover=index_entry.get("iconUrl", ""),
-                    url_screenshots=index_entry.get("screenshots", None) or [],
-                )
-
-        # Support for switch productID filename format
-        if platform_ss_id == SWITCH_SS_ID:
-            search_term, index_entry = await self._switch_productid_format(
-                rom, file_name, search_term
-            )
-            if index_entry:
-                fallback_rom = SSRom(
-                    ss_id=None,
-                    name=index_entry["name"],
-                    summary=index_entry.get("description", ""),
-                    url_cover=index_entry.get("iconUrl", ""),
-                    url_screenshots=index_entry.get("screenshots", None) or [],
-                )
-
-        # Support for MAME arcade filename format
-        if platform_ss_id in ARCADES_SS_IDS:
-            search_term = await self._mame_format(search_term)
-            fallback_rom = SSRom(ss_id=None, name=search_term)
-
-        # Support for ScummVM filename format
-        scummvm_platform = self.get_platform(UPS.SCUMMVM)
-        if platform_ss_id == scummvm_platform.get("ss_id"):
-            search_term = await self._scummvm_format(search_term)
-            fallback_rom = SSRom(ss_id=None, name=search_term)
+        search_term = await self._resolve_indexed_title(
+            rom,
+            file_name,
+            search_term,
+            platform_ss_id,
+            SS_INDEXED_FORMAT_PLATFORMS,
+            fallback_rom,
+        )
 
         ## SS API requires punctuation to match
         normalized_search_term = self.normalize_search_term(
@@ -1011,7 +1099,14 @@ class SSHandler(MetadataHandler):
 
         return build_ss_game(rom, res)
 
-    async def get_rom_by_id(self, rom: Rom, ss_id: int) -> SSRom:
+    async def get_rom_by_id(
+        self, rom: Rom, ss_id: int, files: list[RomFile] | None = None
+    ) -> SSRom:
+        """Refetch a game by its ScreenScraper id.
+
+        Args:
+            files: the ROM's files, when the dump-specific tags are wanted too.
+        """
         if not self.is_enabled():
             return SSRom(ss_id=None)
 
@@ -1024,7 +1119,11 @@ class SSHandler(MetadataHandler):
         if not res:
             return SSRom(ss_id=None)
 
-        return build_ss_game(rom, res)
+        game_rom = build_ss_game(rom, res)
+        if files is not None:
+            _apply_ss_dump(game_rom, res, primary_lookup_file(rom, files))
+
+        return game_rom
 
     async def get_matched_rom_by_id(self, rom: Rom, ss_id: int) -> SSRom | None:
         if not self.is_enabled():
@@ -1072,118 +1171,617 @@ class SSHandler(MetadataHandler):
 class SlugToSSId(TypedDict):
     id: int
     name: str
+    alternative_names: NotRequired[list[str]]
 
 
 SCREENSAVER_PLATFORM_LIST: dict[UPS, SlugToSSId] = {
-    UPS._3DO: {"id": 29, "name": "3DO"},
-    UPS.AMIGA: {"id": 64, "name": "Amiga"},
-    UPS.AMIGA_CD: {"id": 134, "name": "Amiga CD"},
-    UPS.AMIGA_CD32: {"id": 130, "name": "Amiga CD32"},
-    UPS.ACPC: {"id": 65, "name": "CPC"},
-    UPS.ACTION_MAX: {"id": 81, "name": "Action Max"},
+    UPS._3DO: {
+        "id": 29,
+        "name": "3DO",
+        "alternative_names": [
+            "Panasonic 3DO Interactive Multiplayer",
+            "Panasonic 3DO",
+            "3DO Interactive Multiplayer",
+        ],
+    },
+    UPS.AMIGA: {
+        "id": 64,
+        "name": "Amiga",
+        "alternative_names": [
+            "Commodore Amiga",
+            "Commodore Amiga 500",
+            "Commodore Amiga 1200",
+            "Commodore Amiga 600",
+            "Commodore Amiga 2000",
+            "Commodore Amiga 3000",
+            "Commodore Amiga 4000",
+            "Commodore Amiga 500+",
+            "Commodore Amiga 1000",
+            "Commodore A500",
+            "Commodore A1200",
+            "Commodore A600",
+            "Commodore A2000",
+            "Commodore A3000",
+            "Commodore A4000",
+            "Commodore A500+",
+            "Commodore A1000",
+            "Amiga 500",
+            "Amiga 1200",
+            "Amiga 600",
+            "Amiga 2000",
+            "Amiga 3000",
+            "Amiga 4000",
+            "Amiga 500+",
+            "Amiga 1000",
+            "A500",
+            "A1200",
+            "A600",
+            "A2000",
+            "A3000",
+            "A4000",
+            "A500+",
+            "A1000",
+        ],
+    },
+    UPS.AMIGA_CD: {
+        "id": 134,
+        "name": "Amiga CD",
+        "alternative_names": ["Commodore Amiga CD"],
+    },
+    UPS.AMIGA_CD32: {
+        "id": 130,
+        "name": "Amiga CD32",
+        "alternative_names": ["Commodore Amiga CD32"],
+    },
+    UPS.ACPC: {
+        "id": 65,
+        "name": "CPC",
+        "alternative_names": [
+            "Amstrad CPC 464",
+            "Amstrad CPC 472",
+            "Amstrad CPC 664",
+            "Amstrad CPC 6128",
+            "Amstrad CPC 464 Plus",
+            "Amstrad CPC 6128 Plus",
+            "Amstrad CPC 464+",
+            "Amstrad CPC 6128+",
+            "Amstrad 464 Plus",
+            "Amstrad 6128 Plus",
+            "Amstrad 464+",
+            "Amstrad 6128+",
+            "CPC 464",
+            "CPC 472",
+            "CPC 664",
+            "CPC 6128",
+            "CPC 464 Plus",
+            "CPC 6128 Plus",
+            "CPC 464+",
+            "CPC 6128+",
+            "464 Plus",
+            "6128 Plus",
+            "464+",
+            "6128+",
+        ],
+    },
+    UPS.ACTION_MAX: {
+        "id": 81,
+        "name": "Action Max",
+        "alternative_names": ["World of Wonder Action Max", "WoW Action Max"],
+    },
     UPS.ADVENTURE_VISION: {
         "id": 78,
         "name": "Entex Adventure Vision",
+        "alternative_names": ["Adventure Vision"],
     },
-    UPS.AMSTRAD_GX4000: {"id": 87, "name": "Amstrad GX4000"},
+    UPS.AMSTRAD_GX4000: {
+        "id": 87,
+        "name": "Amstrad GX4000",
+        "alternative_names": ["GX4000", "Amstrad GX-4000", "GX-4000"],
+    },
     UPS.ANDROID: {"id": 63, "name": "Android"},
     UPS.APPLE: {"id": 86, "name": "Apple I"},
     UPS.APPLEIII: {"id": 86, "name": "Apple III"},
     UPS.APPLEII: {"id": 86, "name": "Apple II"},
     UPS.APPLE_IIGS: {"id": 51, "name": "Apple IIGS"},
-    UPS.ARCADE: {"id": ARCADE_SS_ID, "name": "Arcade"},
-    UPS.ARCADIA_2001: {"id": 94, "name": "Arcadia 2001"},
+    UPS.ARCADE: {
+        "id": ARCADE_SS_ID,
+        "name": "Arcade",
+        "alternative_names": [
+            "Mame",
+            "FBA",
+            "MESS",
+            "MAME4ALL",
+            "AdvanceMAME",
+            "AdvMAME",
+            "MAME-LibRetro",
+            "MAME-MAME4ALL",
+            "MAME-ADVMAME",
+            "FBA-LibRetro",
+        ],
+    },
+    UPS.ARCADIA_2001: {
+        "id": 94,
+        "name": "Arcadia 2001",
+        "alternative_names": [
+            "Emerson Radio Arcadia 2001",
+            "Emerson 2001",
+            "Advision Home Arcade",
+            "Bandai Arcadia",
+            "Tele-Fever",
+            "Leonardo",
+            "HMG-2650",
+            "Home Arcade Centre",
+            "Intercord XL 2000 System",
+            "Leisure-Vision",
+            "Tunix Home Arcade",
+            "Schmid TVG-2000",
+            "Tele-computer Cosmos",
+            "Intelligent Game MPT-03",
+            "Hanimex MPT-03",
+            "ITMC MPT-03",
+            "Dynavision",
+            "P.I.C Ekusera",
+            "Poppy MPT-03 Tele Computer Spiel",
+            "Prestige Video Computer Game MPT-03",
+            "Rowtron 2000",
+            "Rowtron Video Computer Game MPT-03",
+            "Soundic MPT-03",
+            "Tempest Video Computer Game",
+            "Tobby MPT-03",
+            "Tryom Video Game Center",
+            "GrandStand Video Master",
+            "UVI Compu-Game",
+            "Intervision 2001",
+            "Ormatu 2001",
+            "Sheen Home Video Centre 2001",
+            "Tele Brain",
+            "Palladium Video Computer Game",
+            "Polybrain Video Computer Game",
+            "Trakton Computer Video Game",
+        ],
+    },
     UPS.ARDUBOY: {"id": 263, "name": "Arduboy"},
-    UPS.ATARI2600: {"id": 26, "name": "Atari 2600"},
-    UPS.ATARI5200: {"id": 40, "name": "Atari 5200"},
-    UPS.ATARI7800: {"id": 41, "name": "Atari 7800"},
+    UPS.ATARI2600: {
+        "id": 26,
+        "name": "Atari 2600",
+        "alternative_names": ["Atari2600", "A2600", "2600"],
+    },
+    UPS.ATARI5200: {
+        "id": 40,
+        "name": "Atari 5200",
+        "alternative_names": ["A5200", "5200"],
+    },
+    UPS.ATARI7800: {
+        "id": 41,
+        "name": "Atari 7800",
+        "alternative_names": ["A7800", "7800"],
+    },
     UPS.ATARI800: {"id": 43, "name": "Atari 800"},
     UPS.ATARI_XEGS: {"id": 43, "name": "Atari XEGS"},
     UPS.ATARI8BIT: {"id": 43, "name": "Atari 8bit"},
-    UPS.ATARI_JAGUAR_CD: {"id": 171, "name": "Atari Jaguar CD"},
-    UPS.ATARI_ST: {"id": 42, "name": "Atari ST"},
-    UPS.ATOM: {"id": 36, "name": "Atom"},
-    UPS.ACORN_ARCHIMEDES: {"id": 84, "name": "Acorn Archimedes"},
+    UPS.ATARI_JAGUAR_CD: {
+        "id": 171,
+        "name": "Atari Jaguar CD",
+        "alternative_names": ["Jaguar CD", "Atari Jaguar CD-Rom", "Jaguar CD-Rom"],
+    },
+    UPS.ATARI_ST: {
+        "id": 42,
+        "name": "Atari ST",
+        "alternative_names": [
+            "Atari STE",
+            "Atari 520 ST",
+            "Atari 1040 ST",
+            "520 ST",
+            "1040 ST",
+        ],
+    },
+    UPS.ATOM: {"id": 36, "name": "Atom", "alternative_names": ["Acorn ATOM"]},
+    UPS.ACORN_ARCHIMEDES: {
+        "id": 84,
+        "name": "Acorn Archimedes",
+        "alternative_names": ["Archimedes"],
+    },
     UPS.ATMOS: {"id": 131, "name": "Oric Atmos"},
-    UPS.BBCMICRO: {"id": 37, "name": "BBC Micro"},
-    UPS.BK: {"id": 93, "name": "Elektronika BK"},
-    UPS.ASTROCADE: {"id": 44, "name": "Astrocade"},
-    UPS.PHILIPS_CD_I: {"id": 133, "name": "CD-i"},
-    UPS.COMMODORE_CDTV: {"id": 129, "name": "Amiga CDTV"},
-    UPS.CAMPUTERS_LYNX: {"id": 88, "name": "Camputers Lynx"},
-    UPS.CASIO_LOOPY: {"id": 98, "name": "Loopy"},
-    UPS.CASIO_PV_1000: {"id": 74, "name": "PV-1000"},
-    UPS.FAIRCHILD_CHANNEL_F: {"id": 80, "name": "Channel F"},
-    UPS.COLECOADAM: {"id": 89, "name": "Coleco Adam"},
+    UPS.BBCMICRO: {
+        "id": 37,
+        "name": "BBC Micro",
+        "alternative_names": [
+            "Acorn BBC Microcomputer System",
+            "BBC Microcomputer System",
+            "Acorn BBC Micro",
+        ],
+    },
+    UPS.BK: {
+        "id": 93,
+        "name": "Elektronika BK",
+        "alternative_names": [
+            "BK",
+            "Electonika BK",
+            "Electonika BK-0010",
+            "Electonika BK-0010.01",
+            "Electonika BK-0010Sh",
+            "Electonika BK-0011",
+            "Electonika BK-0011M",
+            "BK-0010",
+            "BK-0010.01",
+            "BK-0010Sh",
+            "BK-0011",
+            "BK-0011M",
+        ],
+    },
+    UPS.ASTROCADE: {
+        "id": 44,
+        "name": "Astrocade",
+        "alternative_names": ["Bally Astrocade"],
+    },
+    UPS.PHILIPS_CD_I: {
+        "id": 133,
+        "name": "CD-i",
+        "alternative_names": ["Philips CD-I"],
+    },
+    UPS.COMMODORE_CDTV: {
+        "id": 129,
+        "name": "Amiga CDTV",
+        "alternative_names": ["Commodore Amiga CDTV", "Amliga CDTV", "CDTV"],
+    },
+    UPS.CAMPUTERS_LYNX: {
+        "id": 88,
+        "name": "Camputers Lynx",
+        "alternative_names": [
+            "Camputers Lynx 48",
+            "Camputers Lynx 96",
+            "Camputers Lynx 128",
+            "Lynx 48",
+            "Lynx 96",
+            "Lynx 128",
+        ],
+    },
+    UPS.CASIO_LOOPY: {"id": 98, "name": "Loopy", "alternative_names": ["Casio Loopy"]},
+    UPS.CASIO_PV_1000: {
+        "id": 74,
+        "name": "PV-1000",
+        "alternative_names": ["Casio PV-1000"],
+    },
+    UPS.FAIRCHILD_CHANNEL_F: {
+        "id": 80,
+        "name": "Channel F",
+        "alternative_names": [
+            "Fairchild Channel F",
+            "Fairchild Video Entertainment System",
+            "Fairchild VES",
+            "Video Entertainment System",
+            "VES",
+        ],
+    },
+    UPS.COLECOADAM: {"id": 89, "name": "Coleco Adam", "alternative_names": ["Adam"]},
     UPS.COLECOVISION: {"id": 48, "name": "Colecovision"},
-    UPS.COLOUR_GENIE: {"id": 92, "name": "EG2000 Colour Genie"},
-    UPS.C128: {"id": 66, "name": "Commodore 64"},
+    UPS.COLOUR_GENIE: {
+        "id": 92,
+        "name": "EG2000 Colour Genie",
+        "alternative_names": [
+            "EACA EG-2000 Colour Genie",
+            "EACA Colour Genie",
+            "EACA EG-2000",
+            "Colour Genie",
+            "EG-2000",
+        ],
+    },
+    # ScreenScraper files C128 under its C64 system; keep the display name distinct.
+    UPS.C128: {"id": 66, "name": "Commodore 128"},
     UPS.C_PLUS_4: {"id": 99, "name": "Plus/4"},
     UPS.C16: {"id": 99, "name": "Plus/4"},
     UPS.C64: {"id": 66, "name": "Commodore 64"},
-    UPS.CPS1: {"id": CPS1_SS_ID, "name": "Capcom Play System"},
-    UPS.CPS2: {"id": CPS2_SS_ID, "name": "Capcom Play System 2"},
-    UPS.CPS3: {"id": CPS3_SS_ID, "name": "Capcom Play System 3"},
+    UPS.CPS1: {
+        "id": CPS1_SS_ID,
+        "name": "Capcom Play System",
+        "alternative_names": [
+            "Capcom Play System 1",
+            "Capcom Play System I",
+            "CPS 1",
+            "CPS I",
+        ],
+    },
+    UPS.CPS2: {
+        "id": CPS2_SS_ID,
+        "name": "Capcom Play System 2",
+        "alternative_names": ["Capcom Play System II", "CPS 2", "CPS II"],
+    },
+    UPS.CPS3: {
+        "id": CPS3_SS_ID,
+        "name": "Capcom Play System 3",
+        "alternative_names": ["Capcom Play System III", "CPS 3", "CPS III"],
+    },
     UPS.CPET: {"id": 240, "name": "PET"},
     UPS.CREATIVISION: {"id": 241, "name": "CreatiVision"},
-    UPS.DOOM: {"id": 290, "name": "Doom"},
-    UPS.DOS: {"id": 135, "name": "PC Dos"},
-    UPS.DRAGON_32_SLASH_64: {"id": 91, "name": "Dragon 32/64"},
-    UPS.DC: {"id": 23, "name": "Dreamcast"},
-    UPS.ACORN_ELECTRON: {"id": 85, "name": "Electron"},
+    UPS.DOOM: {"id": 290, "name": "Doom", "alternative_names": ["PrBoom"]},
+    UPS.DOS: {
+        "id": 135,
+        "name": "PC Dos",
+        "alternative_names": [
+            "Microsoft MS-DOS",
+            "Microsoft DOS",
+            "DOS",
+            "MS-DOS",
+            "PC-DOS",
+            "PC",
+            "DosBox",
+            "eXoDos",
+            "Total DOS Collection",
+            "Total DOS",
+            "PrBoom",
+        ],
+    },
+    UPS.DRAGON_32_SLASH_64: {
+        "id": 91,
+        "name": "Dragon 32/64",
+        "alternative_names": ["Dragon 32", "Dragon 64"],
+    },
+    UPS.DC: {
+        "id": 23,
+        "name": "Dreamcast",
+        "alternative_names": ["Sega Dreamcast", "Sega DC", "DC"],
+    },
+    UPS.ACORN_ELECTRON: {
+        "id": 85,
+        "name": "Electron",
+        "alternative_names": ["Acorn Electron"],
+    },
     UPS.EPOCH_GAME_POCKET_COMPUTER: {
         "id": 95,
         "name": "Game Pocket Computer",
+        "alternative_names": ["Epoch Game Pocket Computer"],
     },
     UPS.EPOCH_SUPER_CASSETTE_VISION: {
         "id": 67,
         "name": "Super Cassette Vision",
+        "alternative_names": [
+            "Yeno Super Cassette Vision",
+            "Epoch Super Cassette Vision",
+        ],
     },
-    UPS.EXELVISION: {"id": 96, "name": "EXL 100"},
+    UPS.EXELVISION: {
+        "id": 96,
+        "name": "EXL 100",
+        "alternative_names": ["Exelvision EXL 100"],
+    },
     UPS.EXIDY_SORCERER: {"id": 165, "name": "Exidy"},
     UPS.FM_TOWNS: {"id": 253, "name": "FM Towns"},
-    UPS.FM_7: {"id": 97, "name": "FM-7"},
-    UPS.G_AND_W: {"id": 52, "name": "Game & Watch"},
-    UPS.GP32: {"id": 101, "name": "GP32"},
-    UPS.GB: {"id": 9, "name": "Game Boy"},
-    UPS.GBA: {"id": 12, "name": "Game Boy Advance"},
-    UPS.GBC: {"id": 10, "name": "Game Boy Color"},
+    UPS.FM_7: {
+        "id": 97,
+        "name": "FM-7",
+        "alternative_names": [
+            "Fujitsu FM-7",
+            "Fujitsu Micro 7",
+            "FM-NEW 7",
+            "FM-77",
+            "FM-77AV",
+            "FM-8",
+        ],
+    },
+    UPS.G_AND_W: {
+        "id": 52,
+        "name": "Game & Watch",
+        "alternative_names": [
+            "Nintendo Game & Watch",
+            "Nintendo Game and Watch",
+            "Game and Watch",
+            "Nintendo Game'n'Watch",
+            "Game'n'Watch",
+            "G&W",
+            "GW",
+        ],
+    },
+    UPS.GP32: {"id": 101, "name": "GP32", "alternative_names": ["Game Park 32"]},
+    UPS.GB: {
+        "id": 9,
+        "name": "Game Boy",
+        "alternative_names": ["Nintendo Game Boy", "Nintendo GB", "GB"],
+    },
+    UPS.GBA: {
+        "id": 12,
+        "name": "Game Boy Advance",
+        "alternative_names": [
+            "Nintendo GameBoy Advance",
+            "GameBoy Advance",
+            "Nintendo GB Advance",
+            "Nintendo GBA",
+            "GB Advance",
+            "GBA",
+        ],
+    },
+    UPS.GBC: {
+        "id": 10,
+        "name": "Game Boy Color",
+        "alternative_names": [
+            "Nintendo Game Boy Color",
+            "Nintendo GB Color",
+            "Nintendo GBC",
+            "GB Color",
+            "GBC",
+        ],
+    },
     UPS.GAMATE: {"id": 266, "name": "Gamate"},
-    UPS.GAMEGEAR: {"id": 21, "name": "Game Gear"},
-    UPS.GAME_DOT_COM: {"id": 121, "name": "Game.com"},
-    UPS.NGC: {"id": 13, "name": "GameCube"},
-    UPS.GENESIS: {"id": 1, "name": "Megadrive"},
-    UPS.HARTUNG: {"id": 103, "name": "Game Master"},
-    UPS.HIKARU: {"id": 258, "name": "Sega Hikaru"},
-    UPS.INTELLIVISION: {"id": 115, "name": "Intellivision"},
-    UPS.JAGUAR: {"id": 27, "name": "Jaguar"},
-    UPS.MODEL2: {"id": 54, "name": "Sega Model 2"},
-    UPS.MODEL3: {"id": 55, "name": "Sega Model 3"},
-    UPS.MSX2PLUS: {"id": 117, "name": "Microsoft MSX2+"},
-    UPS.JUPITER_ACE: {"id": 126, "name": "Jupiter Ace"},
+    UPS.GAMEGEAR: {
+        "id": 21,
+        "name": "Game Gear",
+        "alternative_names": ["Sega Game Gear", "Sega GG", "GG"],
+    },
+    UPS.GAME_DOT_COM: {
+        "id": 121,
+        "name": "Game.com",
+        "alternative_names": ["Tiger Game.com"],
+    },
+    UPS.NGC: {
+        "id": 13,
+        "name": "GameCube",
+        "alternative_names": [
+            "Nintendo Game Cube",
+            "Game Cube",
+            "Nintendo GC",
+            "NGC",
+            "GC",
+        ],
+    },
+    UPS.GENESIS: {
+        "id": 1,
+        "name": "Megadrive",
+        "alternative_names": [
+            "Genesis",
+            "Sega Megadrive",
+            "Sega Genesis",
+            "Super Aladdin Boy",
+        ],
+    },
+    UPS.HARTUNG: {
+        "id": 103,
+        "name": "Game Master",
+        "alternative_names": [
+            "Hartung Game Master",
+            "Systema 2000",
+            "Super Game",
+            "Game Tronic",
+        ],
+    },
+    UPS.HIKARU: {"id": 258, "name": "Sega Hikaru", "alternative_names": ["Hikaru"]},
+    UPS.INTELLIVISION: {
+        "id": 115,
+        "name": "Intellivision",
+        "alternative_names": [
+            "Mattel Intellivision",
+            "Mattel Intelliputer",
+            "Intelliputer",
+            "Mattel Intellivision II",
+            "Intellivision II",
+            "Mattel Intellivision 2",
+            "Intellivision 2",
+            "Mattel ECS",
+            "INTV III",
+            "INTV Super Pro System",
+            "Super Pro System",
+        ],
+    },
+    UPS.JAGUAR: {"id": 27, "name": "Jaguar", "alternative_names": ["Atari Jaguar"]},
+    UPS.MODEL2: {
+        "id": 54,
+        "name": "Sega Model 2",
+        "alternative_names": ["Model 2", "Sega Model II", "Model II"],
+    },
+    UPS.MODEL3: {
+        "id": 55,
+        "name": "Sega Model 3",
+        "alternative_names": ["Model 3", "Sega Model III", "Model III"],
+    },
+    UPS.MSX2PLUS: {
+        "id": 117,
+        "name": "Microsoft MSX2+",
+        "alternative_names": ["MSX2+", "Microsoft MSX2Plus", "MSX2Plus"],
+    },
+    UPS.JUPITER_ACE: {
+        "id": 126,
+        "name": "Jupiter Ace",
+        "alternative_names": ["Ace4000", "Jupiter Ace 4000", "Ace 4000"],
+    },
     UPS.LINUX: {"id": 145, "name": "Linux"},
-    UPS.LYNX: {"id": 28, "name": "Lynx"},
-    UPS.MSX: {"id": 113, "name": "MSX"},
-    UPS.MSX2: {"id": 116, "name": "MSX2"},
-    UPS.MSX_TURBO: {"id": 118, "name": "MSX Turbo R"},
-    UPS.MAC: {"id": 146, "name": "Mac OS"},
-    UPS.MEGA_DUCK_SLASH_COUGAR_BOY: {"id": 90, "name": "Mega Duck"},
-    UPS.NGAGE: {"id": 30, "name": "N-Gage"},
+    UPS.LYNX: {"id": 28, "name": "Lynx", "alternative_names": ["Atari Lynx"]},
+    UPS.MSX: {
+        "id": 113,
+        "name": "MSX",
+        "alternative_names": ["Microsoft MSX", "Microsoft MSX1", "MSX1"],
+    },
+    UPS.MSX2: {"id": 116, "name": "MSX2", "alternative_names": ["Microsoft MSX2"]},
+    UPS.MSX_TURBO: {
+        "id": 118,
+        "name": "MSX Turbo R",
+        "alternative_names": ["Microsoft MSX R Turbo", "MSX-R Turbo"],
+    },
+    UPS.MAC: {
+        "id": 146,
+        "name": "Mac OS",
+        "alternative_names": [
+            "Apple Mac-OS",
+            "Apple Mac-OSX",
+            "Apple OS",
+            "Apple OSX",
+            "Mac-OSX",
+            "Mac-OS",
+            "OSX",
+        ],
+    },
+    UPS.MEGA_DUCK_SLASH_COUGAR_BOY: {
+        "id": 90,
+        "name": "Mega Duck",
+        "alternative_names": ["Cougar Boy"],
+    },
+    UPS.NGAGE: {"id": 30, "name": "N-Gage", "alternative_names": ["Nokia N-Gage"]},
     UPS.NES: {"id": 3, "name": "NES"},
     UPS.FAMICOM: {"id": 3, "name": "Famicom"},
-    UPS.FDS: {"id": 106, "name": "Famicom"},
-    UPS.NEOGEOAES: {"id": 142, "name": "Neo-Geo"},
-    UPS.NEOGEOMVS: {"id": 68, "name": "Neo-Geo MVS"},
-    UPS.NEO_GEO_CD: {"id": 70, "name": "Neo-Geo CD"},
-    UPS.NEO_GEO_POCKET: {"id": 25, "name": "Neo-Geo Pocket"},
+    UPS.FDS: {
+        "id": 106,
+        "name": "Famicom",
+        "alternative_names": [
+            "Family Computer Disk System",
+            "Famiri Konpyuta Disuku Shisutemu",
+            "Nintendo Family Computer Disk System",
+            "Nintendo Famicom Disk System",
+            "Nintendo Famiri Konpyuta Disuku Shisutemu",
+            "Nintendo Famikom Disk System",
+            "Nintendo FDS",
+            "Nintendo FCDS",
+            "Nintendo FCD",
+            "Nintendo FKDS",
+            "Famicom Disk System",
+            "Famikom Disk System",
+            "FDS",
+            "FCDS",
+            "FCD",
+            "FKDS",
+        ],
+    },
+    UPS.NEOGEOAES: {
+        "id": 142,
+        "name": "Neo-Geo",
+        "alternative_names": [
+            "SNK Neo-Geo",
+            "SNK Neo-Geo AES",
+            "Neo-Geo AES",
+            "SNK Neo-Geo MVS",
+            "Neo-Geo MVS",
+        ],
+    },
+    UPS.NEOGEOMVS: {
+        "id": 68,
+        "name": "Neo-Geo MVS",
+        "alternative_names": ["SNK Neo-Geo MVS"],
+    },
+    UPS.NEO_GEO_CD: {
+        "id": 70,
+        "name": "Neo-Geo CD",
+        "alternative_names": ["SNK Neo-geo CD-Rom", "Neo-geo CD-Rom", "SNK Neo-geo CD"],
+    },
+    UPS.NEO_GEO_POCKET: {
+        "id": 25,
+        "name": "Neo-Geo Pocket",
+        "alternative_names": ["SNK Neo-Geo Pocket", "SNK NGP", "GP"],
+    },
     UPS.NEO_GEO_POCKET_COLOR: {
         "id": 82,
         "name": "Neo-Geo Pocket Color",
+        "alternative_names": [
+            "SNK Neo-geo Pocket Color",
+            "SNK Neo-geo PC",
+            "Neo-geo PC",
+            "SNK NGPC",
+            "NGPC",
+        ],
     },
     UPS.N3DS: {"id": 17, "name": "Nintendo 3DS"},
     UPS.NEW_NINTENDON3DS: {"id": 17, "name": "Nintendo 3DS"},
-    UPS.N64: {"id": 14, "name": "Nintendo 64"},
-    UPS.N64DD: {"id": 122, "name": "Nintendo 64DD"},
+    UPS.N64: {"id": 14, "name": "Nintendo 64", "alternative_names": ["n64"]},
+    UPS.N64DD: {
+        "id": 122,
+        "name": "Nintendo 64DD",
+        "alternative_names": ["Nintendo 64 DD", "N64 DD", "64 DD"],
+    },
     UPS.NDS: {"id": 15, "name": "Nintendo DS"},
     UPS.NINTENDO_DSI: {"id": 15, "name": "Nintendo DS"},
     UPS.SWITCH: {"id": SWITCH_SS_ID, "name": "Switch"},
@@ -1191,80 +1789,334 @@ SCREENSAVER_PLATFORM_LIST: dict[UPS, SlugToSSId] = {
     UPS.OPENBOR: {"id": 214, "name": "OpenBOR"},
     UPS.ORIC: {"id": 131, "name": "Oric 1 / Atmos"},
     UPS.PC_8800_SERIES: {"id": 221, "name": "NEC PC-8801"},
-    UPS.PC_9800_SERIES: {"id": 208, "name": "NEC PC-9801"},
-    UPS.PC_FX: {"id": 72, "name": "PC-FX"},
+    UPS.PC_9800_SERIES: {
+        "id": 208,
+        "name": "NEC PC-9801",
+        "alternative_names": ["PC98", "PC9801"],
+    },
+    UPS.PC_FX: {"id": 72, "name": "PC-FX", "alternative_names": ["NEC PC-FX"]},
     UPS.PEGASUS: {"id": 83, "name": "Aamber Pegasus"},
     UPS.PICO: {"id": 234, "name": "Pico-8"},
-    UPS.PINBALL: {"id": 197, "name": "Pinball"},
-    UPS.POCKET_CHALLENGE_V2: {"id": 237, "name": "Benesse Pocket Challenge V2"},
-    UPS.PSVITA: {"id": 62, "name": "PS Vita"},
-    UPS.PSP: {"id": PSP_SS_ID, "name": "PSP"},
-    UPS.PSP_MINIS: {"id": 172, "name": "PSP Minis"},
-    UPS.PALM_OS: {"id": 219, "name": "Palm OS"},
+    UPS.PINBALL: {"id": 197, "name": "Pinball", "alternative_names": ["Flipper"]},
+    UPS.POCKET_CHALLENGE_V2: {
+        "id": 237,
+        "name": "Benesse Pocket Challenge V2",
+        "alternative_names": ["Pocket Challenge V2"],
+    },
+    UPS.PSVITA: {
+        "id": 62,
+        "name": "PS Vita",
+        "alternative_names": [
+            "Sony Playstation Vita",
+            "Playstation Vita",
+            "Sony PS Vita",
+            "Sony Vita",
+            "Vita",
+        ],
+    },
+    UPS.PSP: {
+        "id": PSP_SS_ID,
+        "name": "PSP",
+        "alternative_names": [
+            "Sony Playstation Portable",
+            "Sony PSP",
+            "Playstation Portable",
+            "Sony PS Portable",
+            "PS Portable",
+        ],
+    },
+    UPS.PSP_MINIS: {
+        "id": 172,
+        "name": "PSP Minis",
+        "alternative_names": [
+            "Playstation minis",
+            "Sony Playstation Minis",
+            "Sony PS Minis",
+            "PS Minis",
+        ],
+    },
+    UPS.PALM_OS: {
+        "id": 219,
+        "name": "Palm OS",
+        "alternative_names": ["palm", "palmos"],
+    },
     UPS.PHILIPS_VG_5000: {"id": 261, "name": "Philips VG 5000"},
-    UPS.PSX: {"id": PS1_SS_ID, "name": "Playstation"},
-    UPS.PS2: {"id": PS2_SS_ID, "name": "Playstation 2"},
-    UPS.PS3: {"id": 59, "name": "Playstation 3"},
-    UPS.PS4: {"id": 60, "name": "Playstation 4"},
-    UPS.PS5: {"id": 284, "name": "Playstation 5"},
-    UPS.POKEMON_MINI: {"id": 211, "name": "Pokémon mini"},
+    UPS.PSX: {
+        "id": PS1_SS_ID,
+        "name": "Playstation",
+        "alternative_names": [
+            "Sony Playstation",
+            "Sony PSX",
+            "PSX",
+            "Sony PS One",
+            "PS One",
+        ],
+    },
+    UPS.PS2: {
+        "id": PS2_SS_ID,
+        "name": "Playstation 2",
+        "alternative_names": [
+            "Sony Playstation 2",
+            "Sony PS2",
+            "PS2",
+            "Sony Playstation II",
+            "Playstation II",
+        ],
+    },
+    UPS.PS3: {
+        "id": 59,
+        "name": "Playstation 3",
+        "alternative_names": [
+            "Sony Playstation 3",
+            "Sony PS3",
+            "PS3",
+            "Sony Playstation III",
+            "Playstation III",
+        ],
+    },
+    UPS.PS4: {
+        "id": 60,
+        "name": "Playstation 4",
+        "alternative_names": [
+            "Sony Playstation 4",
+            "Sony PS4",
+            "PS4",
+            "Sony Playstation IV",
+            "Playstation IV",
+        ],
+    },
+    UPS.PS5: {
+        "id": 284,
+        "name": "Playstation 5",
+        "alternative_names": [
+            "Sony Playstation 5",
+            "Sony PS5",
+            "PS5",
+            "Sony Playstation V",
+            "Playstation V",
+        ],
+    },
+    UPS.POKEMON_MINI: {
+        "id": 211,
+        "name": "Pokémon mini",
+        "alternative_names": ["Pokemon Mini", "PokeMini"],
+    },
     UPS.RPG_MAKER: {"id": 231, "name": "EasyRPG"},
-    UPS.SAM_COUPE: {"id": 213, "name": "MGT SAM Coupé"},
-    UPS.SCUMMVM: {"id": 123, "name": "ScummVM"},
-    UPS.SEGA32: {"id": 19, "name": "Megadrive 32X"},
-    UPS.SEGACD: {"id": 20, "name": "Mega-CD"},
-    UPS.SMS: {"id": 2, "name": "Master System"},
-    UPS.SEGA_PICO: {"id": 250, "name": "Sega Pico"},
-    UPS.SATURN: {"id": 22, "name": "Saturn"},
-    UPS.SG1000: {"id": 109, "name": "SG-1000"},
+    UPS.SAM_COUPE: {
+        "id": 213,
+        "name": "MGT SAM Coupé",
+        "alternative_names": ["SAM Coupé"],
+    },
+    UPS.SCUMMVM: {"id": 123, "name": "ScummVM", "alternative_names": ["ResidualVM"]},
+    UPS.SEGA32: {
+        "id": 19,
+        "name": "Megadrive 32X",
+        "alternative_names": [
+            "Sega 32X",
+            "Sega Megadrive 32x",
+            "Sega Genesis 32x",
+            "Sega Mega 32x",
+            "Super 32x",
+            "Genesis 32x",
+            "32x",
+        ],
+    },
+    UPS.SEGACD: {"id": 20, "name": "Mega-CD", "alternative_names": ["Sega CD"]},
+    UPS.SMS: {
+        "id": 2,
+        "name": "Master System",
+        "alternative_names": [
+            "Sega Master System",
+            "Sega Mark III",
+            "Sega Mark 3",
+            "SMS",
+        ],
+    },
+    UPS.SEGA_PICO: {
+        "id": 250,
+        "name": "Sega Pico",
+        "alternative_names": ["Kids Computer Pico"],
+    },
+    UPS.SATURN: {"id": 22, "name": "Saturn", "alternative_names": ["Sega Saturn"]},
+    UPS.SG1000: {
+        "id": 109,
+        "name": "SG-1000",
+        "alternative_names": [
+            "Sega SG-1000",
+            "Sega Game 1000",
+            "SG-1000 II",
+            "SG-1000 2",
+            "SC 3000",
+            "Othello Multivisio",
+        ],
+    },
     UPS.SNES: {"id": 4, "name": "Super Nintendo"},
     UPS.SFAM: {"id": 4, "name": "Super Famicom"},
-    UPS.SATELLAVIEW: {"id": 107, "name": "Satellaview"},
-    UPS.X1: {"id": 220, "name": "Sharp X1"},
-    UPS.SHARP_X68000: {"id": 79, "name": "Sharp X68000"},
+    UPS.SATELLAVIEW: {
+        "id": 107,
+        "name": "Satellaview",
+        "alternative_names": ["Nintendo Satellaview", "Nintendo BS-X", "BS-X"],
+    },
+    UPS.X1: {"id": 220, "name": "Sharp X1", "alternative_names": ["X1"]},
+    UPS.SHARP_X68000: {
+        "id": 79,
+        "name": "Sharp X68000",
+        "alternative_names": ["X68000", "Sharp X68k", "X68k"],
+    },
     UPS.SPECTRAVIDEO: {"id": 218, "name": "Spectravideo"},
-    UPS.SUFAMI_TURBO: {"id": 108, "name": "Sufami Turbo"},
-    UPS.SUPER_ACAN: {"id": 100, "name": "Super A'can"},
-    UPS.SUPERGRAFX: {"id": 105, "name": "PC Engine SuperGrafx"},
+    UPS.SUFAMI_TURBO: {
+        "id": 108,
+        "name": "Sufami Turbo",
+        "alternative_names": ["Bandai Sufami Turbo"],
+    },
+    UPS.SUPER_ACAN: {
+        "id": 100,
+        "name": "Super A'can",
+        "alternative_names": ["Funtech Super A'Can"],
+    },
+    UPS.SUPERGRAFX: {
+        "id": 105,
+        "name": "PC Engine SuperGrafx",
+        "alternative_names": [
+            "NEC PC Engine SuperGrafx",
+            "NEC SuperGrafx",
+            "SuperGrafx",
+        ],
+    },
     UPS.SUPERVISION: {"id": 207, "name": "Watara Supervision"},
-    UPS.STV: {"id": 69, "name": "Sega ST-V"},
-    UPS.SWITCH_2: {"id": 296, "name": "Nintendo Switch 2"},
-    UPS.SYSTEM_32: {"id": 156, "name": "Namco System 22"},
+    UPS.STV: {"id": 69, "name": "Sega ST-V", "alternative_names": ["ST-V"]},
+    UPS.SWITCH_2: {
+        "id": 296,
+        "name": "Nintendo Switch 2",
+        "alternative_names": ["Switch 2"],
+    },
+    UPS.SYSTEM_32: {
+        "id": 156,
+        "name": "Namco System 22",
+        "alternative_names": ["System 22"],
+    },
     UPS.TI_994A: {"id": 205, "name": "TI-99/4A"},
     UPS.TI_99: {"id": 205, "name": "TI-99"},
     UPS.TIC_80: {"id": 222, "name": "TIC-80"},
     UPS.TRS_80_COLOR_COMPUTER: {
         "id": 144,
         "name": "TRS-80 Color Computer",
+        "alternative_names": [
+            "Tandy TRS-80 Color Computer",
+            "Tandy TRS-80",
+            "Tandy TRS-80 CoCo",
+            "TRS-80 CoCo",
+            "CoCo",
+        ],
     },
     UPS.TYPE_X: {"id": 112, "name": "Type X"},
     UPS.TAITO_X_55: {"id": 112, "name": "Type X 55"},
     UPS.THOMSON_MO5: {"id": 141, "name": "Thomson MO/TO"},
     UPS.THOMSON_TO: {"id": 141, "name": "Thomson MO/TO"},
-    UPS.TURBOGRAFX_CD: {"id": 114, "name": "PC Engine CD-Rom"},
-    UPS.TG16: {"id": 31, "name": "PC Engine"},
+    UPS.TURBOGRAFX_CD: {
+        "id": 114,
+        "name": "PC Engine CD-Rom",
+        "alternative_names": [
+            "NEC PC Engine CD-Rom",
+            "NEC PC Engine CD",
+            "PC Engine CD",
+        ],
+    },
+    UPS.TG16: {
+        "id": 31,
+        "name": "PC Engine",
+        "alternative_names": ["TurboGrafx-16", "NEC PC Engine", "NEC TurboGrafx-16"],
+    },
     UPS.UZEBOX: {"id": 216, "name": "UzeBox"},
-    UPS.VC_4000: {"id": 281, "name": "VC 4000"},
-    UPS.VSMILE: {"id": 120, "name": "V.Smile"},
-    UPS.VIC_20: {"id": 73, "name": "Vic-20"},
-    UPS.VECTREX: {"id": 102, "name": "Vectrex"},
-    UPS.VIDEOPAC_G7400: {"id": 104, "name": "Videopac G7000"},
-    UPS.VIRTUALBOY: {"id": 11, "name": "Virtual Boy"},
-    UPS.WII: {"id": 16, "name": "Wii"},
-    UPS.WIIU: {"id": 18, "name": "Wii U"},
+    UPS.VC_4000: {
+        "id": 281,
+        "name": "VC 4000",
+        "alternative_names": ["Video Computer 4000"],
+    },
+    UPS.VSMILE: {"id": 120, "name": "V.Smile", "alternative_names": ["VTech V.Smile"]},
+    UPS.VIC_20: {"id": 73, "name": "Vic-20", "alternative_names": ["Commodore Vic-20"]},
+    UPS.VECTREX: {"id": 102, "name": "Vectrex", "alternative_names": ["GCE Vectrex"]},
+    UPS.VIDEOPAC_G7400: {"id": 104, "name": "Videopac+ G7400"},
+    UPS.VIRTUALBOY: {
+        "id": 11,
+        "name": "Virtual Boy",
+        "alternative_names": [
+            "Nintendo virtualboy",
+            "virtualboy",
+            "Nintendo vboy",
+            "vboy",
+        ],
+    },
+    UPS.WII: {"id": 16, "name": "Wii", "alternative_names": ["Nintendo WII"]},
+    UPS.WIIU: {
+        "id": 18,
+        "name": "Wii U",
+        "alternative_names": ["Nintendo WII-U", "WII-U"],
+    },
     UPS.WIN: {"id": 138, "name": "PC Windows"},
-    UPS.WIN3X: {"id": 136, "name": "PC Win3.xx"},
-    UPS.WIN9X: {"id": 137, "name": "PC Win9X"},
-    UPS.WASM_4: {"id": 262, "name": "WASM-4"},
-    UPS.WONDERSWAN: {"id": 45, "name": "WonderSwan"},
-    UPS.WONDERSWAN_COLOR: {"id": 46, "name": "WonderSwan Color"},
-    UPS.XBOX: {"id": 32, "name": "Xbox"},
-    UPS.XBOX360: {"id": 33, "name": "Xbox 360"},
-    UPS.XBOXONE: {"id": 34, "name": "Xbox One"},
+    UPS.WIN3X: {
+        "id": 136,
+        "name": "PC Win3.xx",
+        "alternative_names": [
+            "Microsoft Windows 3.1",
+            "Windows 3.1",
+            "Win 3.1",
+            "W3.1",
+            "Microsoft Windows 3.0",
+            "Windows 3.0",
+            "Win 3.0",
+            "W3.0",
+        ],
+    },
+    # Most Win9x games are filed under the generic Windows system
+    UPS.WIN9X: {"id": 138, "name": "PC Win9X"},
+    UPS.WASM_4: {"id": 262, "name": "WASM-4", "alternative_names": ["wasm"]},
+    UPS.WONDERSWAN: {
+        "id": 45,
+        "name": "WonderSwan",
+        "alternative_names": ["Bandai WonderSwan", "Bandai WSwan", "WSwan"],
+    },
+    UPS.WONDERSWAN_COLOR: {
+        "id": 46,
+        "name": "WonderSwan Color",
+        "alternative_names": [
+            "Bandai WonderSwan Color",
+            "Bandai WSwan Color",
+            "WSwan Color",
+        ],
+    },
+    UPS.XBOX: {"id": 32, "name": "Xbox", "alternative_names": ["Microsoft XBOX"]},
+    UPS.XBOX360: {
+        "id": 33,
+        "name": "Xbox 360",
+        "alternative_names": ["Microsoft XBOX 360"],
+    },
+    UPS.XBOXONE: {
+        "id": 34,
+        "name": "Xbox One",
+        "alternative_names": ["Microsoft XBOX One"],
+    },
     UPS.Z_MACHINE: {"id": 215, "name": "Z-Machine"},
-    UPS.ZXS: {"id": 76, "name": "ZX Spectrum"},
-    UPS.ZX81: {"id": 77, "name": "ZX81"},
+    UPS.ZXS: {
+        "id": 76,
+        "name": "ZX Spectrum",
+        "alternative_names": ["Sinclair ZX-Spectrum", "ZX-Spectrum"],
+    },
+    UPS.ZX81: {
+        "id": 77,
+        "name": "ZX81",
+        "alternative_names": ["Sinclair ZX-81", "ZX-81"],
+    },
 }
+
+SS_INDEXED_FORMAT_PLATFORMS: Final = IndexedFormatPlatforms(
+    ps1=PS1_SS_ID,
+    ps2=PS2_SS_ID,
+    psp=PSP_SS_ID,
+    switch=SWITCH_SS_ID,
+    arcade=ARCADES_SS_IDS,
+    scummvm=SCREENSAVER_PLATFORM_LIST[UPS.SCUMMVM]["id"],
+)
 
 # Reverse lookup
 SS_ID_TO_SLUG = {v["id"]: k for k, v in SCREENSAVER_PLATFORM_LIST.items()}

@@ -12,4 +12,3 @@ export type ClientTokenSchema = {
     user_id: number;
     device_id?: (string | null);
 };
-

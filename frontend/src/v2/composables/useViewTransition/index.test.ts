@@ -1,3 +1,4 @@
+import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { expectNoUnhandledRejection } from "@/test-utils/unhandledRejection";
@@ -45,14 +46,15 @@ function routerWithBackMorph() {
 
 describe("morphTransition", () => {
   it("absorbs the skip the router's own transition causes", async () => {
-    await expectNoUnhandledRejection(async () => {
-      stubStartViewTransition(skippedReady());
+    await expectNoUnhandledRejection(() => {
+      void stubStartViewTransition(skippedReady());
       const { morphTransition } = useViewTransition();
 
       morphTransition(
         { el: document.createElement("div"), name: "rom-cover-1" },
         () => {},
       );
+      return Promise.resolve();
     });
   });
 
@@ -65,7 +67,7 @@ describe("morphTransition", () => {
     morphTransition({ el, name: "rom-cover-1" }, () => {});
     expect(el.style.viewTransitionName).toBe("rom-cover-1");
     await finished;
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushPromises();
 
     expect(el.style.viewTransitionName).toBe("");
     el.remove();
@@ -75,7 +77,7 @@ describe("morphTransition", () => {
 describe("installBackMorph", () => {
   it("absorbs the skip a navigation during capture causes", async () => {
     await expectNoUnhandledRejection(async () => {
-      stubStartViewTransition(skippedReady());
+      void stubStartViewTransition(skippedReady());
       const router = routerWithBackMorph();
 
       await router.push("/platform/2");

@@ -1,9 +1,9 @@
-// useGalleryFilterUrl — bookmarkable gallery filters via URL query
+// useGalleryFilterUrl: bookmarkable gallery filters via URL query
 // params. Round-trips between Vue Router's `route.query` and the
 // canonical `galleryFilter` Pinia store.
 //
 // Why: per constitution §VI.D, "active filters / search query / sort"
-// are bookmarkable session state — they belong in the URL so anyone
+// are bookmarkable session state: they belong in the URL so anyone
 // copying a link reproduces what they see.
 //
 // URL schema is intentionally identical to v1's `FilterDrawer/Base.vue`
@@ -40,56 +40,53 @@
 // Direction notes:
 //   * URL → store fires on every `route.query` change (browser back /
 //     forward / pasted URLs / programmatic route changes).
-//   * Store → URL pushes via `router.replace` (no history per keystroke).
+//   * Store → URL pushes via `patchQuery` (no history per keystroke).
 //     Writes are debounced so a flood of toggles produces one URL update.
 //   * On mount we apply the URL value once so the gallery's setup reads
 //     the correct store state before its first render.
-//   * Platforms are looked up by ID against `platformsStore` — if the
+//   * Platforms are looked up by ID against `platformsStore`. If the
 //     store isn't populated yet, the lookup retries when platforms load.
 import { debounce } from "lodash";
 import { storeToRefs } from "pinia";
-import { onMounted, watch } from "vue";
-import {
-  type LocationQueryRaw,
-  type LocationQueryValue,
-  useRoute,
-  useRouter,
-} from "vue-router";
+import { onMounted, onScopeDispose, watch } from "vue";
+import { type LocationQueryValue, useRoute, useRouter } from "vue-router";
 import storeGalleryFilter, {
   type FilterLogicOperator,
 } from "@/stores/galleryFilter";
 import storePlatforms from "@/stores/platforms";
+import { syncQueryParam } from "@/v2/utils/routeQuery";
 
-// Pure helpers — no Vue context. Easier to reason about and test if we
+// Pure helpers: no Vue context. Easier to reason about and test if we
 // ever want to.
 
-function qStr(v: LocationQueryValue | LocationQueryValue[]): string | null {
+// `route.query[key]` is undefined when the param is absent.
+type QueryValue = LocationQueryValue | LocationQueryValue[] | undefined;
+
+function qStr(v: QueryValue): string | null {
   if (Array.isArray(v)) return v[0] ?? null;
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 
-function qBool(v: LocationQueryValue | LocationQueryValue[]): boolean | null {
+function qBool(v: QueryValue): boolean | null {
   const s = qStr(v);
   if (s === "true") return true;
   if (s === "false") return false;
   return null;
 }
 
-function qList(v: LocationQueryValue | LocationQueryValue[]): string[] {
+function qList(v: QueryValue): string[] {
   const s = qStr(v);
   if (!s) return [];
   return s.split(",").filter((p) => p.trim());
 }
 
-function qLogic(
-  v: LocationQueryValue | LocationQueryValue[],
-): FilterLogicOperator | null {
+function qLogic(v: QueryValue): FilterLogicOperator | null {
   const s = qStr(v);
   if (s === "any" || s === "all" || s === "none") return s;
   return null;
 }
 
-function qHours(v: LocationQueryValue | LocationQueryValue[]): number | null {
+function qHours(v: QueryValue): number | null {
   const s = qStr(v);
   if (s === null) return null;
   const n = Number(s);
@@ -228,7 +225,7 @@ export function useGalleryFilterUrl() {
     if (url.filterSoundtrack !== filterSoundtrack.value)
       filterSoundtrack.value = url.filterSoundtrack;
 
-    // Platforms — lookup objects from IDs. If the platform store hasn't
+    // Platforms: lookup objects from IDs. If the platform store hasn't
     // hydrated yet, the watch below retries when it does.
     if (url.platformIds.length > 0) {
       const looked = url.platformIds
@@ -236,7 +233,7 @@ export function useGalleryFilterUrl() {
         .filter((p): p is NonNullable<typeof p> => Boolean(p));
       const currentIds = selectedPlatforms.value.map((p) => p.id);
       if (!eqStrArr(currentIds.map(String), url.platformIds.map(String))) {
-        // Only push the lookup result if we got every platform — partial
+        // Only push the lookup result if we got every platform: partial
         // matches would silently drop filters the user expects to see.
         if (looked.length === url.platformIds.length) {
           filter.setSelectedFilterPlatforms(looked);
@@ -349,16 +346,12 @@ export function useGalleryFilterUrl() {
 
   // ── Store → URL ──────────────────────────────────────────────
   // Debounced so a flurry of changes (closing a chip wipes the whole
-  // list one at a time) collapses into a single `router.replace`.
+  // list one at a time) collapses into a single URL write.
   function pushToUrl() {
-    const desired: LocationQueryRaw = { ...route.query };
+    const patch: Record<string, string | undefined> = {};
 
     function setOrDelete(key: string, value: string | null) {
-      if (value === null || value === "") {
-        delete desired[key];
-      } else {
-        desired[key] = value;
-      }
+      patch[key] = value === null || value === "" ? undefined : value;
     }
     function setBool(key: string, v: boolean | null) {
       setOrDelete(key, v === null ? null : String(v));
@@ -465,21 +458,15 @@ export function useGalleryFilterUrl() {
         : String(selectedLengthMaxHours.value),
     );
 
-    // Skip the push if nothing actually changed — keeps router from
-    // emitting a route-update for an identical URL.
-    const currentKeys = Object.keys(route.query).sort();
-    const desiredKeys = Object.keys(desired).sort();
-    if (
-      currentKeys.length === desiredKeys.length &&
-      currentKeys.every(
-        (k, i) => k === desiredKeys[i] && route.query[k] === desired[k],
-      )
-    ) {
-      return;
+    // Only changed keys are written, so a write held back by a same-page
+    // navigation can't restore values that navigation replaced.
+    for (const [key, value] of Object.entries(patch)) {
+      syncQueryParam(router, key, value);
     }
-    router.replace({ query: desired });
   }
   const pushDebounced = debounce(pushToUrl, 250);
+  // Once the gallery is gone its store state no longer describes the URL.
+  onScopeDispose(() => pushDebounced.cancel());
 
   // Watch every store field that maps to a URL key. A single deep
   // watcher on the store would be cheaper but pulls in changes to

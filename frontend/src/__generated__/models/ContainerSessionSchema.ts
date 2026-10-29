@@ -14,4 +14,3 @@ export type ContainerSessionSchema = {
     user_id?: (number | null);
     username?: (string | null);
 };
-

@@ -9,4 +9,3 @@ export type MusicPage_FacetValueSchema_ = {
     limit: number;
     offset: number;
 };
-

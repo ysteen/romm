@@ -14,6 +14,10 @@ ENABLE_SCHEDULED_RESCAN="${ENABLE_SCHEDULED_RESCAN:="false"}"
 ENABLE_SCHEDULED_UPDATE_LAUNCHBOX_METADATA="${ENABLE_SCHEDULED_UPDATE_LAUNCHBOX_METADATA:="false"}"
 ENABLE_SCHEDULED_UPDATE_SWITCH_TITLEDB="${ENABLE_SCHEDULED_UPDATE_SWITCH_TITLEDB:="false"}"
 ENABLE_SYNC_FOLDER_WATCHER="${ENABLE_SYNC_FOLDER_WATCHER:="false"}"
+ENABLE_SYNC_PUSH_PULL="${ENABLE_SYNC_PUSH_PULL:="false"}"
+sync_base_path="${ROMM_BASE_PATH:-/romm}/sync"
+# The values the backend's safe_str_to_bool reads as true, matched lowercased.
+TRUTHY_PATTERN='^(1|true|yes|on)$'
 
 # if REDIS_HOST is set, we assume that an external redis is used
 REDIS_HOST="${REDIS_HOST:=""}"
@@ -138,7 +142,8 @@ start_bin_gunicorn() {
 	"${wrap[@]}" gunicorn \
 		--bind=0.0.0.0:"${DEV_PORT:-5000}" \
 		--pid=/tmp/gunicorn.pid \
-		--forwarded-allow-ips="*" \
+		--no-control-socket \
+		--forwarded-allow-ips="${FORWARDED_ALLOW_IPS:-127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fc00::/7}" \
 		--worker-class uvicorn_worker.UvicornWorker \
 		--workers "${WEB_SERVER_CONCURRENCY:-4}" \
 		--timeout "${WEB_SERVER_TIMEOUT:-300}" \
@@ -163,7 +168,7 @@ start_bin_nginx() {
 		nginx -g 'user romm;'
 	fi
 
-	: "${ROMM_BASE_URL:=http://0.0.0.0:8080}"
+	: "${ROMM_BASE_URL:=http://0.0.0.0:${ROMM_PORT:-8080}}"
 	info_log "🚀 RomM is now available at ${ROMM_BASE_URL}"
 }
 
@@ -227,12 +232,11 @@ start_bin_valkey-server() {
 # --url, which would put it on a world-readable command line. REDIS_SSL is a
 # boolean to the app, so "false" and "0" mean plaintext.
 build_redis_url() {
-	local scheme userinfo="" ssl="${REDIS_SSL-}"
+	local scheme="redis" userinfo="" ssl="${REDIS_SSL-}"
 
-	case "${ssl,,}" in
-	1 | true | yes | on) scheme="rediss" ;;
-	*) scheme="redis" ;;
-	esac
+	if [[ ${ssl,,} =~ ${TRUTHY_PATTERN} ]]; then
+		scheme="rediss"
+	fi
 
 	if [[ -n ${REDIS_PASSWORD-} ]]; then
 		userinfo="${REDIS_USERNAME-}:${REDIS_PASSWORD}@"
@@ -255,6 +259,7 @@ start_bin_rq_cron() {
 		RQ_REDIS_URL="${redis_url}" \
 		rq cron \
 		--path /backend \
+		--connection-class handler.redis_handler.RomMRedis \
 		--logging-level "${LOGLEVEL}" \
 		tasks.cron_config &
 	echo "$!" >/tmp/rq_cron.pid
@@ -263,13 +268,20 @@ start_bin_rq_cron() {
 # Commands to start RQ worker
 start_bin_rq_worker() {
 	info_log "Starting RQ worker"
-	start_rq_worker rq_worker high default low
+	start_rq_worker rq_worker RomMWorker high default low
 }
 
 # Scans get a worker of their own, see SCAN_QUEUE_NAME.
 start_bin_rq_scan_worker() {
 	info_log "Starting RQ scan worker"
-	start_rq_worker rq_scan_worker scans
+	start_rq_worker rq_scan_worker RomMWorker scans
+}
+
+# Streaming teardowns get a worker of their own, see STREAMING_QUEUE_NAME. It
+# preloads the reaper, which runs every minute when streaming is on.
+start_bin_rq_streaming_worker() {
+	info_log "Starting RQ streaming worker"
+	start_rq_worker rq_streaming_worker PreloadingWorker streaming
 }
 
 # Set PYTHONPATH so RQ can find the tasks module.
@@ -280,7 +292,8 @@ start_bin_rq_scan_worker() {
 # wait out their delay.
 start_rq_worker() {
 	local name="$1"
-	shift
+	local worker_class="$2"
+	shift 2
 
 	local redis_url
 	redis_url="$(build_redis_url)"
@@ -289,12 +302,14 @@ start_rq_worker() {
 		RQ_REDIS_URL="${redis_url}" \
 		rq worker \
 		--path /backend \
-		--worker-class handler.rq_worker.RomMWorker \
-		--pid "/tmp/${name}.pid" \
+		--worker-class "handler.rq_worker.${worker_class}" \
+		--connection-class handler.redis_handler.RomMRedis \
 		--results-ttl "${TASK_RESULT_TTL:-86400}" \
 		--logging_level "${LOGLEVEL}" \
 		--with-scheduler \
 		"$@" &
+	# RQ writes --pid only after importing the worker class, too late for the watchdog.
+	echo "$!" >"/tmp/${name}.pid"
 }
 
 start_bin_watcher() {
@@ -311,8 +326,6 @@ start_bin_watcher() {
 
 start_bin_sync_watcher() {
 	info_log "Starting sync folder watcher"
-	sync_base_path="${ROMM_BASE_PATH:-/romm}/sync"
-	mkdir -p "${sync_base_path}"
 	local -a wrap=()
 	otel_prefix wrap sync_watcher
 	watchfiles \
@@ -355,6 +368,7 @@ shutdown() {
 	# shutdown in reverse order
 	stop_process_pid rq_worker
 	stop_process_pid rq_scan_worker
+	stop_process_pid rq_streaming_worker
 	stop_process_pid rq_cron
 	stop_process_pid sync_watcher
 	stop_process_pid watcher
@@ -406,6 +420,21 @@ fi
 # Startup process requires database and cache to be already available
 run_startup
 
+# The image's /romm is only writable by UID 1000, so the sync folder needs its own mount.
+if [[ ${ENABLE_SYNC_FOLDER_WATCHER,,} =~ ${TRUTHY_PATTERN} ]]; then
+	if ! mkdir -p "${sync_base_path}" 2>/dev/null || [[ ! -w ${sync_base_path} ]]; then
+		warn_log "${sync_base_path} is not writable, so the sync folder watcher and sync folder scan are disabled. Mount a host folder there to use them."
+		ENABLE_SYNC_FOLDER_WATCHER="false"
+	fi
+fi
+
+# Push-pull only reads its SSH keys, so a read-only mount is enough.
+sync_ssh_keys_path="${SYNC_SSH_KEYS_PATH:-${sync_base_path}/keys}"
+if [[ ${ENABLE_SYNC_PUSH_PULL,,} =~ ${TRUTHY_PATTERN} ]] && ! mkdir -p "${sync_ssh_keys_path}" 2>/dev/null; then
+	warn_log "${sync_ssh_keys_path} doesn't exist and can't be created, so push-pull sync is disabled. Mount your SSH keys there, or set SYNC_SSH_KEYS_PATH."
+	ENABLE_SYNC_PUSH_PULL="false"
+fi
+
 # main loop
 while ! ((exited)); do
 	watchdog_process_pid gunicorn
@@ -417,13 +446,15 @@ while ! ((exited)); do
 
 	watchdog_process_pid rq_scan_worker
 
+	watchdog_process_pid rq_streaming_worker
+
 	# only start the watcher if enabled
-	if [[ ${ENABLE_RESCAN_ON_FILESYSTEM_CHANGE} == "true" ]]; then
+	if [[ ${ENABLE_RESCAN_ON_FILESYSTEM_CHANGE,,} =~ ${TRUTHY_PATTERN} ]]; then
 		watchdog_process_pid watcher
 	fi
 
 	# only start the sync folder watcher if enabled
-	if [[ ${ENABLE_SYNC_FOLDER_WATCHER} == "true" ]]; then
+	if [[ ${ENABLE_SYNC_FOLDER_WATCHER,,} =~ ${TRUTHY_PATTERN} ]]; then
 		watchdog_process_pid sync_watcher
 	fi
 

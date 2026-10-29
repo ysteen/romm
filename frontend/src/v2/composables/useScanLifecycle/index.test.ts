@@ -1,11 +1,17 @@
-import { mount } from "@vue/test-utils";
-import { createPinia, setActivePinia } from "pinia";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
+import mitt from "mitt";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, reactive } from "vue";
 import type { ScanStats } from "@/__generated__";
+import platformApi from "@/services/api/platform";
 import taskApi from "@/services/api/task";
 import storeCollections from "@/stores/collections";
+import storePlatforms, { type Platform } from "@/stores/platforms";
+import storeRoms, { type SimpleRom } from "@/stores/roms";
 import storeScanning from "@/stores/scanning";
+import type { Events } from "@/types/emitter";
+import { platformFixture } from "@/utils/platform.fixtures";
+import { romFixture } from "@/utils/rom.fixtures";
 import { installScanLifecycle } from "./index";
 
 // Minimal socket stand-in: records handlers so tests can fire events, and
@@ -50,8 +56,36 @@ vi.mock("@/stores/auth", () => ({
 
 const getTaskStatus = vi.mocked(taskApi.getTaskStatus);
 
-/** Drain pending microtasks so the reconcile's promise chain has settled. */
-const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** Outlast the handler's 100ms batching debounce for `scan:scanning_rom`. */
+const drainRomBatch = () => new Promise((resolve) => setTimeout(resolve, 150));
+
+function platform(overrides: Partial<Platform> = {}): Platform {
+  return platformFixture({
+    slug: "n64",
+    name: "Nintendo 64",
+    rom_count: 2,
+    ...overrides,
+  });
+}
+
+function simpleRom(overrides: Partial<SimpleRom> = {}): SimpleRom {
+  return romFixture({ id: 1, name: "Game", platform_id: 1, ...overrides });
+}
+
+function scanningRom(
+  id: number,
+  isNew: boolean,
+  extra: Partial<SimpleRom> = {},
+) {
+  return {
+    id,
+    platform_id: 1,
+    platform_fs_slug: "n64",
+    platform_display_name: "Nintendo 64",
+    is_new: isNew,
+    ...extra,
+  };
+}
 
 function makeStats(overrides: Partial<ScanStats> = {}): ScanStats {
   return {
@@ -86,19 +120,19 @@ function runningScanTask(stats: ScanStats | null) {
 }
 
 // The lifecycle uses `inject` and `onScopeDispose`, so it needs a host
-// component instance. Tracked so `afterEach` can unmount it: the auth state
-// is reactive and shared, so a leaked host would keep watching it and
-// reconcile again during later tests.
-let host: ReturnType<typeof mount> | null = null;
+// component instance.
+
+const emitter = mitt<Events>();
 
 function install() {
-  host = mount(
+  mount(
     defineComponent({
       setup() {
         installScanLifecycle();
         return () => null;
       },
     }),
+    { global: { provide: { emitter } } },
   );
 }
 
@@ -108,16 +142,10 @@ function fire(event: string, payload: unknown) {
 
 describe("installScanLifecycle", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
     handlers.clear();
     getTaskStatus.mockReset();
     getTaskStatus.mockResolvedValue({ data: [] } as never);
     authState.user = { id: 1, oauth_scopes: ["tasks.run"] };
-  });
-
-  afterEach(() => {
-    host?.unmount();
-    host = null;
   });
 
   it("treats a stats event as proof a scan is running", () => {
@@ -131,6 +159,28 @@ describe("installScanLifecycle", () => {
     expect(scanning.scanStats.scanned_roms).toBe(12);
   });
 
+  it.each([
+    ["scan:done", makeStats()],
+    ["scan:done_ko", "disk gone"],
+  ])("toasts %s only in the tab that started the scan", (event, payload) => {
+    const shown = vi.fn();
+    emitter.on("snackbarShow", shown);
+    install();
+    const scanning = storeScanning();
+
+    scanning.setScanning(true);
+    fire(event, payload);
+    expect(shown).not.toHaveBeenCalled();
+
+    scanning.setScanning(true);
+    scanning.startedInThisTab = true;
+    fire(event, payload);
+    expect(shown).toHaveBeenCalledOnce();
+    expect(scanning.startedInThisTab).toBe(false);
+
+    emitter.off("snackbarShow", shown);
+  });
+
   it("re-reads the virtual collections when the scan settles", () => {
     const collections = storeCollections();
     const refresh = vi
@@ -141,6 +191,86 @@ describe("installScanLifecycle", () => {
     fire("scan:done", makeStats({ scanned_roms: 100 }));
 
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts only the ROMs a scan added toward the platform's games", async () => {
+    install();
+    const platforms = storePlatforms();
+    platforms.set([platform()]);
+
+    fire("scan:scanning_rom", scanningRom(1, false));
+    fire("scan:scanning_rom", scanningRom(2, false));
+    fire("scan:scanning_rom", scanningRom(3, true));
+    fire("scan:scanning_rom", scanningRom(3, true));
+    await drainRomBatch();
+
+    expect(platforms.get(1)?.rom_count).toBe(3);
+  });
+
+  it("counts a new ROM once when a platform event rebuilds the live log", async () => {
+    install();
+    const platforms = storePlatforms();
+    platforms.set([platform()]);
+    const newRom = scanningRom(3, true);
+
+    fire("scan:scanning_rom", newRom);
+    await drainRomBatch();
+    fire("scan:scanning_platform", {
+      id: 1,
+      name: "Nintendo 64",
+      display_name: "Nintendo 64",
+      slug: "n64",
+      fs_slug: "n64",
+      is_identified: true,
+      new_firmware_count: 0,
+    });
+    fire("scan:scanning_rom", newRom);
+    await drainRomBatch();
+
+    expect(platforms.get(1)?.rom_count).toBe(3);
+  });
+
+  it("applies the last ROM batch before reconciling counts on scan:done", async () => {
+    vi.mocked(platformApi.getPlatforms).mockResolvedValueOnce({
+      data: [platform({ rom_count: 3 })],
+    } as never);
+    install();
+    const platforms = storePlatforms();
+    platforms.set([platform()]);
+
+    fire("scan:scanning_rom", scanningRom(3, true));
+    fire("scan:done", makeStats());
+    await drainRomBatch();
+
+    expect(platforms.get(1)?.rom_count).toBe(3);
+  });
+
+  it("counts a new ROM once when a scan fails with its next emit queued", async () => {
+    install();
+    const platforms = storePlatforms();
+    platforms.set([platform()]);
+
+    fire("scan:scanning_rom", scanningRom(3, true));
+    await drainRomBatch();
+    fire("scan:scanning_rom", scanningRom(3, true));
+    fire("scan:done_ko", "disk gone");
+    await drainRomBatch();
+
+    expect(platforms.get(1)?.rom_count).toBe(3);
+  });
+
+  it("puts only the ROMs a scan added at the top of the recent list", async () => {
+    install();
+    const roms = storeRoms();
+    roms.setRecentRoms([simpleRom({ name: "Old" })]);
+
+    fire("scan:scanning_rom", scanningRom(1, false, { name: "Rescanned" }));
+    fire("scan:scanning_rom", scanningRom(2, false));
+    fire("scan:scanning_rom", scanningRom(3, true));
+    await drainRomBatch();
+
+    expect(roms.recentRoms.map((r) => r.id)).toEqual([3, 1]);
+    expect(roms.recentRoms[1]?.name).toBe("Rescanned");
   });
 
   it("reconciles with a running scan job on install", async () => {

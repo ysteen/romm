@@ -18,4 +18,3 @@ export type Body_update_collection_api_collections__id__put = {
      */
     url_cover?: (string | null);
 };
-

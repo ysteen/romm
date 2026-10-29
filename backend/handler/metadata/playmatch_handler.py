@@ -2,14 +2,16 @@ import asyncio
 import json
 from collections.abc import Iterable
 from enum import Enum
-from typing import Final, Literal, NotRequired, TypedDict, TypeIs, get_args
+from typing import Any, Final, Literal, TypedDict, TypeIs, get_args
 
-import httpx
+import httpx2
 import yarl
 from fastapi import status
 
+from adapters.services.provider_http import unavailable
+from adapters.services.response_validation import parse_response
 from config import PLAYMATCH_API_ENABLED, PLAYMATCH_API_URL
-from handler.metadata.base_handler import MetadataHandler, unavailable
+from handler.metadata.base_handler import HTTPX_REQUEST_ERRORS, MetadataHandler
 from logger.logger import log
 from models.rom import Rom, RomFile
 from utils import get_version
@@ -20,16 +22,6 @@ from utils.rate_limiter import RateLimiter
 PLAYMATCH_MAX_REQUESTS_PER_SECOND: Final[float] = 4
 PLAYMATCH_MAX_REQUEST_ATTEMPTS: Final[int] = 2
 _rate_limiter = RateLimiter(PLAYMATCH_MAX_REQUESTS_PER_SECOND)
-
-
-class PlaymatchProvider(str, Enum):
-    IGDB = "IGDB"
-    STEAM_GRID_DB = "SteamGridDB"
-    SCREEN_SCRAPER = "ScreenScraper"
-    MOBY_GAMES = "MobyGames"
-    LAUNCH_BOX = "LaunchBox"
-    EMU_READY = "EmuReady"
-    OPEN_VGDB = "OpenVGDB"
 
 
 # Tag is the uppercased Playmatch MetadataProvider name.
@@ -93,16 +85,6 @@ class GameMatchType(str, Enum):
     NO_MATCH = "NoMatch"
 
 
-class PlaymatchExternalMetadata(TypedDict):
-    automaticMatchReason: NotRequired[str]
-    comment: NotRequired[str]
-    failedMatchReason: NotRequired[str]
-    manualMatchType: NotRequired[str]
-    matchType: NotRequired[str]
-    providerId: NotRequired[str]
-    providerName: NotRequired[str]
-
-
 class PlaymatchRomMatch(TypedDict):
     igdb_id: int | None
     moby_id: int | None
@@ -123,7 +105,7 @@ class PlaymatchHandler(MetadataHandler):
     Handler for [Playmatch](https://github.com/RetroRealm/playmatch), a service for matching ROMs by Hashes.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.base_url = PLAYMATCH_API_URL
         self.identify_url = f"{self.base_url}/identify/ids"
         self.healthcheck_url = f"{self.base_url}/health"
@@ -134,27 +116,20 @@ class PlaymatchHandler(MetadataHandler):
         return PLAYMATCH_API_ENABLED
 
     async def heartbeat(self) -> bool:
-        if not self.is_enabled():
-            return False
-
-        # The /health endpoint returns a plain-text body ("Healthy"), not
-        # JSON, so any 2xx response is enough to consider the service up.
-        httpx_client = ctx_httpx_client.get()
-        try:
+        async def probe() -> bool:
             await _rate_limiter.acquire()
-            res = await httpx_client.get(
+            # /health answers plain text ("Healthy"), so any 2xx means it is up.
+            res = await ctx_httpx_client.get().get(
                 self.healthcheck_url,
                 headers={"user-agent": f"RomM/{get_version()}"},
                 timeout=60,
             )
             res.raise_for_status()
-        except Exception as e:
-            log.error("Error checking Playmatch API: %s", e)
-            return False
+            return True
 
-        return True
+        return await self._heartbeat("Playmatch API", probe)
 
-    async def _request(self, url: str, query: dict) -> dict:
+    async def _request(self, url: str, query: dict[str, Any]) -> dict[str, Any]:
         """
         Sends a Request to Playmatch API.
 
@@ -188,15 +163,14 @@ class PlaymatchHandler(MetadataHandler):
                     str(url_with_query), headers=headers, timeout=60
                 )
                 res.raise_for_status()
-                return res.json()
-            except (
-                httpx.HTTPStatusError,
-                httpx.ConnectError,
-                httpx.ReadTimeout,
-            ) as exc:
+                return (
+                    parse_response(dict[str, Any], res.content, source="Playmatch")
+                    or {}
+                )
+            except HTTPX_REQUEST_ERRORS as exc:
                 if (
                     attempt == 0
-                    and isinstance(exc, httpx.HTTPStatusError)
+                    and isinstance(exc, httpx2.HTTPStatusError)
                     and exc.response.status_code == status.HTTP_429_TOO_MANY_REQUESTS
                 ):
                     log.warning("Playmatch: rate limit hit, retrying after 2s")
@@ -244,6 +218,15 @@ class PlaymatchHandler(MetadataHandler):
 
         hashes = match_file.lookup_hashes
 
+        # Folder ROM members carry generic names (a Wii U title's 00000005.app),
+        # so name and size alone match an unrelated game.
+        if not any(hashes) and match_file.full_path != match_file.rom.full_path:
+            log.debug(
+                "Skipping Playmatch lookup for %s: no hashes to identify it by",
+                match_file.full_path,
+            )
+            return fallback_rom
+
         try:
             response = await self._request(
                 self.identify_url,
@@ -265,16 +248,18 @@ class PlaymatchHandler(MetadataHandler):
             log.debug("No match found for the provided ROM file.")
             return fallback_rom
 
-        externalMetadata = response.get("externalMetadata", [])
-        if len(externalMetadata) == 0:
+        external_metadata = response.get("externalMetadata")
+        if not isinstance(external_metadata, list) or not external_metadata:
             log.debug("No external metadata found for the matched ROM file.")
             return fallback_rom
 
         result = fallback_rom
-        for metadata in externalMetadata:
+        for metadata in external_metadata:
+            if not isinstance(metadata, dict):
+                continue
             provider_name = metadata.get("providerName", None)
             provider_game_id = metadata.get("providerId", None)
-            if not provider_name or provider_game_id is None:
+            if not isinstance(provider_name, str) or provider_game_id is None:
                 continue
 
             attr = PLAYMATCH_TAG_TO_ATTR.get(provider_name.upper())

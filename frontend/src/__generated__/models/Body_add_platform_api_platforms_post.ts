@@ -8,4 +8,3 @@ export type Body_add_platform_api_platforms_post = {
      */
     fs_slug: string;
 };
-

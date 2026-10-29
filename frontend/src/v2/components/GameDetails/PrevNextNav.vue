@@ -8,7 +8,7 @@
 //
 // Two conditions gate the arrows, and both are needed. The ROM has to be
 // in that list, and the user has to have arrived from the gallery that
-// built it (see useGalleryProvenance) — the store keeps its index alive
+// built it (see useGalleryProvenance): the store keeps its index alive
 // after the gallery is left, so membership alone would hand a stale list
 // to a ROM opened from Home, Activity or a scan result.
 import { RBtn } from "@v2/lib";
@@ -72,7 +72,7 @@ const nextTooltip = computed(() =>
 
 function go(position: number | null) {
   if (position === null) return;
-  router.push({
+  void router.push({
     name: ROUTES.ROM,
     params: { rom: galleryRoms.romIdIndex[position] },
     // Keep `?tab=` and friends so stepping through a list doesn't drop

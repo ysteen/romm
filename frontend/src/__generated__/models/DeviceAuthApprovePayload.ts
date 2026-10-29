@@ -8,4 +8,3 @@ export type DeviceAuthApprovePayload = {
     device_name?: (string | null);
     expires_in?: (string | null);
 };
-

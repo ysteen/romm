@@ -5,4 +5,3 @@
 export type Body_update_state_visibility_api_states__id__visibility_put = {
     is_public: boolean;
 };
-

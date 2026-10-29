@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy.dialects import mysql
 from sqlalchemy.exc import SAWarning
 from sqlalchemy.sql.compiler import FROM_LINTING
+from tests.factories import make_rom
 
 from handler.database import db_rom_handler
 from handler.database.rom_filters import (
@@ -31,18 +32,7 @@ FACET_FILTERS = [{spec.name: ["any-value"]} for spec in ROM_FILTER_SPECS]
 
 
 def _make_rom(platform: Platform, fs_name: str, **fields) -> Rom:
-    rom = db_rom_handler.add_rom(
-        Rom(
-            platform_id=platform.id,
-            name=fs_name,
-            slug=fs_name,
-            fs_name=f"{fs_name}.zip",
-            fs_name_no_tags=fs_name,
-            fs_name_no_ext=fs_name,
-            fs_extension="zip",
-            fs_path=f"{platform.slug}/roms",
-        )
-    )
+    rom = make_rom(platform, fs_name)
     return db_rom_handler.update_rom(rom.id, fields)
 
 
@@ -61,7 +51,7 @@ def _cartesian_warnings(statement) -> list[str]:
 
 class TestGroupedMetadataFilterJoin:
     @pytest.mark.parametrize("filters", FACET_FILTERS, ids=lambda f: next(iter(f)))
-    def test_grouped_query_joins_what_it_filters_on(self, filters: dict):
+    def test_grouped_query_joins_what_it_filters_on(self, filters: dict[str, Any]):
         query, _ = db_rom_handler.get_roms_query()
         grouped = db_rom_handler.filter_roms(
             query=query,

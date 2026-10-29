@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// ManageCollectionsDialog — collection picker that matches the mockup's
+// ManageCollectionsDialog: collection picker that matches the mockup's
 // menu-panel shape. Driven by the `showManageCollectionsDialog` emitter.
 //
-// Uses the v2 RDialog primitive — RDialog shares the RMenu visual
+// Uses the v2 RDialog primitive: RDialog shares the RMenu visual
 // language (14px radius, deep glass, menu-style shadow) so this picker
 // reads as a sibling of the user menu / ROM context menu.
 //
@@ -14,13 +14,13 @@
 //     "New Collection" label. Click expands to an inline Create /
 //     Cancel input.
 //   * Divider.
-//   * List of owned collections — avatar, name, count, brand-primary
+//   * List of owned collections: avatar, name, count, brand-primary
 //     circular tick when on. Clicking toggles INSTANTLY (optimistic
 //     update + API call; reverts on failure).
 //   * Empty state if no collections exist.
 import { RDialog, RDivider } from "@v2/lib";
 import type { Emitter } from "mitt";
-import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import collectionApi from "@/services/api/collection";
 import storeCollections, {
@@ -33,6 +33,7 @@ import CollectionPickerRow from "@/v2/components/Collections/CollectionPickerRow
 import NewCollectionRow from "@/v2/components/Collections/NewCollectionRow.vue";
 import GameCard from "@/v2/components/GameCard/GameCard.vue";
 import { useBreakpoint } from "@/v2/composables/useBreakpoint";
+import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
 import { useRomSync } from "@/v2/composables/useRomSync";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import { useWebpSupport } from "@/v2/composables/useWebpSupport";
@@ -60,27 +61,32 @@ const roms = ref<SimpleRom[]>([]);
 const pendingCollections = ref(new Set<number>());
 // Optimistic state is now tri-state (off | some | all). When the user
 // clicks a row we paint the *resolved* next state immediately and
-// reconcile when the API responds — `undefined` means "fall back to
+// reconcile when the API responds: `undefined` means "fall back to
 // the collection's actual membership computed against `roms.value`".
 const optimistic = ref(new Map<number, "off" | "some" | "all">());
 
 const creating = ref(false);
 const createExpanded = ref(false);
 const newName = ref("");
+const newIsPublic = ref(false);
+
+function resetCreate() {
+  newName.value = "";
+  newIsPublic.value = false;
+  createExpanded.value = false;
+}
 
 const openHandler = (romsToAdd: SimpleRom[]) => {
   roms.value = romsToAdd;
   optimistic.value = new Map();
   pendingCollections.value = new Set();
-  newName.value = "";
-  createExpanded.value = false;
+  resetCreate();
   show.value = true;
 };
-emitter?.on("showManageCollectionsDialog", openHandler);
-onBeforeUnmount(() => emitter?.off("showManageCollectionsDialog", openHandler));
+useEmitterEvent("showManageCollectionsDialog", openHandler);
 
 // Notify any GameActionBtn that opened us so it can drop its pinned-hover
-// state — covers every close path (X, scrim, Escape, programmatic close).
+// state: covers every close path (X, scrim, Escape, programmatic close).
 watch(show, (open) => {
   if (!open) emitter?.emit("closeManageCollectionsDialog", null);
 });
@@ -88,7 +94,7 @@ watch(show, (open) => {
 /** Resolve a collection's membership against the open dialog's
  *  selection. "all" when every selected rom is in the collection,
  *  "some" when at least one (but not all) is, "off" otherwise. The
- *  "some" state only appears for bulk dialogs — a single-rom dialog
+ *  "some" state only appears for bulk dialogs: a single-rom dialog
  *  collapses to off / all. */
 function membershipState(collection: Collection): "off" | "some" | "all" {
   const override = optimistic.value.get(collection.id);
@@ -119,7 +125,7 @@ async function toggle(collection: Collection) {
   pendingCollections.value.add(collection.id);
 
   // For the "some → all" transition we still issue an add against all
-  // selected ids — the backend de-dupes against existing membership,
+  // selected ids: the backend de-dupes against existing membership,
   // so this is safe and saves a per-id diff round-trip from the
   // frontend.
   //
@@ -171,12 +177,11 @@ async function createNewCollection() {
   creating.value = true;
   try {
     const created = await collectionApi.createCollection({
-      collection: { name },
+      collection: { name, is_public: newIsPublic.value },
     });
     collectionsStore.addCollection(created);
     void toggle(created);
-    newName.value = "";
-    createExpanded.value = false;
+    resetCreate();
   } catch (error: unknown) {
     const axiosErr = error as { response?: { data?: { detail?: string } } };
     snackbar.error(
@@ -188,14 +193,10 @@ async function createNewCollection() {
   }
 }
 
-function cancelCreate() {
-  newName.value = "";
-  createExpanded.value = false;
-}
-
 const subtitle = computed(() => {
   if (roms.value.length === 1) {
-    return roms.value[0].name ?? roms.value[0].fs_name ?? "";
+    const rom = roms.value[0]!;
+    return rom.name ?? rom.fs_name ?? "";
   }
   if (roms.value.length > 1) {
     return t("rom.selection-count", { n: roms.value.length });
@@ -205,7 +206,7 @@ const subtitle = computed(() => {
 
 const ownedCollections = computed(() => collectionsStore.ownedCollections);
 
-// Header cover thumbnail — single-rom invocations get the game's cover
+// Header cover thumbnail: single-rom invocations get the game's cover
 // alongside the title (same `<GameCard size="xs" decorative>` shape
 // the list-mode row uses, so the header reads as a sibling of the
 // gallery surface). Bulk invocations stay text-only since one cover
@@ -218,8 +219,7 @@ function closeDialog() {
   roms.value = [];
   optimistic.value = new Map();
   pendingCollections.value = new Set();
-  newName.value = "";
-  createExpanded.value = false;
+  resetCreate();
   show.value = false;
 }
 </script>
@@ -260,15 +260,16 @@ function closeDialog() {
       <NewCollectionRow
         v-model:expanded="createExpanded"
         v-model:name="newName"
+        v-model:is-public="newIsPublic"
         :creating="creating"
         :tile-size="46"
         @create="createNewCollection"
-        @cancel="cancelCreate"
+        @cancel="resetCreate"
       />
 
       <RDivider v-if="ownedCollections.length > 0" full-width />
 
-      <!-- Existing collection rows — instant toggle, no commit step. -->
+      <!-- Existing collection rows: instant toggle, no commit step. -->
       <ul v-if="ownedCollections.length" class="r-v2-mng-coll__list">
         <li v-for="collection in ownedCollections" :key="collection.id">
           <CollectionPickerRow
@@ -276,6 +277,7 @@ function closeDialog() {
             :count="collection.rom_count"
             :covers="coversFor(collection)"
             :state="membershipState(collection)"
+            :is-public="collection.is_public"
             :busy="pendingCollections.has(collection.id)"
             :tile-size="46"
             @toggle="toggle(collection)"
@@ -287,7 +289,7 @@ function closeDialog() {
 </template>
 
 <style scoped>
-/* Header — optional GameCard thumbnail + stacked title (14px bold) +
+/* Header: optional GameCard thumbnail + stacked title (14px bold) +
    subtitle (11.5px muted) inside RDialog's single header slot. */
 .r-v2-mng-coll__head {
   display: flex;

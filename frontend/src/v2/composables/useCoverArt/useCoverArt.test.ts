@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SimpleRom } from "@/stores/roms";
+import { romFixture } from "@/utils/rom.fixtures";
 import {
   altArtPath,
   computeCoverArt,
@@ -10,7 +11,7 @@ import {
 
 const RES = "/assets/romm/resources";
 
-// Minimal rom factory — the pure helpers only read the cover-related
+// Minimal rom factory: the pure helpers only read the cover-related
 // fields, so we default the rest and let callers override. Single cast
 // from Partial (a supertype) to SimpleRom, scoped to the test.
 function rom(over: Partial<SimpleRom>): SimpleRom {
@@ -23,7 +24,7 @@ function rom(over: Partial<SimpleRom>): SimpleRom {
     ss_metadata: null,
     gamelist_metadata: null,
   };
-  return { ...base, ...over } as SimpleRom;
+  return romFixture({ ...base, ...over });
 }
 
 describe("isBoxartStyle", () => {
@@ -95,6 +96,10 @@ describe("altArtPath", () => {
       gamelist_metadata: { box3d_path: "gl.png" },
     });
     expect(altArtPath(r, "box3d_path")).toBe("ss.png");
+  });
+  it("falls back to launchbox_metadata for the 3D box", () => {
+    const r = rom({ launchbox_metadata: { box3d_path: "lb.png" } });
+    expect(altArtPath(r, "box3d_path")).toBe("lb.png");
   });
   it("falls back to gamelist_metadata", () => {
     const r = rom({ gamelist_metadata: { physical_path: "gl.png" } });
@@ -305,5 +310,104 @@ describe("computeCoverArt — explicit coverSrc override", () => {
     expect(d.coverUrl).toBe("blob:preview");
     expect(d.isAltArt).toBe(false);
     expect(d.fallbackUrl).toBeNull();
+  });
+});
+
+describe("computeCoverArt: coverSrcset", () => {
+  const both = {
+    path_cover_small: `${RES}/roms/1/2/cover/small.png?ts=1`,
+    path_cover_large: `${RES}/roms/1/2/cover/big.png?ts=1`,
+  };
+  const opts = { resourcesPath: RES, supportsWebp: false };
+
+  it("offers small at 1x and large at 2x, keeping the large src", () => {
+    const d = computeCoverArt(rom(both), "cover_path", opts);
+    expect(d.coverSrcset).toBe(
+      `${both.path_cover_small} 1x, ${both.path_cover_large} 2x`,
+    );
+    expect(d.coverUrl).toBe(both.path_cover_large);
+  });
+
+  it("rewrites both candidates to webp when the server serves it", () => {
+    const d = computeCoverArt(rom(both), "cover_path", {
+      ...opts,
+      supportsWebp: true,
+    });
+    expect(d.coverSrcset).toBe(
+      `${RES}/roms/1/2/cover/small.webp?ts=1 1x, ${RES}/roms/1/2/cover/big.webp?ts=1 2x`,
+    );
+  });
+
+  it("is null with a single local size", () => {
+    for (const only of [
+      { path_cover_small: both.path_cover_small },
+      { path_cover_large: both.path_cover_large },
+    ]) {
+      expect(
+        computeCoverArt(rom(only), "cover_path", opts).coverSrcset,
+      ).toBeNull();
+    }
+  });
+
+  it("is null when both sizes are the same file", () => {
+    const d = computeCoverArt(
+      rom({
+        path_cover_small: both.path_cover_large,
+        path_cover_large: both.path_cover_large,
+      }),
+      "cover_path",
+      opts,
+    );
+    expect(d.coverSrcset).toBeNull();
+  });
+
+  it("escapes the space in the backend's ts datetime", () => {
+    const ts = "2026-10-03 00:14:54.902496-05:00";
+    const d = computeCoverArt(
+      rom({
+        path_cover_small: `${RES}/roms/2/12/cover/small.png?ts=${ts}`,
+        path_cover_large: `${RES}/roms/2/12/cover/big.png?ts=${ts}`,
+      }),
+      "cover_path",
+      { ...opts, supportsWebp: true },
+    );
+    expect(d.coverSrcset).toBe(
+      `${RES}/roms/2/12/cover/small.webp?ts=2026-10-03%2000:14:54.902496-05:00 1x, ${RES}/roms/2/12/cover/big.webp?ts=2026-10-03%2000:14:54.902496-05:00 2x`,
+    );
+    // The escaped candidate resolves to the same address as `src`, so one file is cached.
+    const large = d.coverSrcset?.split(" 1x, ")[1]?.replace(/ 2x$/, "") ?? "";
+    expect(new URL(large, "http://h").href).toBe(
+      new URL(d.coverUrl ?? "", "http://h").href,
+    );
+  });
+
+  it("escapes commas so the candidate list stays whole", () => {
+    const d = computeCoverArt(
+      rom({
+        path_cover_small: `${RES}/a,b/small.png`,
+        path_cover_large: `${RES}/a,b/big.png`,
+      }),
+      "cover_path",
+      opts,
+    );
+    expect(d.coverSrcset).toBe(
+      `${RES}/a%2Cb/small.png 1x, ${RES}/a%2Cb/big.png 2x`,
+    );
+  });
+
+  it("is null for an explicit override and for alt art", () => {
+    expect(
+      computeCoverArt(rom(both), "cover_path", {
+        ...opts,
+        coverSrc: "blob:preview",
+      }).coverSrcset,
+    ).toBeNull();
+    expect(
+      computeCoverArt(
+        rom({ ...both, ss_metadata: { box3d_path: "ss/box3d.png" } }),
+        "box3d_path",
+        opts,
+      ).coverSrcset,
+    ).toBeNull();
   });
 });

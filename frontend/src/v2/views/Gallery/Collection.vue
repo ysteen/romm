@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// Collection view — owns the regular / virtual / smart collection
+// Collection view: owns the regular / virtual / smart collection
 // load flow and the two-tab surface that sits above the gallery:
-//   • Library  — the gallery (delegated to `GalleryShell`).
-//   • Settings — `CollectionSettingsTab` (cover artwork + details +
+//   • Library: the gallery (delegated to `GalleryShell`).
+//   • Settings: `CollectionSettingsTab` (cover artwork + details +
 //     smart criteria + danger zone). Hidden for virtual collections
 //     since they have no editable fields.
 //
@@ -19,6 +19,7 @@ import type { RTabNavItem } from "@v2/lib";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { onBeforeRouteUpdate, useRoute, useRouter } from "vue-router";
+import { userStorage } from "@/composables/useUserLocalStorage";
 import { ROUTES } from "@/plugins/router";
 import collectionApi from "@/services/api/collection";
 import romApi from "@/services/api/rom";
@@ -37,6 +38,7 @@ import { useCan } from "@/v2/composables/useCan";
 import { useConfirm } from "@/v2/composables/useConfirm";
 import { useIsAlive } from "@/v2/composables/useIsAlive";
 import { usePageTitle } from "@/v2/composables/usePageTitle";
+import { useRouteQueryParam } from "@/v2/composables/useRouteQueryParam";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import { useWebpSupport } from "@/v2/composables/useWebpSupport";
 import storeGalleryRoms from "@/v2/stores/galleryRoms";
@@ -55,6 +57,7 @@ const galleryRoms = storeGalleryRoms();
 const { toWebp } = useWebpSupport();
 
 const notFound = ref(false);
+const loading = ref(true);
 const currentKind = ref<CollectionKind>("regular");
 const currentCollection = ref<AnyCollection | null>(null);
 const shellRef = ref<InstanceType<typeof GalleryShell> | null>(null);
@@ -64,7 +67,7 @@ const canDownload = useCan("rom.download");
 
 usePageTitle(() => currentCollection.value?.name ?? null);
 
-// Virtual collections are computed (no editable fields) — only
+// Virtual collections are computed (no editable fields), so only
 // regular / smart get the Settings tab.
 const editableKind = computed<CollectionKind | null>(() => {
   if (currentKind.value === "regular") return "regular";
@@ -73,7 +76,7 @@ const editableKind = computed<CollectionKind | null>(() => {
 });
 
 // Ownership gate for the Settings tab. v1 only renders the drawer's
-// edit/delete affordances for owners with `collections.write` — if the
+// edit/delete affordances for owners with `collections.write`. If the
 // user can do neither, hide the tab entirely so they don't land on an
 // inert form. Mirrors the gate the tab body re-applies internally.
 const isOwner = computed(() => {
@@ -87,7 +90,7 @@ const showSettingsTab = computed(
     auth.scopes.includes("collections.write"),
 );
 
-// Narrowed reference for the Settings tab — `editableKind` rules out
+// Narrowed reference for the Settings tab: `editableKind` rules out
 // the virtual branch, so we can hand a `Collection | SmartCollection`
 // to the tab without per-template casts.
 const editableCollection = computed<Collection | SmartCollection | null>(() =>
@@ -97,41 +100,19 @@ const editableCollection = computed<Collection | SmartCollection | null>(() =>
 );
 
 // ── Tabs ─────────────────────────────────────────────────────────
-// URL-persistent via `?tab=` (mirrors Platform / GameDetails). Virtual
-// collections never see the Settings tab — clamp invalid persisted
-// values back to `library`.
 type TabId = "library" | "settings";
-const VALID_TABS = new Set<TabId>(["library", "settings"]);
+const TAB_IDS: readonly TabId[] = ["library", "settings"];
 
-function parseTab(v: unknown): TabId {
-  if (typeof v !== "string") return "library";
-  if (!VALID_TABS.has(v as TabId)) return "library";
-  if (v === "settings" && !showSettingsTab.value) return "library";
-  return v as TabId;
-}
-
-const tab = ref<TabId>(parseTab(route.query.tab));
-watch(tab, (value) => {
-  if (route.query.tab !== value) {
-    router.replace({
-      path: route.path,
-      query: { ...route.query, tab: value },
-    });
-  }
-});
+const tab = useRouteQueryParam("tab", "library", TAB_IDS);
+// Collections without a Settings tab fall back to Library, judged only once
+// the routed collection loads: ownership is unknown until then.
 watch(
-  () => route.query.tab,
-  (value) => {
-    const next = parseTab(value);
-    if (next !== tab.value) tab.value = next;
+  [tab, showSettingsTab, loading],
+  ([current, allowed, pending]) => {
+    if (!pending && current === "settings" && !allowed) tab.value = "library";
   },
+  { immediate: true },
 );
-// Switching to a virtual collection (no Settings tab) while sitting on
-// `settings` — bounce back to Library so the user isn't staring at an
-// empty body.
-watch(showSettingsTab, (allowed) => {
-  if (!allowed && tab.value === "settings") tab.value = "library";
-});
 
 const tabs = computed<RTabNavItem[]>(() => {
   const out: RTabNavItem[] = [{ id: "library", label: t("common.library") }];
@@ -142,7 +123,7 @@ const tabs = computed<RTabNavItem[]>(() => {
 });
 
 function onTabChange(next: string) {
-  tab.value = parseTab(next);
+  tab.value = next as TabId;
 }
 
 function onSaved(updated: Collection | SmartCollection) {
@@ -194,7 +175,7 @@ async function ensureLoaded(kind: CollectionKind) {
     collectionsStore.virtualCollections.length === 0
   ) {
     const type =
-      localStorage.getItem("settings.virtualCollectionType") ?? "collection";
+      userStorage.getItem("settings.virtualCollectionType") ?? "collection";
     await collectionsStore.fetchVirtualCollections(type);
   } else if (
     kind === "smart" &&
@@ -227,6 +208,7 @@ function refreshFromServer(
 
 async function loadForRoute(kind: CollectionKind, id: string) {
   const token = ++loadToken;
+  loading.value = true;
   currentKind.value = kind;
   // The list is unused here, but the surfaces reachable from this page read it
   // (the add-to-collection dialog).
@@ -235,6 +217,7 @@ async function loadForRoute(kind: CollectionKind, id: string) {
     ensureLoaded(kind),
   ]);
   if (token !== loadToken || !alive.value) return;
+  loading.value = false;
   const collection = fresh ?? findById(kind, id);
   if (!collection) {
     notFound.value = true;
@@ -259,7 +242,7 @@ async function loadForRoute(kind: CollectionKind, id: string) {
 }
 
 onMounted(() => {
-  loadForRoute(kindFromRoute(route.name), String(route.params.collection));
+  void loadForRoute(kindFromRoute(route.name), String(route.params.collection));
 });
 
 onBeforeRouteUpdate((to, from) => {
@@ -267,14 +250,14 @@ onBeforeRouteUpdate((to, from) => {
   // change (sort, filters, search) would blank and re-bootstrap the
   // collection already on screen.
   if (to.path === from.path) return;
-  loadForRoute(kindFromRoute(to.name), String(to.params.collection));
+  void loadForRoute(kindFromRoute(to.name), String(to.params.collection));
 });
 
 watch(
   () => [route.name, route.params.collection] as const,
   ([name, id]) => {
     if (id == null) return;
-    loadForRoute(kindFromRoute(name), String(id));
+    void loadForRoute(kindFromRoute(name), String(id));
   },
 );
 
@@ -339,7 +322,7 @@ async function onRandomGame() {
       snackbar.info(t("collection.empty"));
       return;
     }
-    router.push({ name: ROUTES.ROM, params: { rom: data.id } });
+    void router.push({ name: ROUTES.ROM, params: { rom: data.id } });
   } catch {
     if (!stale()) snackbar.error(t("platform.random-rom-error"));
   } finally {
@@ -379,7 +362,7 @@ async function onDelete() {
     snackbar.success(t("collection.collection-deleted", { name: c.name }), {
       icon: "mdi-check-bold",
     });
-    router.push({ name: ROUTES.COLLECTIONS_INDEX });
+    void router.push({ name: ROUTES.COLLECTIONS_INDEX });
   } catch (err) {
     const e = err as {
       response?: { data?: { msg?: string; detail?: string } };
@@ -402,7 +385,7 @@ async function onDelete() {
 </script>
 
 <template>
-  <!-- LIBRARY — full GalleryShell with CollectionHead in #header so
+  <!-- LIBRARY: full GalleryShell with CollectionHead in #header so
        the head band scrolls naturally with the cards and the toolbar
        pins below it. -->
   <GalleryShell

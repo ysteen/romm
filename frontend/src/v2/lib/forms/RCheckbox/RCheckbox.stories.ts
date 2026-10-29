@@ -22,8 +22,6 @@ const meta: Meta<typeof RCheckbox> = {
   title: "Forms/RCheckbox",
   component: RCheckbox,
   argTypes: {
-    label: { control: "text" },
-    subtitle: { control: "text" },
     size: {
       control: "inline-radio",
       options: ["xs", "sm", "md", "lg"],
@@ -37,10 +35,6 @@ const meta: Meta<typeof RCheckbox> = {
       control: "inline-radio",
       options: ["box", "card"],
     },
-    disabled: { control: "boolean" },
-    indeterminate: { control: "boolean" },
-    bare: { control: "boolean" },
-    error: { control: "boolean" },
     errorMessages: { control: "text" },
   },
   render: (args) => ({
@@ -89,10 +83,10 @@ export const NoLabel: Story = {
 
 // ── Multi-state ─────────────────────────────────────────────────────
 
-// `states` opts into an N-value control on its own `stateValue` model,
-// leaving the boolean `modelValue` path untouched. Clicking cycles through
-// the ordered list (first = empty); a state with a `color` fills the box
-// and with an `icon` shows that glyph (else the check tick).
+/**
+ * `states` adds an N-value control on its own `stateValue` model; clicking
+ * cycles through the list, the first entry being empty.
+ */
 export const MultiState: Story = {
   name: "Multi-state (none / full / own)",
   render: () => ({
@@ -141,8 +135,10 @@ export const MultiState: Story = {
   },
 };
 
-// The override flavour cycles through four states — inherit, grant
-// (primary), grant-own (accent), revoke (danger).
+/**
+ * The override flavour cycles through four states: inherit, grant
+ * (primary), grant-own (accent), revoke (danger).
+ */
 export const MultiStateLadder: Story = {
   name: "Multi-state ladder (4-state override)",
   render: () => ({
@@ -361,10 +357,10 @@ export const CardVariantColored: Story = {
 
 // ── Bare ────────────────────────────────────────────────────────────
 
-// `bare` strips the row's vertical breathing padding and the box↔label
-// gap. The box stays the same; only the surrounding chrome is removed.
-// Used when the consumer owns the layout (overlay corners, list-row
-// columns, dense table cells) and wants the checkbox to sit flush.
+/**
+ * `bare` strips the row padding and the box-label gap, for consumers that own
+ * the layout (overlay corners, dense cells).
+ */
 export const Bare: Story = {
   name: "Bare (no breathing padding)",
   render: () => ({
@@ -392,6 +388,34 @@ export const Bare: Story = {
       description: {
         story:
           "Use `bare` when the consumer owns the surrounding layout (e.g. GameCard overlay corner, list-row checkbox column).",
+      },
+    },
+  },
+};
+
+export const Decorative: Story = {
+  render: () => ({
+    components: { RCheckbox },
+    setup: () => ({ checked: ref(true) }),
+    template: `
+      <button
+        type="button"
+        role="checkbox"
+        :aria-checked="checked"
+        aria-label="Chrono Trigger"
+        style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px"
+        @click="checked = !checked"
+      >
+        <RCheckbox :model-value="checked" decorative bare hide-details shape="circle" />
+        Chrono Trigger
+      </button>
+    `,
+  }),
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Use `decorative` when an enclosing control owns the state, such as a selectable card: the box mirrors it with no input of its own.",
       },
     },
   },
@@ -437,7 +461,7 @@ export const Group: Story = {
   }),
 };
 
-// ── Real-world — "select all" indeterminate ─────────────────────────
+// ── Real-world: "select all" indeterminate ─────────────────────────
 
 export const SelectAll: Story = {
   name: "Select-all (indeterminate header)",

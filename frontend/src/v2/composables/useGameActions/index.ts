@@ -1,14 +1,3 @@
-// useGameActions — shared action handlers for a ROM. One place for
-// play / download / favorite / share / match / refresh / edit / delete /
-// add-to-collection. Consumed by every surface that shows per-ROM actions
-// (MoreMenu on GameCard, MoreMenu in GameDetails header, etc.) so the
-// action list stays in sync.
-//
-// Usage:
-//   const actions = useGameActions(() => rom.value);
-//   actions.play(); actions.toggleFavorite(); …
-//   actions.isFavorite     // reactive Ref<boolean>
-//   actions.canManageCollections  // reactive Ref<boolean>
 import type { Emitter } from "mitt";
 import { computed, inject, type InjectionKey, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -18,12 +7,18 @@ import { useFavoriteToggle } from "@/composables/useFavoriteToggle";
 import { useUISettings } from "@/composables/useUISettings";
 import romApi from "@/services/api/rom";
 import storeAuth from "@/stores/auth";
+import storeHeartbeat from "@/stores/heartbeat";
 import storeRoms from "@/stores/roms";
-import type { SimpleRom } from "@/stores/roms";
+import type { DetailedRom, SimpleRom } from "@/stores/roms";
 import { useStreamingStore } from "@/stores/streaming";
 import type { Events } from "@/types/emitter";
 import type { PlayingStatus } from "@/utils";
-import { getDownloadLink, getDownloadPath, isNintendoDSRom } from "@/utils";
+import {
+  getDownloadLink,
+  getDownloadPath,
+  getSoleRomFile,
+  isNintendoDSRom,
+} from "@/utils";
 import { useCan } from "@/v2/composables/useCan";
 import { useCanPlay } from "@/v2/composables/useCanPlay";
 import { useClipboard } from "@/v2/composables/useClipboard";
@@ -33,6 +28,7 @@ import { useRomSync } from "@/v2/composables/useRomSync";
 import { useScanTrigger } from "@/v2/composables/useScanTrigger";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import { useViewTransition } from "@/v2/composables/useViewTransition";
+import storeFormatConversions from "@/v2/stores/formatConversions";
 
 export interface GameActionsOptions {
   /** Resolver for the cover element to morph from when `play()` navigates to
@@ -47,7 +43,13 @@ export interface GameActionsOptions {
 /** Which player a launch is asking for. "auto" lets availability decide. */
 export type PlayTarget = "auto" | "local" | "stream";
 
-type PlayerSlug = "stream" | "jsdos" | "ejs" | "pico8" | "ruffle";
+type PlayerSlug = "stream" | "jsdos" | "ejs" | "pico8" | "easyrpg" | "ruffle";
+
+// A conversion can take a while on large discs; stop polling after about an hour.
+const FORMAT_POLL_SECONDS = 30;
+const FORMAT_POLL_LIMIT = 120;
+// Shared across menus so a second click doesn't start another poll and download.
+const pendingFormatDownloads = new Set<string>();
 
 // Validate flashpoint game IDs are UUIDs
 const FLASHPOINT_ID_RE =
@@ -69,6 +71,7 @@ export function useGameActions(
   const { syncCachedRom, refreshAfterUserStateChange, refreshIfOrderedBy } =
     useRomSync();
   const auth = storeAuth();
+  const heartbeat = storeHeartbeat();
   const canCreateCollection = useCan("collection.create");
   const canEditCollection = useCan("collection.edit");
   // Write/destructive gates, mirroring the backend grants. Surfaces that
@@ -90,8 +93,11 @@ export function useGameActions(
     canPlayEJS,
     canPlayJsDos,
     canPlayPico8,
+    canPlayEasyRpg,
     canPlayRuffle,
+    canReachStream,
     canPlayStream,
+    canPlayNative,
   } = useCanPlay(getRom);
   const streamingStore = useStreamingStore();
 
@@ -102,12 +108,28 @@ export function useGameActions(
       canPlayEJS.value ||
       canPlayJsDos.value ||
       canPlayPico8.value ||
+      canPlayEasyRpg.value ||
       canPlayRuffle.value,
+  );
+
+  // Whether the Play button has a play page to open. The desktop shell's own
+  // emulator is offered from that page alongside the in-browser core, so a
+  // platform only the shell can run still needs the button.
+  const canPlayLocally = computed(
+    () => canPlayInBrowser.value || canPlayNative.value,
   );
 
   // Download, the copied link and the QR code all resolve to the download
   // endpoint, which has nothing to serve without a file behind the rom.
   const canDownload = computed(() => Boolean(getRom()?.has_file_on_disk));
+
+  // Only the detailed rom carries them, already narrowed to what this caller
+  // can convert its single file to.
+  const downloadFormats = computed<string[]>(() => {
+    const rom = getRom() as Partial<DetailedRom> | null | undefined;
+    if (!rom || !canDownload.value) return [];
+    return rom.download_formats ?? [];
+  });
 
   // Names the box the session runs on, so a library served by more than one
   // container says which the button reaches.
@@ -121,7 +143,7 @@ export function useGameActions(
   // and holds the answer for a freshness window, so a gallery of cards costs
   // what a single card costs.
   watch(
-    canPlayStream,
+    canReachStream,
     (can) => {
       if (can) void streamingStore.fetchJoinableSessions();
     },
@@ -138,7 +160,7 @@ export function useGameActions(
   });
 
   const canJoinStream = computed(
-    () => canPlayStream.value && joinableSession.value !== null,
+    () => canReachStream.value && joinableSession.value !== null,
   );
 
   const joinHostLabel = computed(
@@ -177,10 +199,7 @@ export function useGameActions(
     return ru.status ?? null;
   });
 
-  // Writes only the enum `status` field (incomplete | finished | …).
-  // Distinct from setStatus(null) which v1 used to nuke every status
-  // signal at once — Overview's enum dropdown wants to clear only its
-  // own field without touching the boolean flags.
+  /** Set the status enum, leaving the boolean status flags alone. */
   async function setStatusEnum(value: RomUserStatus | null) {
     const rom = getRom();
     if (!rom?.rom_user) return;
@@ -240,10 +259,7 @@ export function useGameActions(
     refreshAfterUserStateChange();
   }
 
-  // Optimistic write of a numeric per-user field (rating | difficulty
-  // | completion). Mirrors setStatus' revert-on-error pattern. v1 stores
-  // 0 to mean "no value" — we accept null at the call site and coerce
-  // to 0 so the backend keeps a uniform shape.
+  /** Set a per-user score; null is sent as 0, the backend's "no value". */
   async function setScore(
     field: "rating" | "difficulty" | "completion",
     value: number | null,
@@ -268,11 +284,7 @@ export function useGameActions(
     }
   }
 
-  // Permission-driven, not state-driven. The previous "count > 0"
-  // check hid the entry exactly when the user needed it most — to
-  // create the first collection from a ROM (ManageCollectionsDialog
-  // bundles toggle + create flows in one surface). Backend rejects
-  // unauthorised writes regardless, so this gate is purely UX.
+  /** Gated on permission, not on existing collections, so a ROM can start the first one. */
   const canManageCollections = computed(
     () => canCreateCollection.value || canEditCollection.value,
   );
@@ -285,6 +297,27 @@ export function useGameActions(
             ["3ds", "new-nintendo-3ds"].includes(rom.platform_slug))
       : false;
   });
+
+  const canInstallOnDevice = computed(() => {
+    const rom = getRom();
+    const deviceInstall = heartbeat.value.DEVICE_INSTALL;
+    return Boolean(
+      rom?.has_file_on_disk &&
+      deviceInstall.ENABLED &&
+      !deviceInstall.EXCLUDED_PLATFORM_SLUGS.includes(
+        rom.platform_slug.toLowerCase(),
+      ) &&
+      auth.scopes.includes("devices.read") &&
+      auth.scopes.includes("devices.write") &&
+      auth.scopes.includes("roms.read"),
+    );
+  });
+
+  function installOnDevice() {
+    const rom = getRom();
+    if (!rom) return;
+    emitter?.emit("showInstallOnDeviceDialog", rom);
+  }
 
   const canOpenInFlashpoint = computed(() => {
     const rom = getRom();
@@ -344,7 +377,7 @@ export function useGameActions(
         await router.push(target);
       });
     } else {
-      router.push(target);
+      void router.push(target);
     }
   }
 
@@ -363,7 +396,11 @@ export function useGameActions(
     else if (canPlayJsDos.value) slug = "jsdos";
     else if (canPlayEJS.value) slug = "ejs";
     else if (canPlayPico8.value) slug = "pico8";
+    else if (canPlayEasyRpg.value) slug = "easyrpg";
     else if (canPlayRuffle.value) slug = "ruffle";
+    // Last, because the play page offers the native launch beside whichever
+    // in-browser core the branches above would have picked.
+    else if (canPlayNative.value) slug = "ejs";
     return slug ? `/rom/${rom.id}/${slug}` : null;
   }
 
@@ -380,6 +417,7 @@ export function useGameActions(
         romId: rom.id,
         romName: rom.name ?? rom.fs_name_no_ext ?? "",
         hostUsername: joinHostLabel.value || null,
+        container: joinableSession.value?.container ?? null,
       },
     );
   }
@@ -391,7 +429,7 @@ export function useGameActions(
 
   function goToPlatform() {
     const path = platformPath.value;
-    if (path) router.push(path);
+    if (path) void router.push(path);
   }
 
   function download() {
@@ -404,6 +442,47 @@ export function useGameActions(
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  async function downloadAs(format: string) {
+    const rom = getRom();
+    const file = rom ? getSoleRomFile(rom) : null;
+    if (!rom || !file) return;
+    const label = format.toUpperCase();
+    const href = getDownloadPath({ rom, fileIDs: [file.id], format });
+    if (pendingFormatDownloads.has(href)) return;
+    pendingFormatDownloads.add(href);
+    const formatConversions = storeFormatConversions();
+    try {
+      let probe = await romApi.probeFormatDownload(href);
+      if (probe.status === 202) {
+        snackbar.info(t("rom.download-as-preparing", { format: label }));
+        formatConversions.add({
+          href,
+          romId: rom.id,
+          romName: rom.name ?? rom.fs_name,
+          format: label,
+        });
+      }
+      let polls = 0;
+      while (probe.status === 202 && polls++ < FORMAT_POLL_LIMIT) {
+        const seconds = probe.retryAfterSeconds ?? FORMAT_POLL_SECONDS;
+        await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+        probe = await romApi.probeFormatDownload(href);
+      }
+      if (probe.status === 200 || probe.status === 206) {
+        await romApi.downloadRom({ rom, fileIDs: [file.id], format });
+        return;
+      }
+    } catch {
+      // A failed probe is reported like a format that can't be served.
+    } finally {
+      pendingFormatDownloads.delete(href);
+      formatConversions.remove(href);
+    }
+    snackbar.error(t("rom.download-as-unavailable", { format: label }), {
+      persist: { body: rom.name ?? rom.fs_name, link: `/rom/${rom.id}` },
+    });
   }
 
   async function favorite() {
@@ -426,7 +505,7 @@ export function useGameActions(
       try {
         await nav.share(shareData);
       } catch {
-        // user cancelled the native share sheet — nothing to do
+        // Dismissing the native share sheet rejects the promise.
       }
       return;
     }
@@ -463,18 +542,11 @@ export function useGameActions(
     const rom = getRom();
     if (!rom) return;
     const link = getDownloadLink({ rom });
-    if (navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(link);
-        snackbar.success(t("rom.snackbar-download-link-copied"), {
-          icon: "mdi-link-variant",
-        });
-        return;
-      } catch {
-        // fall through to dialog fallback
-      }
-    }
-    emitter?.emit("showCopyDownloadLinkDialog", link);
+    await clipboard.copy(link, {
+      successMessage: t("rom.snackbar-download-link-copied"),
+      successIcon: "mdi-link-variant",
+      fallback: () => emitter?.emit("showCopyDownloadLinkDialog", link),
+    });
   }
 
   function manageCollections() {
@@ -529,9 +601,7 @@ export function useGameActions(
     emitter?.emit("showDeleteRomDialog", [rom]);
   }
 
-  // Only relevant while the ROM carries a `last_played` timestamp — i.e.
-  // it currently sits in the Continue Playing row. Also requires the
-  // `roms.user.write` scope to match the backend gate and avoid a 403.
+  /** Requires roms.user.write, the scope the backend checks. */
   const canRemoveFromContinuePlaying = computed(
     () =>
       auth.scopes.includes("roms.user.write") &&
@@ -571,11 +641,13 @@ export function useGameActions(
     isFavorited,
     canManageCollections,
     canShareQR,
+    canInstallOnDevice,
     canOpenInFlashpoint,
     canDownload,
+    downloadFormats,
     canPlay,
     canPlayStream,
-    canPlayInBrowser,
+    canPlayLocally,
     streamLabel,
     streamActionLabel,
     canJoinStream,
@@ -597,9 +669,11 @@ export function useGameActions(
     goToPlatform,
     platformPath,
     download,
+    downloadAs,
     favorite,
     share,
     shareQR,
+    installOnDevice,
     openInFlashpoint,
     copyDownloadLink,
     manageCollections,

@@ -16,4 +16,3 @@ export type ActivityEntrySchema = {
     device_type: string;
     started_at: string;
 };
-

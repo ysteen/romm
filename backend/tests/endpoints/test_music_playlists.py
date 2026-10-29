@@ -1,3 +1,5 @@
+from typing import cast
+
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
@@ -7,6 +9,7 @@ from tests.endpoints.test_music import (  # noqa: F401
     music_library,
 )
 
+from handler.auth.rom_visibility import RomVisibilityFilter
 from handler.database import db_music_playlist_handler, db_rom_handler
 from models.rom import RomFile, RomFileCategory, TrackMeta
 from models.user import User
@@ -24,7 +27,7 @@ def playlist_id(
         headers=_auth(access_token),
     )
     assert r.status_code == status.HTTP_200_OK
-    return r.json()["id"]
+    return cast(int, r.json()["id"])
 
 
 def _add_tracks(client: TestClient, token: str, playlist: int, titles: list[str]):
@@ -196,6 +199,22 @@ def test_playlist_tracks_ordered_and_deduped(
     assert body[0]["track_count"] == 3
 
 
+def test_playlist_tracks_apply_limit_and_offset(
+    client: TestClient, access_token: str, playlist_id: int
+):
+    _add_tracks(
+        client, access_token, playlist_id, ["Jingle", "Green Hill", "Overworld"]
+    )
+
+    body = client.get(
+        f"/api/music/playlists/{playlist_id}/tracks?limit=1&offset=1",
+        headers=_auth(access_token),
+    ).json()
+
+    assert (body["limit"], body["offset"], body["total"]) == (1, 1, 3)
+    assert [i["title"] for i in body["items"]] == ["Green Hill"]
+
+
 def test_playlist_reorder(client: TestClient, access_token: str, playlist_id: int):
     ids = _add_tracks(
         client, access_token, playlist_id, ["Jingle", "Green Hill", "Overworld"]
@@ -322,7 +341,8 @@ def test_playlist_tracks_respect_viewer_hidden_platforms(
 
     pb = music_library["platform_b"].id
     rows, total = db_rom_handler.get_music_tracks(
-        playlist_id=playlist_id, hidden_platform_ids=[pb]
+        playlist_id=playlist_id,
+        visibility=RomVisibilityFilter(hidden_platform_ids=frozenset({pb})),
     )
     assert total == 1
     assert rows[0].title == "Green Hill"
@@ -387,7 +407,7 @@ def test_playlists_require_scopes(
     from datetime import timedelta
 
     from config import OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS
-    from handler.auth import oauth_handler
+    from handler.auth.base_handler import oauth_handler
 
     read_only = oauth_handler.create_access_token(
         data={

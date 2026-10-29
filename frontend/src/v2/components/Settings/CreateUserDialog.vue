@@ -1,23 +1,21 @@
 <script setup lang="ts">
-// CreateUserDialog — create a user with profile fields plus access: an Admin
+// CreateUserDialog creates a user with profile fields plus access: an Admin
 // toggle and, for non-admins, an initial permission group. Replaces the old
 // role select (roles are superseded by admin-vs-user + groups).
 import { RBtn, RIcon, RSelect, RSwitch, RTextField } from "@v2/lib";
-import type { Emitter } from "mitt";
-import { computed, inject, ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import permissionsApi from "@/services/api/permissions";
 import userApi from "@/services/api/user";
 import storePermissionGroups from "@/stores/permissionGroups";
 import storeUsers from "@/stores/users";
-import type { Events } from "@/types/emitter";
+import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
 import { useSnackbar } from "@/v2/composables/useSnackbar";
 import RDialog from "@/v2/lib/overlays/RDialog/RDialog.vue";
 
 defineOptions({ inheritAttrs: false });
 
 const { t } = useI18n();
-const emitter = inject<Emitter<Events>>("emitter");
 const usersStore = storeUsers();
 const groupsStore = storePermissionGroups();
 const snackbar = useSnackbar();
@@ -36,13 +34,15 @@ const groupItems = computed(() =>
 
 const defaultGroupId = computed(() => groupsStore.defaultGroup?.id ?? null);
 
-emitter?.on("showCreateUserDialog", async () => {
+async function open() {
   reset();
   show.value = true;
   await groupsStore.ensureLoaded();
   // Pre-select the server default group so new users start where they land.
   groupId.value = defaultGroupId.value;
-});
+}
+
+useEmitterEvent("showCreateUserDialog", () => void open());
 
 const confirmPasswordRules = computed(() => [
   (v: string) => !!v || t("settings.repeat-password-required"),
@@ -237,7 +237,7 @@ function close() {
 }
 .r-v2-user-dialog__admin {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 12px;
   flex-wrap: wrap;
 }

@@ -12,12 +12,14 @@ this phase; per-resource scoping is reserved for later.
 from __future__ import annotations
 
 import enum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from handler.auth.permissions import ResolvedPermissions
-from models.permission import PermAction, PermEntity
+from models.permission import MAX_AGE_LIMIT, PermAction, PermEntity, SystemGroupKey
+
+AgeLimit = Annotated[int, Field(ge=0, le=MAX_AGE_LIMIT)]
 
 
 class ActionKey(enum.StrEnum):
@@ -45,6 +47,10 @@ class ActionKey(enum.StrEnum):
     PLAYLIST_EDIT = "playlist.edit"
     # Library
     LIBRARY_SCAN = "library.scan"
+    # Streaming read has no key: the UI reads the streaming config's `enabled`.
+    STREAM_START = "stream.start"
+    # Netplay (rom.play is the emulation read grant)
+    NETPLAY_HOST = "netplay.host"
     # Users
     USER_VIEW = "user.view"
     USER_CREATE = "user.create"
@@ -61,7 +67,6 @@ class ActionKey(enum.StrEnum):
 _ENTITY_ACTION_KEYS: dict[tuple[PermEntity, PermAction], tuple[ActionKey, ...]] = {
     (PermEntity.ROMS, PermAction.READ): (
         ActionKey.ROM_VIEW,
-        ActionKey.ROM_PLAY,
         ActionKey.ROM_DOWNLOAD,
         ActionKey.ROM_FAVORITE,
     ),
@@ -86,6 +91,9 @@ _ENTITY_ACTION_KEYS: dict[tuple[PermEntity, PermAction], tuple[ActionKey, ...]] 
     ),
     (PermEntity.COLLECTIONS, PermAction.DELETE): (ActionKey.COLLECTION_DELETE,),
     (PermEntity.PLAYLISTS, PermAction.WRITE): (ActionKey.PLAYLIST_EDIT,),
+    (PermEntity.STREAMING, PermAction.WRITE): (ActionKey.STREAM_START,),
+    (PermEntity.EMULATION, PermAction.READ): (ActionKey.ROM_PLAY,),
+    (PermEntity.EMULATION, PermAction.WRITE): (ActionKey.NETPLAY_HOST,),
     (PermEntity.USERS, PermAction.READ): (ActionKey.USER_VIEW,),
     (PermEntity.USERS, PermAction.WRITE): (
         ActionKey.USER_CREATE,
@@ -164,13 +172,16 @@ class PermissionGroupSchema(BaseModel):
     name: str
     description: str
     is_default: bool
-    is_system: bool
+    system_key: SystemGroupKey | None
     color: str | None
     grants: list[GrantSchemaIO]
     member_count: int
     # Entities hidden from every member of this group (admin override still
     # applies per-user on top). Empty for groups with no group-level hides.
     hidden: list[HiddenEntitySchema] = []
+    # Members see only ROMs rated for this age or younger; null sets no limit.
+    age_limit: int | None = None
+    hide_unrated_roms: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -181,6 +192,8 @@ class PermissionGroupCreate(BaseModel):
     is_default: bool = False
     color: str | None = None
     grants: list[GrantSchemaIO] = []
+    age_limit: AgeLimit | None = None
+    hide_unrated_roms: bool = False
 
 
 class PermissionGroupUpdate(BaseModel):
@@ -189,6 +202,10 @@ class PermissionGroupUpdate(BaseModel):
     is_default: bool | None = None
     color: str | None = None
     grants: list[GrantSchemaIO] | None = None
+    # With `set_age_settings`, both are written as given; a null limit clears it.
+    age_limit: AgeLimit | None = None
+    hide_unrated_roms: bool = False
+    set_age_settings: bool = False
 
 
 class OverrideSchemaIO(BaseModel):
@@ -218,6 +235,9 @@ class UserPermissionsSchema(BaseModel):
     permission_group_id: int | None
     overrides: list[OverrideSchemaIO]
     hidden: list[HiddenEntitySchema]
+    # Replacements for the group's age settings; null inherits the group's.
+    age_limit: int | None = None
+    hide_unrated_roms: bool | None = None
 
 
 class UserPermissionsUpdate(BaseModel):
@@ -226,6 +246,10 @@ class UserPermissionsUpdate(BaseModel):
     permission_group_id: int | None = None
     set_group: bool = False
     overrides: list[OverrideSchemaIO] | None = None
+    # With `set_age_settings`, both are written as given; null inherits.
+    age_limit: AgeLimit | None = None
+    hide_unrated_roms: bool | None = None
+    set_age_settings: bool = False
 
 
 class PermissionCatalogSchema(BaseModel):

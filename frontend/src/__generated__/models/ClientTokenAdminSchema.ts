@@ -15,4 +15,3 @@ export type ClientTokenAdminSchema = {
     user_avatar_path: string;
     user_updated_at: string;
 };
-

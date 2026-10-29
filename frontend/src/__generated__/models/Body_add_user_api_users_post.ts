@@ -8,4 +8,3 @@ export type Body_add_user_api_users_post = {
     password: string;
     role: string;
 };
-

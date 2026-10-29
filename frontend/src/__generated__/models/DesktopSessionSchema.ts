@@ -9,4 +9,3 @@ export type DesktopSessionSchema = {
     label: string;
     claimed_at: string;
 };
-

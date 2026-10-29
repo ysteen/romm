@@ -14,4 +14,3 @@ export type LaunchingSessionSchema = {
     rom_name: string;
     claimed_at: string;
 };
-

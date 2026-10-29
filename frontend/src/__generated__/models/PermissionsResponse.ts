@@ -9,4 +9,3 @@ export type PermissionsResponse = {
     grants: Array<GrantSchema>;
     hidden: HiddenEntitiesSchema;
 };
-

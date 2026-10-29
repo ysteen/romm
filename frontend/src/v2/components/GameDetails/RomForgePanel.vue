@@ -146,7 +146,7 @@ watch(
   () => props.rom.id,
   () => {
     sourceId.value =
-      sourceFiles.value.length === 1 ? sourceFiles.value[0].id : null;
+      sourceFiles.value.length === 1 ? sourceFiles.value[0]!.id : null;
     patchId.value = null;
     upload.value = null;
     qr.value = "";

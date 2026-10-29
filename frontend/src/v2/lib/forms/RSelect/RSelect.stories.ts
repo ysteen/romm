@@ -1,6 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/vue3-vite";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ref } from "vue";
+import RMenu from "@/v2/lib/menus/RMenu/RMenu.vue";
+import RMenuItem from "@/v2/lib/menus/RMenuItem/RMenuItem.vue";
+import RBtn from "@/v2/lib/primitives/RBtn/RBtn.vue";
 import RIcon from "@/v2/lib/primitives/RIcon/RIcon.vue";
+import { CONTRAST_TODO_PARAMETERS } from "@/v2/utils/storyA11y";
 import RSelect from "./RSelect.vue";
 
 const ROLES = [
@@ -24,9 +29,12 @@ const PLATFORMS = [
   { title: "PC", value: "pc" },
 ];
 
-const meta: Meta<typeof RSelect> = {
+// Generic components can't fill Storybook's `component` slot, so it's cast;
+// the instantiation types the stories' args.
+const meta: Meta<typeof RSelect<unknown, unknown>> = {
   title: "Forms/RSelect",
-  component: RSelect,
+  component: RSelect as never,
+  parameters: CONTRAST_TODO_PARAMETERS,
   argTypes: {
     variant: {
       control: "inline-radio",
@@ -40,30 +48,8 @@ const meta: Meta<typeof RSelect> = {
       control: "inline-radio",
       options: [undefined, "stacked", "inline"],
     },
-    label: { control: "text" },
-    placeholder: { control: "text" },
     multiple: { control: "boolean" },
-    chips: { control: "boolean" },
-    closableChips: { control: "boolean" },
-    chipTone: {
-      control: "select",
-      options: [
-        "neutral",
-        "brand",
-        "accent",
-        "success",
-        "danger",
-        "warning",
-        "info",
-        "plain",
-      ],
-    },
     clearable: { control: "boolean" },
-    disabled: { control: "boolean" },
-    readonly: { control: "boolean" },
-    loading: { control: "boolean" },
-    searchable: { control: "boolean" },
-    error: { control: "boolean" },
     errorMessages: { control: "text" },
   },
   render: (args) => ({
@@ -82,7 +68,7 @@ const meta: Meta<typeof RSelect> = {
 
 export default meta;
 
-type Story = StoryObj<typeof RSelect>;
+type Story = StoryObj<typeof RSelect<unknown, unknown>>;
 
 // ── Defaults ────────────────────────────────────────────────────────
 
@@ -233,9 +219,10 @@ export const Multiple: Story = {
   }),
 };
 
-// Without `chips` the selections render as one run of text. The comma
-// separator must read "A, B" — a space on both sides means the separator
-// picked up the value row's flex gap.
+/**
+ * Without `chips` the selections render as one run of text, separated as "A, B"
+ * with no space before the comma.
+ */
 export const MultipleText: Story = {
   name: "Multiple (no chips)",
   render: () => ({
@@ -272,10 +259,10 @@ export const MultipleOverflow: Story = {
 
 // ── Searchable ─────────────────────────────────────────────────────
 
-// `searchable` filters items internally without any v-model:search
-// binding. Drop in the prop and the menu gets a search field that
-// filters the list as you type. (Previously this required the parent
-// to wire v-model:search to a ref + manually filter `items`.)
+/**
+ * `searchable` adds a search field that filters the items internally, with no
+ * `v-model:search` binding.
+ */
 export const Searchable: Story = {
   render: () => ({
     components: { RSelect },
@@ -310,12 +297,29 @@ export const SearchableExternal: Story = {
   }),
 };
 
+/**
+ * `itemSearchTerms` lets the search match strings beyond the title, so
+ * "ps2" finds "PlayStation 2" through its value.
+ */
+export const SearchableExtraTerms: Story = {
+  name: "Searchable · extra search terms",
+  render: () => ({
+    components: { RSelect },
+    setup: () => ({
+      value: ref<string | null>(null),
+      items: PLATFORMS,
+      searchTerms: (item: (typeof PLATFORMS)[number]) => [item.value],
+    }),
+    template: `<div style="width:340px"><RSelect v-model="value" :items="items" :item-search-terms="searchTerms" searchable search-placeholder="Try ps2 or gba" placeholder="Pick a platform" /></div>`,
+  }),
+};
+
 // ── Chip tone ──────────────────────────────────────────────────────
 
-// `chipTone` controls how the selection chips render in multi mode.
-// Default `brand` paints a brand-coloured pill; `plain` strips the
-// pill background entirely (used by PlatformSelect to let icons read
-// without surrounding colour); the rest pick a semantic tone.
+/**
+ * `chipTone` sets how multi-mode selection chips render: a `brand` pill,
+ * `plain` with no background, or a semantic tone.
+ */
 export const ChipTones: Story = {
   name: "Chip tones (multiple)",
   render: () => ({
@@ -350,9 +354,10 @@ export const ChipTones: Story = {
 
 // ── Chip slot ──────────────────────────────────────────────────────
 
-// Use the `#chip` slot to fully control chip content — replace the
-// default label/title with a custom layout (icon, avatar, mini-card).
-// The slot receives the active item; styling falls back to chipTone.
+/**
+ * The `#chip` slot replaces the chip content with a custom layout; its styling
+ * still follows `chipTone`.
+ */
 export const ChipSlotIconOnly: Story = {
   name: "#chip slot — icon-only chips",
   render: () => ({
@@ -512,4 +517,70 @@ export const FormRow: Story = {
       </div>
     `,
   }),
+};
+
+/**
+ * A menu opened from inside the panel teleports outside it; using that
+ * menu must not count as a press outside the select.
+ */
+export const NestedMenu: Story = {
+  name: "Menu inside the panel",
+  render: () => ({
+    components: { RSelect, RMenu, RMenuItem, RBtn },
+    setup: () => {
+      const value = ref<string | null>(null);
+      const items = ref<{ title: string; value: string }[]>([]);
+      function add(title: string) {
+        items.value.push({ title, value: title.toLowerCase() });
+      }
+      return { value, items, add };
+    },
+    template: `
+      <div style="width:340px">
+        <RSelect v-model="value" :items="items" placeholder="Pick a collection">
+          <template #no-data>
+            <RMenu>
+              <template #activator="{ props }">
+                <RBtn v-bind="props" size="small" variant="translucent" append-icon="mdi-chevron-down">
+                  Add a collection
+                </RBtn>
+              </template>
+              <RMenuItem label="Favourites" @click="add('Favourites')" />
+              <RMenuItem label="Backlog" @click="add('Backlog')" />
+            </RMenu>
+          </template>
+        </RSelect>
+      </div>
+    `,
+  }),
+  play: async ({ canvasElement, step }) => {
+    // The panel and the menu teleport to <body>, outside the story canvas.
+    const body = within(document.body);
+    const field = canvasElement.querySelector<HTMLElement>(".r-select__field");
+
+    await step(
+      "Open the select, then the menu in its empty state",
+      async () => {
+        await userEvent.click(field!);
+        await userEvent.click(
+          await body.findByRole("button", { name: "Add a collection" }),
+        );
+      },
+    );
+
+    await step("Picking from the menu keeps the select open", async () => {
+      await userEvent.click(await body.findByText("Backlog"));
+      await waitFor(() =>
+        expect(body.getByRole("option", { name: "Backlog" })).toBeTruthy(),
+      );
+      await expect(document.querySelector(".r-select__panel")).not.toBeNull();
+    });
+
+    await step("A press outside both closes the select", async () => {
+      await userEvent.click(document.body);
+      await waitFor(() =>
+        expect(document.querySelector(".r-select__panel")).toBeNull(),
+      );
+    });
+  },
 };

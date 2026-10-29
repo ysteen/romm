@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// RForm — native `<form>` that provides a registration context so
+// RForm: native `<form>` that provides a registration context so
 // descendant form fields (RTextField, RSelect, RCheckbox) auto-enroll.
 // The form aggregates their validity into `modelValue` and exposes
 // `validate()` / `reset()` to consumers.
@@ -10,14 +10,15 @@
 //   • After a failed `validate()`, scrolls the first invalid field
 //     into view and focuses it.
 import { computed, ref, useAttrs, watch } from "vue";
+import { focusFromInput } from "@/v2/utils/autofocus";
 import type { RFormField } from "./context";
 import { provideRForm } from "./context";
 
 defineOptions({ inheritAttrs: false });
 
 interface Props {
-  /** v-model — true when every registered field passes its rules. */
-  modelValue?: boolean;
+  /** v-model: true when every registered field passes its rules. */
+  modelValue?: boolean | undefined;
   /** Disable the Enter-to-submit shortcut. */
   disableEnterSubmit?: boolean;
   /** Disable the scroll-to-first-error helper. */
@@ -53,7 +54,9 @@ provideRForm({ register, unregister });
 
 // ── Public API ──────────────────────────────────────────────────
 async function validate(): Promise<{ valid: boolean }> {
-  const results = await Promise.all(fields.value.map((f) => f.validate()));
+  const results = await Promise.all(
+    fields.value.map((f) => Promise.resolve(f.validate())),
+  );
   const valid = results.every(Boolean);
   emit("update:modelValue", valid);
   if (!valid && !props.disableScrollToError) scrollToFirstError();
@@ -78,19 +81,19 @@ function scrollToFirstError() {
     if (!el) continue;
     if (el.getAttribute("aria-invalid") === "true") {
       el.scrollIntoView({ block: "center", behavior: "smooth" });
-      if (typeof el.focus === "function") el.focus();
+      if (typeof el.focus === "function") focusFromInput(el);
       return;
     }
   }
   const target = root.querySelector<HTMLElement>('[aria-invalid="true"]');
   if (!target) return;
   target.scrollIntoView({ block: "center", behavior: "smooth" });
-  if (typeof target.focus === "function") target.focus();
+  if (typeof target.focus === "function") focusFromInput(target);
 }
 
 defineExpose({ validate, reset, resetValidation });
 
-// Aggregate validity — flips reactively as any field gains or loses an
+// Aggregate validity: flips reactively as any field gains or loses an
 // error. Initial state is `true` (no errors yet); typing into a field
 // with rules will make it `false` as soon as the first rule fails.
 const allValid = computed(() => fields.value.every((f) => f.validity()));
@@ -115,11 +118,14 @@ function onSubmit(ev: Event) {
 </script>
 
 <template>
+  <!-- `novalidate`: fields report through their rules and RTooltip, never
+       the browser's own validation bubbles. -->
   <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- form-level keydown implements Enter-to-submit (§VI.F); the form is the correct owner -->
   <form
     ref="formRef"
     v-bind="attrs"
     class="r-form"
+    novalidate
     @submit="onSubmit"
     @keydown="onKeyDown"
   >
@@ -128,7 +134,7 @@ function onSubmit(ev: Event) {
 </template>
 
 <style scoped>
-/* RForm renders a transparent native `<form>` — no chrome of its own.
+/* RForm renders a transparent native `<form>`: no chrome of its own.
    Consumers control layout via their own children. */
 .r-form {
   display: contents;

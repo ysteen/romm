@@ -2,14 +2,11 @@ import type { Meta, StoryObj } from "@storybook/vue3";
 import { ref } from "vue";
 import RSliderBtnGroup from "./RSliderBtnGroup.vue";
 
-// Storybook's Meta<typeof Component> struggles with <script setup generic>,
-// so we widen the component type here — runtime behaviour is unaffected.
-const meta: Meta = {
+// Generic components can't fill Storybook's `component` slot, so it's cast;
+// the instantiation types the stories' args.
+const meta: Meta<typeof RSliderBtnGroup<string>> = {
   title: "Primitives/RSliderBtnGroup",
-  // Cast needed: <script setup generic> types aren't compatible with
-  // Storybook's ConcreteComponent constraint.
-  component: RSliderBtnGroup as unknown as Meta["component"],
-  tags: ["autodocs"],
+  component: RSliderBtnGroup as never,
   argTypes: {
     variant: {
       control: "select",
@@ -19,8 +16,6 @@ const meta: Meta = {
       control: "select",
       options: ["horizontal", "vertical"],
     },
-    disabled: { control: "boolean" },
-    ariaLabel: { control: "text" },
   },
   parameters: {
     docs: {
@@ -80,8 +75,10 @@ export const Tab: Story = {
   }),
 };
 
-// Vertical tab pill — same aesthetic and sliding indicator as the
-// horizontal tab variant, just stacked.
+/**
+ * Vertical tab pill: same aesthetic and sliding indicator as the
+ * horizontal tab variant, just stacked.
+ */
 export const VerticalTab: Story = {
   args: { variant: "tab", orientation: "vertical" },
   render: (args) => ({
@@ -116,8 +113,10 @@ export const VerticalTab: Story = {
   },
 };
 
-// Vertical segmented — icon-only column with the indicator following
-// the active item. Useful as a side rail for view switchers.
+/**
+ * Vertical segmented: icon-only column with the indicator following
+ * the active item. Useful as a side rail for view switchers.
+ */
 export const VerticalSegmented: Story = {
   args: { variant: "segmented", orientation: "vertical" },
   render: (args) => ({

@@ -37,4 +37,3 @@ export type RomGamelistMetadata = {
     title_screen_path?: (string | null);
     video_path?: (string | null);
 };
-

@@ -12,4 +12,3 @@ export type Body_update_save_api_saves__id__put = {
      */
     screenshotFile?: (string | null);
 };
-

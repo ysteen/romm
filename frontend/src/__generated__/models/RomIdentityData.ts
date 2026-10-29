@@ -20,4 +20,3 @@ export type RomIdentityData = {
      */
     save_target_layout?: (SaveTargetLayout | null);
 };
-

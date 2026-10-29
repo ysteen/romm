@@ -17,4 +17,3 @@ export type RomHLTBMetadata = {
     popularity?: number;
     completions?: number;
 };
-

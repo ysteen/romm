@@ -18,4 +18,3 @@ export type RomSteamMetadata = {
     is_free?: boolean;
     required_age?: number;
 };
-

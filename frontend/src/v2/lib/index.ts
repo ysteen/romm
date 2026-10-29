@@ -1,4 +1,4 @@
-// RomM v2 Component Library — barrel export.
+// RomM v2 Component Library: barrel export.
 //
 // Only design-system *primitives* live here. Specializations (BackBtn,
 // PlatformTile, InfoPanel, …) belong under src/v2/components/<feature>/
@@ -63,11 +63,11 @@ export * from "./overlays/RDialog";
 export * from "./overlays/RDrawer";
 
 // Data
+export * from "./data/RSortHeader";
 export * from "./data/RTable";
 
 // Media
 export * from "./media/RBox3D";
-export * from "./media/RPlatformIcon";
 
-// (GameCard lives under components/GameCard/ — it's a feature
+// (GameCard lives under components/GameCard/: it's a feature
 // composite that depends on stores + useGameActions, not a lib primitive.)

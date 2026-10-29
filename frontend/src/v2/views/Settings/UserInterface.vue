@@ -1,25 +1,29 @@
 <script setup lang="ts">
-// UserInterface — v2-native UI preferences view.
+// UserInterface: v2-native UI preferences view.
 //
 // Sections:
-//   1. Language          (RSelect — prefix-label)
+//   1. Language          (RSelect, prefix-label)
 //   2. Theme             (3-button compact picker)
 //   3. Home              (toggle grid)
 //   4. Gallery           (toggle grid + boxart RSelect prefix-label +
 //                         advanced per-page boxart overrides)
-//   5. Gameplay          (launch-confirmation toggle)
-//   6. Virtual collections (RSelect prefix-label)
-//   7. UI version        (v2-only, beta — kept last)
+//   5. Jukebox           (resume-after-reload toggle)
+//   6. Gameplay          (launch-confirmation toggle)
+//   7. Desktop shell     (only inside it; opens its own settings)
+//   8. Virtual collections (RSelect prefix-label)
+//   9. UI version        (v2-only, beta, kept last)
 //
 // The v1 "Platforms drawer" section was removed (no equivalent in v2).
-// `useUISettings` still exposes `platformsGroupBy` for v1 — we just
+// `useUISettings` still exposes `platformsGroupBy` for v1; we just
 // don't surface it here.
 import { RBtn, RIcon, RSelect, RSliderBtnGroup, RChip } from "@v2/lib";
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useUISettings } from "@/composables/useUISettings";
 import { useUiVersion } from "@/composables/useUiVersion";
+import { canOpenNativeSettings, openNativeSettings } from "@/services/native";
 import storeCollections from "@/stores/collections";
+import { useNativeStore } from "@/stores/native";
 import CrtWarmup from "@/v2/components/AppShell/CrtWarmup.vue";
 import WidgetReorderList from "@/v2/components/Home/Widgets/WidgetReorderList.vue";
 import SettingsSection from "@/v2/components/Settings/SettingsSection.vue";
@@ -30,11 +34,26 @@ import { isBoxartStyle } from "@/v2/composables/useCoverArt";
 import { useCrtMode } from "@/v2/composables/useCrtMode";
 import { useDebugMode } from "@/v2/composables/useDebugMode";
 import { useReducedMotion } from "@/v2/composables/useReducedMotion";
+import { useSnackbar } from "@/v2/composables/useSnackbar";
 
 const { t } = useI18n();
 const uiVersion = useUiVersion();
 const { enabled: debugEnabled } = useDebugMode();
 const collectionsStore = storeCollections();
+const nativeStore = useNativeStore();
+const snackbar = useSnackbar();
+
+// The shell's settings are a file on the user's own machine, so this only asks
+// it to open them: RomM never reads or writes what is in there.
+const showShellSettings = nativeStore.available && canOpenNativeSettings();
+
+// A missing or unwritable configuration fails inside the shell, where the user
+// cannot see it, so the button would otherwise look like it does nothing.
+async function onOpenShellSettings() {
+  if (!(await openNativeSettings())) {
+    snackbar.error(t("settings.open-shell-settings-failed"));
+  }
+}
 
 const {
   theme: selectedTheme,
@@ -59,11 +78,14 @@ const {
   showRegions,
   showLanguages,
   showStatus,
+  showLogoTitle,
   disableAnimations,
   enableExperimentalCache,
   boxartStyle,
   boxartStyleDetails,
   boxartStylePlayer,
+  // Jukebox
+  resumeMusic,
   // Gameplay
   confirmProtectedLaunch,
 } = useUISettings();
@@ -91,7 +113,7 @@ function setTheme(value: Theme) {
   selectedTheme.value = value;
 }
 
-// Cosmetic easter egg — toggle the persistent "CRT mode" shader; switching
+// Cosmetic easter egg: toggle the persistent "CRT mode" shader; switching
 // it ON also fires the one-shot power-on warm-up flash.
 const { enabled: crtEnabled } = useCrtMode();
 const crtWarmup = ref<InstanceType<typeof CrtWarmup> | null>(null);
@@ -100,7 +122,7 @@ function onCrtToggle(value: boolean) {
   if (value) crtWarmup.value?.play();
 }
 
-// Reduced-motion mode — drop GPU-heavy decoration and animation (background
+// Reduced-motion mode: drop GPU-heavy decoration and animation (background
 // blur, cover blur-up, spins, transitions) for smoother rendering on low-power
 // devices. Per-device flag, defaults to the OS prefers-reduced-motion setting.
 const { enabled: reducedMotion } = useReducedMotion();
@@ -198,9 +220,9 @@ const virtualCollectionTypeItems = computed(() => [
 ]);
 
 function onVirtualCollectionTypeChange(value: unknown) {
-  const next = typeof value === "string" ? value : String(value ?? "");
+  const next = typeof value === "string" ? value : "";
   virtualCollectionType.value = next;
-  collectionsStore.fetchVirtualCollections(next);
+  void collectionsStore.fetchVirtualCollections(next);
 }
 </script>
 
@@ -323,7 +345,7 @@ function onVirtualCollectionTypeChange(value: unknown) {
           >
             <template #append>
               <!-- Compact / Extended segmented control. Lives inside
-                   the row so its scope reads at a glance — clicks
+                   the row so its scope reads at a glance; clicks
                    are stopped by the slot wrapper in SettingsToggleRow
                    so toggling the segmented control doesn't also flip
                    the row's main switch. -->
@@ -338,7 +360,7 @@ function onVirtualCollectionTypeChange(value: unknown) {
             </template>
           </SettingsToggleRow>
         </div>
-        <!-- Reorder list — drag handles let users decide the
+        <!-- Reorder list: drag handles let users decide the
              left-to-right order the widgets paint on Home. Disabled
              ones still show up so users can prep order before
              toggling them on. -->
@@ -355,7 +377,7 @@ function onVirtualCollectionTypeChange(value: unknown) {
           :description="t('settings.group-roms-desc')"
         />
         <!-- `showSiblings` (v1) was dropped: v2 folds the sibling-count
-             chip into `groupRoms` itself — when the gallery groups, the
+             chip into `groupRoms` itself. When the gallery groups, the
              chip appears; when it doesn't, every version shows
              separately so the chip would be noise. The shared
              `useUISettings` key stays for v1 only; remove when v1 dies. -->
@@ -373,6 +395,11 @@ function onVirtualCollectionTypeChange(value: unknown) {
           v-model="showLanguages"
           :title="t('settings.show-languages')"
           :description="t('settings.show-languages-desc')"
+        />
+        <SettingsToggleRow
+          v-model="showLogoTitle"
+          :title="t('settings.show-logo-title')"
+          :description="t('settings.show-logo-title-desc')"
         />
         <SettingsToggleRow
           v-model="disableAnimations"
@@ -440,6 +467,20 @@ function onVirtualCollectionTypeChange(value: unknown) {
       </div>
     </SettingsSection>
 
+    <!-- Jukebox -->
+    <SettingsSection
+      :title="t('common.jukebox')"
+      icon="mdi-music-box-multiple-outline"
+    >
+      <div class="r-v2-ui__toggle-grid r-v2-ui__toggle-grid--single">
+        <SettingsToggleRow
+          v-model="resumeMusic"
+          :title="t('settings.resume-music')"
+          :description="t('settings.resume-music-desc')"
+        />
+      </div>
+    </SettingsSection>
+
     <!-- Gameplay -->
     <SettingsSection
       :title="t('settings.gameplay')"
@@ -451,6 +492,30 @@ function onVirtualCollectionTypeChange(value: unknown) {
           :title="t('settings.confirm-protected-launch')"
           :description="t('settings.confirm-protected-launch-desc')"
         />
+      </div>
+    </SettingsSection>
+
+    <SettingsSection
+      v-if="showShellSettings"
+      :title="t('settings.desktop-shell')"
+      icon="mdi-desktop-classic"
+    >
+      <div class="r-v2-ui__field">
+        <p class="r-v2-ui__desc">
+          {{
+            t("settings.desktop-shell-desc", {
+              version: nativeStore.shellVersion ?? "",
+            })
+          }}
+        </p>
+        <RBtn
+          variant="outlined"
+          size="small"
+          prepend-icon="mdi-cog-outline"
+          @click="onOpenShellSettings"
+        >
+          {{ t("settings.open-shell-settings") }}
+        </RBtn>
       </div>
     </SettingsSection>
 
@@ -475,7 +540,7 @@ function onVirtualCollectionTypeChange(value: unknown) {
       </div>
     </SettingsSection>
 
-    <!-- UI version (v2-only, beta) — kept last for parity. -->
+    <!-- UI version (v2-only, beta), kept last for parity. -->
     <SettingsSection :title="t('settings.ui-version')" icon="mdi-new-box">
       <div class="r-v2-ui__field">
         <p class="r-v2-ui__desc">
@@ -516,7 +581,7 @@ function onVirtualCollectionTypeChange(value: unknown) {
       </div>
     </SettingsSection>
 
-    <!-- Developer — kept dead last, after UI version. Debug overlay is a
+    <!-- Developer: kept dead last, after UI version. Debug overlay is a
          per-device localStorage toggle (useDebugMode), not synced to the
          account, so it never follows you across machines. -->
     <SettingsSection :title="t('settings.developer')" icon="mdi-bug-outline">
@@ -559,7 +624,7 @@ function onVirtualCollectionTypeChange(value: unknown) {
   max-width: 640px;
 }
 
-/* Toggle grid — 2 cols, hairline gap (the gap shows the section body's
+/* Toggle grid: 2 cols, hairline gap (the gap shows the section body's
    border colour through to give the divider effect). */
 .r-v2-ui__toggle-grid {
   display: grid;

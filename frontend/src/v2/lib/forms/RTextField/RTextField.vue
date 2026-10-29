@@ -1,17 +1,17 @@
 <script setup lang="ts">
-// RTextField — native `<input>` wrapped in a styled
-// field container. Four visual variants — `outlined` (default),
-// `filled`, `underlined`, `plain` — and three densities driving the
+// RTextField: native `<input>` wrapped in a styled
+// field container. Four visual variants (`outlined` (default),
+// `filled`, `underlined`, `plain`) and three densities driving the
 // row height via CSS vars.
 //
 // `prefix-label` keeps the two v2-specific label layouts working:
 //
-//   • "stacked" — label above the field, left-aligned, small/muted.
+//   • "stacked": label above the field, left-aligned, small/muted.
 //     Used in dialogs and Settings forms.
-//   • "inline" — label inside the field as a left "well", uppercase
+//   • "inline": label inside the field as a left "well", uppercase
 //     chip-style. Used in tight popovers and menu searches.
 //
-// Validation is local — `rules` is a list of `(v) => true | string`
+// Validation is local: `rules` is a list of `(v) => true | string`
 // functions; the first failing rule's message shows under the field.
 // Rules run on blur and on subsequent edits (no flash on first keystroke).
 // `validate()` is exposed for the future RForm to call.
@@ -26,10 +26,10 @@ import {
   ref,
   useAttrs,
   useSlots,
-  watch,
   watchEffect,
 } from "vue";
 import { useChromeLabels } from "@/v2/lib/a11y/chromeLabels";
+import { focusFromInput } from "@/v2/utils/autofocus";
 import RIcon from "../../primitives/RIcon/RIcon.vue";
 import RProgressCircular from "../../primitives/RProgressCircular/RProgressCircular.vue";
 import RTooltip from "../../structural/RTooltip/RTooltip.vue";
@@ -45,33 +45,33 @@ defineOptions({ inheritAttrs: false });
 type Rule = (value: any) => true | string;
 
 interface Props {
-  modelValue?: string | number | null;
-  label?: string;
-  placeholder?: string;
+  modelValue?: string | number | null | undefined;
+  label?: string | undefined;
+  placeholder?: string | undefined;
   type?: string;
   /** Native input length cap. */
-  maxlength?: number;
+  maxlength?: number | undefined;
   variant?: "outlined" | "filled" | "underlined" | "plain";
   density?: "default" | "comfortable" | "compact";
-  prependInnerIcon?: string;
-  appendInnerIcon?: string;
+  prependInnerIcon?: string | undefined;
+  appendInnerIcon?: string | undefined;
   /** Tooltip text shown on hover/focus over the prepend-inner
    *  adornment. Useful for clickable adornments (copy buttons, etc.)
    *  to label their action. */
-  prependInnerTooltip?: string;
+  prependInnerTooltip?: string | undefined;
   /** Tooltip text shown on hover/focus over the append-inner
    *  adornment. The canonical use is the password-reveal eye icon. */
-  appendInnerTooltip?: string;
+  appendInnerTooltip?: string | undefined;
   /** Accessible name for the interactive prepend-inner adornment button.
    *  Falls back to `prependInnerTooltip`. */
-  prependInnerLabel?: string;
+  prependInnerLabel?: string | undefined;
   /** Accessible name for the interactive append-inner adornment button.
    *  Falls back to `appendInnerTooltip`. */
-  appendInnerLabel?: string;
-  autocomplete?: string;
-  name?: string;
-  rules?: Rule[];
-  hint?: string;
+  appendInnerLabel?: string | undefined;
+  autocomplete?: string | undefined;
+  name?: string | undefined;
+  rules?: Rule[] | undefined;
+  hint?: string | undefined;
   hideDetails?: boolean | "auto";
   required?: boolean;
   disabled?: boolean;
@@ -80,16 +80,16 @@ interface Props {
   clearable?: boolean;
   autofocus?: boolean;
   error?: boolean;
-  errorMessages?: string | string[];
-  /** "stacked" — label above; "inline" — label as a left well. */
-  prefixLabel?: "stacked" | "inline";
+  errorMessages?: string | string[] | undefined;
+  /** "stacked": label above; "inline": label as a left well. */
+  prefixLabel?: "stacked" | "inline" | undefined;
   /** Accent for focus + clearable hover. Defaults to brand-primary. */
   color?: string;
   /** Force the focused appearance regardless of the input's own focus
    *  state. Used by wrappers (RDateField, popover activators) that move
    *  real focus into a teleported panel but still want the field to read
-   *  as active. Additive — internal focus also triggers the look. */
-  focused?: boolean;
+   *  as active. Additive: internal focus also triggers the look. */
+  focused?: boolean | undefined;
   /** Render as a `<textarea>` instead of `<input>`. Drops the fixed
    *  height in favour of a `rows`-driven min-height; everything else
    *  (variants, density, validation, clearable, labels) keeps working. */
@@ -99,26 +99,28 @@ interface Props {
   /** Switch the input's typography to a monospaced "code surface" look
    *  (mono family + tighter font-size). Use when the field holds code,
    *  JSON, hashes, or any payload where character-aligned reading
-   *  matters. Affects the input/textarea only — labels keep the regular
+   *  matters. Affects the input/textarea only, labels keep the regular
    *  family so the chrome still reads as a normal form field. */
   mono?: boolean;
   /** Small context line rendered just below the field box (above the
-   *  details/error row). Mono-styled — used for file paths, URLs,
+   *  details/error row). Mono-styled: used for file paths, URLs,
    *  hashes, or any "this is where the value resolves to" hint that
    *  pairs with the field's value. The `#subtitle` slot wins over the
    *  prop when both are provided; use the slot to drop in an icon. */
-  subtitle?: string;
+  subtitle?: string | undefined;
   /** Wires the native input as a combobox owning a popup, putting the role
    *  on the input rather than the outer element (a `<label>` when this field
    *  owns its visible label). Single-line only: `role="combobox"` is not
    *  valid on a `<textarea>`. */
-  popup?: {
-    /** `id` of the popup element. Omit while it is unmounted, so
-     *  `aria-controls` never points at an element that is not there. */
-    controls?: string;
-    expanded: boolean;
-    kind: "dialog" | "listbox" | "grid";
-  };
+  popup?:
+    | {
+        /** `id` of the popup element. Omit while it is unmounted, so
+         *  `aria-controls` never points at an element that is not there. */
+        controls?: string | undefined;
+        expanded: boolean;
+        kind: "dialog" | "listbox" | "grid";
+      }
+    | undefined;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -160,6 +162,14 @@ const props = withDefaults(defineProps<Props>(), {
 
 const labels = useChromeLabels();
 
+const showRequiredTip = computed(
+  () =>
+    props.required &&
+    !props.disabled &&
+    !props.readonly &&
+    String(props.modelValue ?? "") === "",
+);
+
 watchEffect(() => {
   if (props.multiline && props.popup) {
     console.error(
@@ -175,7 +185,7 @@ const emit = defineEmits<{
   (e: "clear"): void;
   /** Fired when the user clicks the prepend-inner adornment (icon or
    *  slot content). Makes the adornment behave as a button when a
-   *  parent subscribes — used by password-reveal eye icons, copy
+   *  parent subscribes: used by password-reveal eye icons, copy
    *  buttons, etc. */
   (e: "click:prepend-inner", evt: MouseEvent): void;
   (e: "click:append-inner", evt: MouseEvent): void;
@@ -188,7 +198,7 @@ const inputRef = ref<HTMLInputElement | HTMLTextAreaElement | null>(null);
 // component, which is plenty for aria wiring.
 const fieldId = `r-tf-${getCurrentInstance()?.uid ?? Math.random().toString(36).slice(2)}`;
 
-// ── Tone resolver — same vocabulary as the rest of the lib ─────
+// ── Tone resolver: same vocabulary as the rest of the lib ─────
 const TONE_MAP: Record<string, string> = {
   primary: "var(--r-color-brand-primary)",
   secondary: "var(--r-color-brand-secondary)",
@@ -223,37 +233,30 @@ function onBlur(evt: FocusEvent) {
   // First blur dirties the field; from then on, rules run live so the
   // user gets responsive feedback (rather than waiting for another blur).
   dirty.value = true;
-  runRules();
   emit("blur", evt);
 }
 
 // ── Validation ──────────────────────────────────────────────────
 const dirty = ref(false);
-const internalErrors = ref<string[]>([]);
-
-function runRules() {
-  const out: string[] = [];
+const internalErrors = computed<string[]>(() => {
+  if (!dirty.value) return [];
   for (const r of props.rules ?? []) {
     const v = r(props.modelValue);
-    if (v !== true && typeof v === "string" && v.length) {
-      out.push(v);
-      break; // Show only the first failing rule.
-    }
+    // Show only the first failing rule.
+    if (v !== true && typeof v === "string" && v.length) return [v];
   }
-  internalErrors.value = out;
-}
+  return [];
+});
 
 /** Returns true if the field is valid right now; safe to call from RForm. */
 function validate(): boolean {
   dirty.value = true;
-  runRules();
   return internalErrors.value.length === 0 && !props.error;
 }
 function reset() {
   dirty.value = false;
-  internalErrors.value = [];
 }
-defineExpose({ validate, reset, focus: () => inputRef.value?.focus() });
+defineExpose({ validate, reset, focus: () => focusFromInput(inputRef.value) });
 
 // Auto-enrol with an ancestor RForm so `form.validate()` reaches us.
 // No-op when used outside a form.
@@ -263,16 +266,6 @@ useRFormRegistration({
   el: () => inputRef.value,
   validity: () => !hasError.value,
 });
-
-watch(
-  () => props.modelValue,
-  () => {
-    // Once the user has touched the field once (blur), keep validating
-    // on every change. Skipping while clean avoids the "errors flash
-    // immediately on form mount" antipattern.
-    if (dirty.value) runRules();
-  },
-);
 
 // ── Derived state ───────────────────────────────────────────────
 const externalMessages = computed<string[]>(() => {
@@ -322,17 +315,17 @@ function clear() {
   emit("update:modelValue", "");
   emit("clear");
   // Keep focus on the input so the user can keep typing.
-  nextTick(() => inputRef.value?.focus());
+  void nextTick(() => focusFromInput(inputRef.value));
 }
 
 onMounted(() => {
   // `preventScroll` because an autofocused field often lives in a panel
-  // that a positioner (floating-ui) only places after mount — letting the
+  // that a positioner (floating-ui) only places after mount, letting the
   // UA scroll to its pre-placement box would yank the page.
-  if (props.autofocus) inputRef.value?.focus({ preventScroll: true });
+  if (props.autofocus) focusFromInput(inputRef.value, { preventScroll: true });
 });
 
-// Slot shape helpers — drives whether to render the prepend / append
+// Slot shape helpers: drives whether to render the prepend / append
 // regions at all (an empty region adds left/right padding for nothing).
 const hasPrependInner = computed(
   () => !!props.prependInnerIcon || !!slots["prepend-inner"],
@@ -351,7 +344,7 @@ const stackedLabelOn = computed(() => props.prefixLabel === "stacked");
 const hasSubtitle = computed(() => !!props.subtitle || !!slots.subtitle);
 
 // When `label` is set without a `prefixLabel`, we don't render a
-// visible label — fall back to the label as placeholder + aria-label
+// visible label: fall back to the label as placeholder + aria-label
 // so the field still reads what it's for. Consumers wanting a visible
 // label pass `prefixLabel="stacked"` or `"inline"`.
 const effectivePlaceholder = computed(
@@ -363,7 +356,7 @@ const effectiveAriaLabel = computed(() =>
 
 // True when the parent is subscribed to a click on the adornment.
 // `click:prepend-inner` / `click:append-inner` are declared emits, so
-// Vue strips them from `useAttrs()` — we have to look at the raw
+// Vue strips them from `useAttrs()`, we have to look at the raw
 // vnode props (which always carry the parent's listener regardless of
 // whether the child declared the event). We check several casing
 // variants in case the parent passed the handler programmatically with
@@ -373,20 +366,16 @@ const instance = getCurrentInstance();
 function hasListener(name: string): boolean {
   const props = instance?.vnode.props as Record<string, unknown> | null;
   if (!props) return false;
+  const head = `on${name.charAt(0).toUpperCase()}`;
+  const tail = name.slice(1);
   // verbatim → onClick:append-inner (Vue's actual template output)
-  const verbatim = `on${name[0].toUpperCase()}${name.slice(1)}`;
+  const verbatim = `${head}${tail}`;
   // kebab→camel inside the arg → onClick:appendInner
-  const argCamel = `on${name[0].toUpperCase()}${name
-    .slice(1)
-    .replace(/-(\w)/g, (_, c) => c.toUpperCase())}`;
+  const argCamel = `${head}${tail.replace(/-(\w)/g, (_, c) => c.toUpperCase())}`;
   // capitalised after the colon → onClick:Append-inner
-  const colonCap = `on${name[0].toUpperCase()}${name
-    .slice(1)
-    .replace(/:(\w)/g, (_, c) => `:${c.toUpperCase()}`)}`;
+  const colonCap = `${head}${tail.replace(/:(\w)/g, (_, c) => `:${c.toUpperCase()}`)}`;
   // no colon, camelCase tail → onClickAppend-inner
-  const flat = `on${name[0].toUpperCase()}${name
-    .slice(1)
-    .replace(/:(\w)/g, (_, c) => c.toUpperCase())}`;
+  const flat = `${head}${tail.replace(/:(\w)/g, (_, c) => c.toUpperCase())}`;
   return (
     !!props[verbatim] || !!props[argCamel] || !!props[colonCap] || !!props[flat]
   );
@@ -403,7 +392,7 @@ const appendAdornmentLabel = computed(
 );
 
 function onPrependInnerClick(evt: MouseEvent) {
-  // Always emit — emit() is a no-op when nothing's subscribed. The
+  // Always emit: emit() is a no-op when nothing's subscribed. The
   // listener-detection above only governs the visual treatment
   // (button vs span, hover, focus ring); it must never block the
   // click from reaching the parent.
@@ -492,7 +481,9 @@ function onAppendInnerClick(evt: MouseEvent) {
            the same chrome (variants, density, validation, clearable,
            labels) wraps multi-line text. The other branch is left as
            the more common single-line case so the template stays
-           grep-friendly. -->
+           grep-friendly. The `autofocus` attribute is what RDialog looks
+           for on open, so it lands here rather than on the close button. -->
+      <!-- eslint-disable vuejs-accessibility/no-autofocus -- opt-in per call site -->
       <textarea
         v-if="multiline"
         ref="inputRef"
@@ -502,9 +493,10 @@ function onAppendInnerClick(evt: MouseEvent) {
         :maxlength="maxlength"
         :name="name"
         :autocomplete="autocomplete"
+        :autofocus="autofocus || undefined"
         :disabled="disabled"
         :readonly="readonly"
-        :required="required"
+        :aria-required="required || undefined"
         :rows="rows"
         :aria-label="effectiveAriaLabel"
         :aria-invalid="hasError || undefined"
@@ -523,9 +515,10 @@ function onAppendInnerClick(evt: MouseEvent) {
         :maxlength="maxlength"
         :name="name"
         :autocomplete="autocomplete"
+        :autofocus="autofocus || undefined"
         :disabled="disabled"
         :readonly="readonly"
-        :required="required"
+        :aria-required="required || undefined"
         :aria-label="effectiveAriaLabel"
         :aria-invalid="hasError || undefined"
         :aria-describedby="showDetails ? `${fieldId}-details` : undefined"
@@ -537,6 +530,7 @@ function onAppendInnerClick(evt: MouseEvent) {
         @focus="onFocus"
         @blur="onBlur"
       />
+      <!-- eslint-enable vuejs-accessibility/no-autofocus -->
 
       <!-- Append-inner adornment (right of the input). Loading +
            clearable take priority over user content. Interactive when
@@ -598,7 +592,16 @@ function onAppendInnerClick(evt: MouseEvent) {
         />
       </component>
 
-      <!-- Underline track — only painted for `underlined` variant.
+      <!-- Stands in for the browser's own "fill out this field" bubble,
+           which the form suppresses with `novalidate`. -->
+      <RTooltip
+        activator="parent"
+        :text="labels.required"
+        :disabled="!showRequiredTip"
+        location="top"
+      />
+
+      <!-- Underline track: only painted for `underlined` variant.
            A child element rather than a border lets us animate the
            focus underline as a "draw-in from center". -->
       <span
@@ -608,7 +611,7 @@ function onAppendInnerClick(evt: MouseEvent) {
       />
     </div>
 
-    <!-- Subtitle — small mono context line just below the field box.
+    <!-- Subtitle: small mono context line just below the field box.
          Used for resolved paths, URLs, hashes, or any "this value
          points here" hint that pairs with the input. Sits between the
          field box and the details/error row so error messages always
@@ -617,7 +620,7 @@ function onAppendInnerClick(evt: MouseEvent) {
       <slot name="subtitle">{{ subtitle }}</slot>
     </div>
 
-    <!-- Details row — error message, then hint as fallback. Always
+    <!-- Details row: error message, then hint as fallback. Always
          mounted when shown so the height transition is smooth. -->
     <div
       v-if="showDetails"
@@ -635,9 +638,9 @@ function onAppendInnerClick(evt: MouseEvent) {
 .r-text-field {
   display: inline-flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--r-space-1);
   width: 100%;
-  /* Density-driven field height. Padding hugs the input — adornments
+  /* Density-driven field height. Padding hugs the input, adornments
      adjust per-side. */
   --r-tf-h: 40px;
   --r-tf-pad-x: 12px;
@@ -646,7 +649,7 @@ function onAppendInnerClick(evt: MouseEvent) {
   color: var(--r-color-fg);
   font-family: inherit;
   /* `field-sizing: content` would let single-line shrink to content,
-     but breaks placeholder visibility — stick with width: 100%. */
+     but breaks placeholder visibility: stick with width: 100%. */
   text-align: left;
   /* Wrapper-level opacity transition so flipping `:disabled` eases
      instead of snapping. */
@@ -688,14 +691,14 @@ function onAppendInnerClick(evt: MouseEvent) {
 
 /* ── Variants: outlined + filled (boxed) ───────────────────────── */
 /* The two boxed variants share the same border + hover halo + focus
-   halo vocabulary — the only difference is the resting background.
+   halo vocabulary: the only difference is the resting background.
    Outlined picks the elevated bg; filled picks the warmer surface. */
 .r-text-field--variant-outlined .r-text-field__field {
   border-color: var(--r-color-border);
   background: var(--r-color-bg-elevated);
 }
 .r-text-field--variant-filled .r-text-field__field {
-  /* Borderless at rest — the warmer fill alone distinguishes it from
+  /* Borderless at rest: the warmer fill alone distinguishes it from
      outlined. Border kicks in on hover / focus, sharing the outlined
      vocabulary from there. */
   border-color: transparent;
@@ -704,11 +707,11 @@ function onAppendInnerClick(evt: MouseEvent) {
 .r-text-field--variant-outlined:not(.r-text-field--disabled):hover
   .r-text-field__field {
   border-color: var(--r-color-border-strong);
-  /* Whisper-thin currentColor halo on hover — felt more than seen.
+  /* Whisper-thin currentColor halo on hover, felt more than seen.
      Stays neutral (no brand) because the user hasn't committed yet. */
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--r-color-fg) 6%, transparent);
 }
-/* Filled hover — borderless, the whole pill lights up via a brand-tinted
+/* Filled hover: borderless, the whole pill lights up via a brand-tinted
    fill instead. Keeps the variant reading as a single solid element. */
 .r-text-field--variant-filled:not(.r-text-field--disabled):hover
   .r-text-field__field {
@@ -718,7 +721,7 @@ function onAppendInnerClick(evt: MouseEvent) {
     var(--r-color-surface-hover)
   );
 }
-/* Focused (= clicked-into, persistent) — brand-coloured border + halo
+/* Focused (= clicked-into, persistent): brand-coloured border + halo
    stays for as long as the field holds focus. The `:not(...:disabled)`
    chain bumps specificity above the hover rule so brand wins when the
    user hovers a focused field. */
@@ -786,7 +789,7 @@ function onAppendInnerClick(evt: MouseEvent) {
   font: inherit;
   color: inherit;
   text-overflow: ellipsis;
-  /* Native invalid state — kill the red glow so it doesn't fight ours. */
+  /* Native invalid state: kill the red glow so it doesn't fight ours. */
   box-shadow: none;
   /* Smooth padding when an adornment appears (clearable / loading
      toggle) and smooth colour fade when the field flips to disabled. */
@@ -814,13 +817,13 @@ function onAppendInnerClick(evt: MouseEvent) {
 /* Drop the fixed row height in favour of a `rows`-driven min-height.
    The textarea itself takes full width and is vertically resizable so
    power users can grow the body when editing long values. The append
-   column anchors to the top corner — placing a clearable X mid-textarea
+   column anchors to the top corner, placing a clearable X mid-textarea
    would obscure the user's last line. */
 .r-text-field--multiline .r-text-field__field {
   height: auto;
   align-items: flex-start;
   /* Hug the field edges symmetrically when the textarea is the only
-     direct child — the row-aligned vertical centring we lost above is
+     direct child: the row-aligned vertical centring we lost above is
      replaced by an inset that gives the caret room. */
   padding-block: 8px;
 }
@@ -832,7 +835,7 @@ function onAppendInnerClick(evt: MouseEvent) {
   resize: vertical;
   min-height: 60px;
   line-height: 1.5;
-  /* Padding here owns top/bottom spacing — the field box covers left/
+  /* Padding here owns top/bottom spacing, the field box covers left/
      right via the existing `--r-tf-pad-x`. */
   padding-block: 0;
   /* Textareas don't ellipsis; let the user scroll. */
@@ -844,7 +847,7 @@ function onAppendInnerClick(evt: MouseEvent) {
 }
 
 /* ── Mono surface ──────────────────────────────────────────────── */
-/* Code-surface mode — applies mono family and a slightly tighter
+/* Code-surface mode: applies mono family and a slightly tighter
    font-size to the input/textarea only. Labels keep their regular
    family so the chrome still reads as a normal form field. */
 .r-text-field--mono .r-text-field__input {
@@ -854,7 +857,7 @@ function onAppendInnerClick(evt: MouseEvent) {
 
 /* Trim inner padding when an adornment owns the side gap. Each side is
    handled independently so an append adornment (clearable X, loading
-   spinner, custom #append-inner) only collapses end-padding — never
+   spinner, custom #append-inner) only collapses end-padding, never
    start-padding. The earlier `:has(+ .r-text-field__adornment)` rule
    matched the input *adjacent to an append adornment* and incorrectly
    shrank start-padding, causing typed text to jump left the moment a
@@ -890,7 +893,7 @@ function onAppendInnerClick(evt: MouseEvent) {
   color: var(--r-color-fg-secondary);
 }
 
-/* Interactive adornment — button-like affordance for password-reveal
+/* Interactive adornment: button-like affordance for password-reveal
    eyes, copy buttons, dropdown chevrons, etc. */
 .r-text-field__adornment--interactive {
   appearance: none;
@@ -909,7 +912,7 @@ function onAppendInnerClick(evt: MouseEvent) {
   transform: scale(0.92);
 }
 
-/* Clearable button — its own small hover state. `tabindex=-1` keeps
+/* Clearable button: its own small hover state. `tabindex=-1` keeps
    it out of the tab order; the icon shows only when there's a value. */
 .r-text-field__clear {
   appearance: none;
@@ -963,7 +966,7 @@ function onAppendInnerClick(evt: MouseEvent) {
 }
 
 /* ── Subtitle row ──────────────────────────────────────────────── */
-/* Mono context line — paths, URLs, hashes. Sits flush below the
+/* Mono context line: paths, URLs, hashes. Sits flush below the
    field box and aligns with the details row's padding so both rows
    read as the same "annotation gutter". `word-break: break-all` keeps
    long paths inside the field width instead of pushing the dialog. */
@@ -979,7 +982,7 @@ function onAppendInnerClick(evt: MouseEvent) {
   word-break: break-all;
 }
 
-/* ── Label — shared base ───────────────────────────────────────── */
+/* ── Label: shared base ───────────────────────────────────────── */
 .r-text-field__label {
   display: inline-flex;
   align-items: center;
@@ -994,17 +997,17 @@ function onAppendInnerClick(evt: MouseEvent) {
   color: var(--r-color-danger);
 }
 
-/* ── Stacked label — sits above the field ──────────────────────── */
+/* ── Stacked label: sits above the field ──────────────────────── */
 .r-text-field__label--stacked {
   font-size: 12px;
   font-weight: var(--r-font-weight-medium);
   line-height: 1.2;
   align-self: flex-start;
   padding-inline-start: 2px;
-  margin-bottom: 4px;
+  margin-bottom: var(--r-space-1);
 }
 
-/* ── Inline label — embedded left well ─────────────────────────── */
+/* ── Inline label: embedded left well ─────────────────────────── */
 .r-text-field--inline .r-text-field__field {
   /* Pull the well flush to the field edge. */
   padding-inline-start: 0;
@@ -1040,12 +1043,12 @@ function onAppendInnerClick(evt: MouseEvent) {
   padding-inline-start: 10px;
 }
 
-/* ── Focus ring — modality-gated ───────────────────────────────── */
+/* ── Focus ring: modality-gated ───────────────────────────────── */
 /* `--focused` already paints a brand-tinted halo via box-shadow (with
    the spring transition). For keyboard / gamepad users we layer a
    thin outline on top so the ring meets WCAG's "visible focus" bar
    without changing the smooth box-shadow bloom. Outline is used
-   intentionally here — it doesn't transition, but it doesn't need to:
+   intentionally here; it doesn't transition, but it doesn't need to:
    the box-shadow halo carries the motion. */
 html[data-input="key"]
   .r-text-field:has(.r-text-field__input:focus)

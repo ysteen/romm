@@ -1,9 +1,11 @@
+import asyncio
 import hashlib
 import os
 import threading
 import zipfile
 from mimetypes import guess_type
 from pathlib import Path
+from typing import IO, TYPE_CHECKING
 
 import magic
 from fastapi import HTTPException, UploadFile, status
@@ -15,6 +17,9 @@ from models.user import User
 from utils.media_types import IMAGE_EXT_BY_MIME_TYPE
 
 from .base_handler import FSHandler
+
+if TYPE_CHECKING:
+    from models.assets import Save
 
 # libmagic loads its database on construction (~few MB read from disk), so we
 # share a single Magic instance across requests. The underlying magic_t handle
@@ -55,6 +60,35 @@ def hash_zip_contents(zf: zipfile.ZipFile) -> str:
             file_hashes.append(f"{name}:{file_hash}")
     combined = "\n".join(file_hashes)
     return hashlib.md5(combined.encode(), usedforsecurity=False).hexdigest()
+
+
+def hash_save_content(content: IO[bytes]) -> str | None:
+    """Hash seekable save bytes like ``Save.content_hash``, leaving them at the start."""
+    try:
+        content.seek(0)
+        if zipfile.is_zipfile(content):
+            with zipfile.ZipFile(content, "r") as zf:
+                return hash_zip_contents(zf)
+        content.seek(0)
+        hash_obj = hashlib.md5(usedforsecurity=False)
+        while chunk := content.read(65536):
+            hash_obj.update(chunk)
+        return hash_obj.hexdigest()
+    except Exception as e:
+        log.debug(f"Could not hash save content: {e}")
+        return None
+    finally:
+        content.seek(0)
+
+
+def hash_save_file(path: str | os.PathLike[str]) -> str | None:
+    """Hash a save on disk like ``Save.content_hash``, or None if it cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            return hash_save_content(f)
+    except OSError as e:
+        log.debug(f"Could not hash save {path}: {e}")
+        return None
 
 
 def validate_image_upload(upload: UploadFile, *, label: str = "Image") -> str:
@@ -120,11 +154,11 @@ class FSAssetsHandler(FSHandler):
     def __init__(self) -> None:
         super().__init__(base_path=ASSETS_BASE_PATH)
 
-    def user_folder_path(self, user: User):
+    def user_folder_path(self, user: User) -> str:
         return os.path.join("users", user.fs_safe_folder_name)
 
     # /users/557365723a31/profile
-    def build_avatar_path(self, user: User):
+    def build_avatar_path(self, user: User) -> str:
         return os.path.join(self.user_folder_path(user), "profile")
 
     def _build_asset_file_path(
@@ -134,7 +168,7 @@ class FSAssetsHandler(FSHandler):
         platform_fs_slug: str,
         rom_id: int,
         emulator: str | None = None,
-    ):
+    ) -> str:
         user_folder_path = self.user_folder_path(user)
         assets_path = os.path.join(
             user_folder_path, folder, platform_fs_slug, str(rom_id)
@@ -150,7 +184,7 @@ class FSAssetsHandler(FSHandler):
         platform_fs_slug: str,
         rom_id: int,
         emulator: str | None = None,
-    ):
+    ) -> str:
         return self._build_asset_file_path(
             user, "saves", platform_fs_slug, rom_id, emulator
         )
@@ -162,21 +196,27 @@ class FSAssetsHandler(FSHandler):
         platform_fs_slug: str,
         rom_id: int,
         emulator: str | None = None,
-    ):
+    ) -> str:
         return self._build_asset_file_path(
             user, "states", platform_fs_slug, rom_id, emulator
         )
 
     # /users/557365723a31/screenshots/{rom.id}/n64
     def build_screenshots_file_path(
-        self, user: User, platform_fs_slug: str, rom_id: int
-    ):
+        self,
+        user: User,
+        platform_fs_slug: str,
+        rom_id: int,
+        emulator: str | None = None,
+    ) -> str:
         return self._build_asset_file_path(
-            user, "screenshots", platform_fs_slug, rom_id
+            user, "screenshots", platform_fs_slug, rom_id, emulator
         )
 
     # /users/557365723a31/memory_cards/pcsx2/{card_id}
-    def build_memory_cards_file_path(self, user: User, emulator: str, card_id: int):
+    def build_memory_cards_file_path(
+        self, user: User, emulator: str, card_id: int
+    ) -> str:
         # Not scoped by rom/platform: a memory card is per (user, emulator) and
         # holds every game's saves. Versions share the folder, distinguished by
         # their timestamped file names.
@@ -184,16 +224,13 @@ class FSAssetsHandler(FSHandler):
             self.user_folder_path(user), "memory_cards", emulator, str(card_id)
         )
 
-    async def _compute_file_hash(self, file_path: str) -> str:
-        hash_obj = hashlib.md5(usedforsecurity=False)
-        async with await self.stream_file(file_path=file_path) as f:
-            while chunk := await f.read(8192):
-                hash_obj.update(chunk)
-        return hash_obj.hexdigest()
-
     async def _compute_zip_hash(self, zip_path: str) -> str:
-        with zipfile.ZipFile(self.base_path / zip_path, "r") as zf:
-            return hash_zip_contents(zf)
+        def digest() -> str:
+            with zipfile.ZipFile(self.base_path / zip_path, "r") as zf:
+                return hash_zip_contents(zf)
+
+        # Off the loop, as _compute_file_hash is: a state archive runs to tens of MB.
+        return await asyncio.to_thread(digest)
 
     async def compute_content_hash(self, file_path: str) -> str | None:
         try:
@@ -204,3 +241,9 @@ class FSAssetsHandler(FSHandler):
         except Exception as e:
             log.debug(f"Failed to compute content hash for {file_path}: {e}")
             return None
+
+    async def unrecorded_hash(self, save: "Save") -> str | None:
+        """The file's hash for a slotted save never hashed, so its removal is still recorded."""
+        if save.slot and not save.content_hash:
+            return await self.compute_content_hash(save.full_path)
+        return None

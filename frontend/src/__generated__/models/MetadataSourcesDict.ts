@@ -22,4 +22,3 @@ export type MetadataSourcesDict = {
     STEAM_API_ENABLED: boolean;
     LIBRETRO_API_ENABLED: boolean;
 };
-

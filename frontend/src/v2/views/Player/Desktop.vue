@@ -10,15 +10,21 @@
 import { RAlert, RBtn, RSpinner } from "@v2/lib";
 import { useEventListener, useIntervalFn } from "@vueuse/core";
 import { isAxiosError } from "axios";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import { ROUTES } from "@/plugins/router";
-import streamingApi from "@/services/api/streaming";
-import { useStreamingStore } from "@/stores/streaming";
+import streamingApi, {
+  type ContainerBusyDetail,
+} from "@/services/api/streaming";
+import { type SessionTermination, useStreamingStore } from "@/stores/streaming";
+import SessionEndedReason from "@/v2/components/Player/SessionEndedReason.vue";
 import StreamStage from "@/v2/components/Player/StreamStage.vue";
 import { useConfirm } from "@/v2/composables/useConfirm";
+import { useIsAlive } from "@/v2/composables/useIsAlive";
 import { usePageTitle } from "@/v2/composables/usePageTitle";
+import { useSocketEvent } from "@/v2/composables/useSocketEvent";
+import { usePlayingWhile } from "@/v2/composables/useStageActive";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -26,11 +32,15 @@ const router = useRouter();
 const confirm = useConfirm();
 const streamingStore = useStreamingStore();
 
-const containerKey = computed(() => String(route.query.container ?? ""));
+const containerName = computed(() => String(route.query.container ?? ""));
+// The claim's key, which the session routes and notices name; the URL may
+// carry the container's label instead.
+const containerKey = ref("");
 
 const stage = ref<InstanceType<typeof StreamStage> | null>(null);
 const state = ref<"loading" | "running" | "error" | "exited">("loading");
 const errorMessage = ref("");
+const endedReason = ref("");
 const containerHost = ref("");
 const label = ref("");
 // The platform the backend filed the session under, which the release route
@@ -41,27 +51,62 @@ const isExiting = ref(false);
 // describes the view: a release that failed leaves an "error" screen over a
 // claim that is very much still standing.
 const holdsClaim = ref(false);
+// The stamp the claim answered with, which every release and heartbeat sends
+// back so a claim that replaced this one is never the one they reach.
+const claimedAt = ref("");
 
 usePageTitle(() => t("play.desktop-title"));
 
+// The emulator inside the desktop owns the controller, so pad presses must not
+// also drive RomM behind the stream (B would go back and prompt to end it).
+const sessionActive = computed(
+  () => state.value === "loading" || state.value === "running",
+);
+usePlayingWhile(sessionActive);
+// With B muted, useGamepad's Select+Start hold is the pad's way out.
+useEventListener(window, "gamepad:exitchord", () => void handleExit());
+
+// Leaving mid-claim is allowed, so a claim that answers after unmount is
+// released at once; otherwise it would hold the container until it went stale.
+const alive = useIsAlive();
+
 async function openDesktop(): Promise<void> {
-  if (!containerKey.value) {
+  if (!containerName.value) {
     state.value = "error";
     errorMessage.value = t("play.desktop-error-no-container");
     return;
   }
   try {
-    const { data } = await streamingApi.claimDesktop(containerKey.value);
+    const { data } = await streamingApi.claimDesktop(containerName.value);
+    containerKey.value = data.container;
     containerHost.value = data.host;
     label.value = data.label;
     platform.value = data.platform;
+    claimedAt.value = data.claimed_at;
     holdsClaim.value = true;
+    if (!alive.value) {
+      void release();
+      return;
+    }
     state.value = "running";
   } catch (err: unknown) {
     state.value = "error";
     const status = isAxiosError(err) ? err.response?.status : undefined;
-    if (status === 409) errorMessage.value = t("play.desktop-error-occupied");
-    else if (status === 404)
+    const detail: unknown = isAxiosError(err)
+      ? err.response?.data?.detail
+      : undefined;
+    if (status === 409) {
+      const busy = detail as ContainerBusyDetail | null;
+      // A drain marker is nobody's claim: the container comes free on its own
+      // once the previous session has finished shutting down.
+      if (busy?.draining)
+        errorMessage.value = t("play.stream-occupied-draining");
+      else if (busy?.rom_name)
+        errorMessage.value = t("play.desktop-error-occupied-by", {
+          rom: busy.rom_name,
+        });
+      else errorMessage.value = t("play.desktop-error-occupied");
+    } else if (status === 404)
       errorMessage.value = t("play.desktop-error-no-container");
     else errorMessage.value = t("play.desktop-error-server");
   }
@@ -79,6 +124,8 @@ async function release(): Promise<boolean> {
       platform.value,
       undefined,
       containerKey.value,
+      undefined,
+      claimedAt.value,
     );
     holdsClaim.value = false;
     state.value = "exited";
@@ -97,21 +144,48 @@ async function release(): Promise<boolean> {
 // stale window, and nothing else here touches the claim.
 const HEARTBEAT_MS = 30_000;
 
-useIntervalFn(async () => {
+// Dropping the claim keeps a later exit from releasing the next holder, and the
+// notice is the only sign the desktop was taken away rather than broken.
+function noteSessionEnded(notice?: SessionTermination | null): void {
+  holdsClaim.value = false;
+  state.value = "error";
+  errorMessage.value = notice?.ended_by
+    ? t("play.session-ended-by", { user: notice.ended_by })
+    : t("play.session-ended");
+  endedReason.value = notice?.reason ?? "";
+}
+
+async function heartbeat(): Promise<void> {
   if (!holdsClaim.value) return;
   const status = await streamingStore.heartbeatSession(
     platform.value,
     containerKey.value,
+    claimedAt.value,
   );
-  // Ended elsewhere: dropping the claim keeps a later exit from releasing
-  // whoever holds the container next.
-  if (status?.status !== "ended") return;
-  holdsClaim.value = false;
-  state.value = "exited";
-}, HEARTBEAT_MS);
+  // A release that landed while this beat was in flight already said how it ended.
+  if (!holdsClaim.value || status?.status !== "ended") return;
+  noteSessionEnded(status.termination);
+}
+
+useIntervalFn(() => void heartbeat(), HEARTBEAT_MS);
+
+// Pushed when someone else ends this claim, sooner than the next heartbeat.
+// The user's room carries all their claims, so the container and stamp name ours.
+useSocketEvent<SessionTermination>("streaming:session-ended", (notice) => {
+  if (
+    !holdsClaim.value ||
+    notice.container !== containerKey.value ||
+    notice.claimed_at !== claimedAt.value
+  )
+    return;
+  noteSessionEnded(notice);
+});
 
 function backToAdministration(): void {
-  router.push({ name: ROUTES.ADMINISTRATION, query: { tab: "streaming" } });
+  void router.push({
+    name: ROUTES.ADMINISTRATION,
+    query: { tab: "streaming" },
+  });
 }
 
 // Returns whether the session is done with and the view may be left. The
@@ -156,13 +230,23 @@ function onPageHide(): void {
   if (!holdsClaim.value) return;
   holdsClaim.value = false;
   state.value = "exited";
-  streamingApi.releaseSessionKeepalive(platform.value, containerKey.value);
+  void streamingApi.releaseSessionKeepalive(
+    platform.value,
+    containerKey.value,
+    claimedAt.value,
+  );
 }
 
 useEventListener(window, "pagehide", onPageHide);
 
 onMounted(() => {
   void openDesktop();
+});
+
+// A claim that answered after the leave guard let navigation through, while
+// the next route was still resolving, is still held here.
+onBeforeUnmount(() => {
+  if (holdsClaim.value) void release();
 });
 </script>
 
@@ -173,8 +257,13 @@ onMounted(() => {
       type="error"
       variant="translucent"
       class="r-v2-desktop__error"
-      :text="errorMessage"
     >
+      {{ errorMessage }}
+      <SessionEndedReason
+        v-if="endedReason"
+        :reason="endedReason"
+        class="r-v2-desktop__ended-reason"
+      />
       <template #append>
         <RBtn variant="text" @click="backToAdministration">
           {{ t("play.desktop-back") }}
@@ -236,6 +325,10 @@ onMounted(() => {
 .r-v2-desktop__error {
   margin: 24px auto;
   max-width: 560px;
+}
+
+.r-v2-desktop__ended-reason {
+  margin-top: 8px;
 }
 
 .r-v2-desktop__spinner {
