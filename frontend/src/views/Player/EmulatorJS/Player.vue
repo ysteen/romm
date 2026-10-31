@@ -12,20 +12,16 @@ import {
 import { useI18n } from "vue-i18n";
 import { onBeforeRouteLeave, useRouter } from "vue-router";
 import { useTheme } from "vuetify";
-import type {
-  FirmwareSchema,
-  SaveSchema,
-  StateSchema,
-} from "@/__generated__";
+import type { FirmwareSchema, SaveSchema, StateSchema } from "@/__generated__";
 import { userStorage } from "@/composables/useUserLocalStorage";
 import { ROUTES } from "@/plugins/router";
 import { saveApi as api } from "@/services/api/save";
 import syncApi from "@/services/api/sync";
+import { createDirectorySaveAdapter } from "@/services/emulatorjs/directory-saves";
 import pendingAssetStore, {
   pendingAssetId,
   type PendingAsset,
 } from "@/services/pending-asset";
-import { createDirectorySaveAdapter } from "@/services/emulatorjs/directory-saves";
 import storeAuth from "@/stores/auth";
 import storeConfig from "@/stores/config";
 import storeHeartbeat from "@/stores/heartbeat";
@@ -305,7 +301,6 @@ const { selectedLanguage } = storeToRefs(languageStore);
 const stateSession = new AbortController();
 let stateBusy = false;
 
-
 const supportedCores = getSupportedEJSCores(
   romRef.value.platform_slug,
   configStore.config.EJS_NETPLAY_ENABLED,
@@ -321,10 +316,12 @@ const usesDirectorySaveBundle = isDosBoxPure || isPpsspp || isAzahar;
 window.EJS_dontExtractRom = isDosBoxPure;
 // Directory-backed cores need their RomM save bundle restored before startup.
 window.EJS_saveFileAdapter = createDirectorySaveAdapter;
-window.EJS_externalFiles =
-  usesDirectorySaveBundle && props.save?.download_path
+window.EJS_externalFiles = {
+  ...firmwareExternalFiles(window.EJS_core, props.firmware),
+  ...(usesDirectorySaveBundle && props.save?.download_path
     ? { "/data/saves/": props.save.download_path }
-    : {};
+    : {}),
+};
 window.EJS_controlScheme = getControlSchemeForPlatform(
   romRef.value.platform_slug,
 );
@@ -339,10 +336,6 @@ window.EJS_gameUrl = getDownloadPath({
 window.EJS_biosUrl = props.bios
   ? `/api/firmware/${props.bios.id}/content/${props.bios.file_name}`
   : "";
-window.EJS_externalFiles = firmwareExternalFiles(
-  window.EJS_core,
-  props.firmware,
-);
 window.EJS_player = "#game";
 window.EJS_color = "#A453FF";
 window.EJS_alignStartButton = "center";
@@ -662,7 +655,8 @@ function onPageHide() {
 async function confirmDirectorySave(save: SaveSchema) {
   await deviceReady;
   const deviceId = deviceIDRef.value;
-  const contentHash = window.EJS_emulator?.gameManager?.getSaveFileAdapter()?.lastRestoredHash;
+  const contentHash =
+    window.EJS_emulator?.gameManager?.getSaveFileAdapter()?.lastRestoredHash;
   if (disposed || !deviceId || !contentHash) return;
   try {
     await syncApi.confirmDownloaded({ saveId: save.id, deviceId, contentHash });
@@ -959,7 +953,8 @@ window.EJS_onGameStart = async () => {
         await loadSave(props.save, bootEmulatorJSSave);
       } else {
         baselineSaveTrackerFromEmulator();
-        if (props.save && usesDirectorySaveBundle) await confirmDirectorySave(props.save);
+        if (props.save && usesDirectorySaveBundle)
+          await confirmDirectorySave(props.save);
       }
       if (EJS_ENABLE_AUTO_SAVE_SYNC) {
         try {

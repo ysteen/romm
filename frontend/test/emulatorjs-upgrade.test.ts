@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createContext, runInContext, runInNewContext } from "node:vm";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
+import { firmwareExternalFiles } from "@/v2/utils/playerFirmware";
 
 const read = (path: string) =>
   readFileSync(new URL(path, import.meta.url), "utf8");
@@ -68,7 +69,7 @@ it("waits for the asynchronous player to configure its core before loading Emula
     runtimeInjected: false,
     until: () => ({ toBeTruthy: () => mounted.promise }),
     nextTick: async () => {},
-    isJsResource: async () => true,
+    isJsResource: () => Promise.resolve(true),
     loadScript,
   };
   const code = ts.transpile(play.getText(tree), {
@@ -123,7 +124,7 @@ describe("EmulatorJS save integration", () => {
           await runInNewContext(injectionCode, {
             props,
             usesDirectorySaveBundle: directory,
-            waitForGameManager: async () => true,
+            waitForGameManager: () => Promise.resolve(true),
             loadSave,
             bootEmulatorJSSave,
             confirmDirectorySave: vi.fn(),
@@ -145,7 +146,10 @@ describe("EmulatorJS save integration", () => {
           );
           if (state) expect(loadState).toHaveBeenCalledWith(props.state);
           if (save && !state && !directory)
-            expect(loadSave).toHaveBeenCalledWith(props.save, bootEmulatorJSSave);
+            expect(loadSave).toHaveBeenCalledWith(
+              props.save,
+              bootEmulatorJSSave,
+            );
           expect(emulator.settings).toEqual({
             vsync: "enabled",
             "save-state-location": "browser",
@@ -155,18 +159,47 @@ describe("EmulatorJS save integration", () => {
     }
   }
 
-  it.each([false, true])(
-    "restores directory bundles before boot: %s",
-    (directory) => {
+  it.each(["azahar", "dosbox_pure", "dos", "ppsspp", "puae", "mgba"])(
+    "%s preserves the selected save and firmware through startup configuration",
+    (core) => {
       const downloadPath = "/api/saves/123/content";
-      const files = runInNewContext(
-        assignment("window.EJS_externalFiles").getText(source),
-        {
-          usesDirectorySaveBundle: directory,
-          props: { save: { download_path: downloadPath }, state: { id: 2 } },
-        },
+      const directory = ["azahar", "dosbox_pure", "dos", "ppsspp"].includes(
+        core,
       );
-      expect(files).toEqual(directory ? { "/data/saves/": downloadPath } : {});
+      const configuration = source.statements
+        .filter(
+          (statement) =>
+            ts.isExpressionStatement(statement) &&
+            ts.isBinaryExpression(statement.expression) &&
+            statement.expression.left.getText(source) ===
+              "window.EJS_externalFiles",
+        )
+        .map((statement) => statement.getText(source))
+        .join("\n");
+      for (const save of [null, { download_path: downloadPath }]) {
+        const window = {
+          EJS_core: core,
+          EJS_externalFiles: { "/data/saves/": "/stale-save" },
+        };
+        const firmware = [
+          { id: 7, file_name: "kick.rom", missing_from_fs: false },
+        ];
+        runInNewContext(configuration, {
+          window,
+          usesDirectorySaveBundle: directory,
+          props: { save, firmware },
+          firmwareExternalFiles,
+        });
+        expect(window.EJS_externalFiles).toEqual({
+          ...(core === "puae"
+            ? {
+                "/home/web_user/retroarch/userdata/system/kick.rom":
+                  "/api/firmware/7/content/kick.rom",
+              }
+            : {}),
+          ...(directory && save ? { "/data/saves/": downloadPath } : {}),
+        });
+      }
     },
   );
 });
@@ -215,7 +248,7 @@ describe("EmulatorJS Save & Quit", () => {
       installAutoSaveSync,
       isAzahar: false,
       usesDirectorySaveBundle: false,
-      captureScreenshot: async () => undefined,
+      captureScreenshot: () => Promise.resolve(undefined),
       toArrayBuffer: (bytes: Uint8Array) => bytes.buffer,
       writeSaveIfChanged,
       console: { error: vi.fn() },

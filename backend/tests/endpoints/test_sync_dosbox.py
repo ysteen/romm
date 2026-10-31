@@ -4,12 +4,13 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from tests.factories import make_platform, make_rom, make_save
+
 from handler.database import db_save_handler
-from handler.filesystem import fs_asset_handler
+from handler.filesystem import fs_asset_handler, fs_retroarch_sync_handler
 from handler.filesystem.assets_handler import hash_save_file
 from handler.sync.retroarch import dosbox
 from models.assets import AUTOSAVE_SLOT
-from tests.factories import make_platform, make_rom, make_save
 from utils.zip_cache import ensure_zipfile_writable
 
 AUTH = ("test_admin", "test_admin_password")
@@ -26,7 +27,8 @@ def archive_bytes(entries):
 
 
 @pytest.fixture(autouse=True)
-def isolated_assets(_isolated_assets_dir):
+def isolated_assets(_isolated_assets_dir, monkeypatch):
+    monkeypatch.setattr(fs_retroarch_sync_handler, "base_path", _isolated_assets_dir)
     return _isolated_assets_dir
 
 
@@ -175,6 +177,119 @@ def test_savediff_upload_without_pure_zip_and_concurrent_files(
         "DOSBox-pure/Example" + suffix: data for suffix, data in payloads.items()
     }
     assert len(manifest(client)) == 3
+
+
+def test_copy_backup_preserves_source_and_stays_out_of_manifest(client, bundle):
+    old = archive_bytes({"SAVE.DAT": b"old progress"})
+    bundle({"DOSBox-pure/Example.pure.zip": old})
+    destination = ROOT + "deleted/saves/DOSBox-pure/Example.pure.zip-261031-120000"
+    response = client.request(
+        "COPY",
+        native(".pure.zip"),
+        auth=AUTH,
+        headers={"Destination": "http://testserver" + destination},
+    )
+    assert response.status_code == 201
+    assert client.get(native(".pure.zip"), auth=AUTH).content == old
+    assert client.get(destination, auth=AUTH).content == old
+    assert list(manifest(client)) == ["saves/DOSBox-pure/Example.pure.zip"]
+    assert (
+        client.put(native(".pure.zip"), content=b"new progress", auth=AUTH).status_code
+        == 201
+    )
+    assert client.get(destination, auth=AUTH).content == old
+    assert client.get(native(".pure.zip"), auth=AUTH).content == b"new progress"
+    assert (
+        client.request(
+            "COPY",
+            native(".pure.zip"),
+            auth=AUTH,
+            headers={"Destination": destination, "Overwrite": "F"},
+        ).status_code
+        == 412
+    )
+    assert client.get(destination, auth=AUTH).content == old
+    assert (
+        client.request(
+            "COPY",
+            native(".pure.zip"),
+            auth=AUTH,
+            headers={"Destination": destination, "Overwrite": "T"},
+        ).status_code
+        == 204
+    )
+    assert client.get(destination, auth=AUTH).content == b"new progress"
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "",
+        "http://other-server/api/sync/retroarch/deleted/backup",
+        ROOT + "saves/DOSBox-pure/Example.pure.zip",
+        ROOT + "deleted/../outside",
+        ROOT + "deleted/%2e%2e/outside",
+        "/api/users/deleted/backup",
+    ],
+)
+def test_copy_rejects_destinations_without_touching_source(client, bundle, destination):
+    bundle({"DOSBox-pure/Example-CDRIVE.sav": b"original"})
+    response = client.request(
+        "COPY",
+        native("-CDRIVE.sav"),
+        auth=AUTH,
+        headers={"Destination": destination},
+    )
+    assert response.status_code == 409
+    assert client.get(native("-CDRIVE.sav"), auth=AUTH).content == b"original"
+
+
+def test_copy_backup_missing_source_and_user_isolation(client, bundle, editor_user):
+    destination = ROOT + "deleted/saves/DOSBox-pure/Example-CDRIVE.sav-261031-120000"
+    headers = {"Destination": destination}
+    assert (
+        client.request(
+            "COPY", native("-CDRIVE.sav"), auth=AUTH, headers=headers
+        ).status_code
+        == 404
+    )
+    bundle({"DOSBox-pure/Example-CDRIVE.sav": b"private"})
+    assert (
+        client.request("COPY", native("-CDRIVE.sav"), headers=headers).status_code
+        == 401
+    )
+    other = ("test_editor", "test_editor_password")
+    assert (
+        client.request(
+            "COPY", native("-CDRIVE.sav"), auth=other, headers=headers
+        ).status_code
+        == 404
+    )
+    assert (
+        client.request(
+            "COPY", native("-CDRIVE.sav"), auth=AUTH, headers=headers
+        ).status_code
+        == 201
+    )
+    assert client.get(destination, auth=other).status_code == 404
+    assert "COPY" in client.options(ROOT, auth=AUTH).headers["allow"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["config/retroarch.cfg", "saves/Snes9x/Example.srm", "states/Snes9x/Example.state"],
+)
+def test_copy_backup_handles_other_sync_files(client, admin_user, dos_rom, path):
+    assert client.put(ROOT + path, content=b"original", auth=AUTH).status_code == 201
+    destination = ROOT + "deleted/" + path + "-261031-120000"
+    assert (
+        client.request(
+            "COPY", ROOT + path, auth=AUTH, headers={"Destination": destination}
+        ).status_code
+        == 201
+    )
+    assert client.get(destination, auth=AUTH).content == b"original"
+    assert not any(path.startswith("deleted/") for path in manifest(client))
 
 
 @pytest.mark.parametrize("method", ["DELETE", "MOVE"])

@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from starlette.background import BackgroundTask
+
 from handler.asset_store import remove_save
 from handler.auth.constants import Scope
 from handler.auth.dependencies import get_permissions
@@ -26,7 +28,7 @@ from handler.filesystem.assets_handler import (
 )
 from handler.filesystem.base_handler import FSHandler
 from handler.scan_handler import scan_screenshot, scan_state
-from handler.sync.retroarch import browser, dosbox, psp, sync_handler
+from handler.sync.retroarch import backup, browser, dosbox, psp, sync_handler
 from handler.sync.retroarch.device import touch_retroarch_device
 from handler.sync.retroarch.sync_handler import (
     MANIFEST_FILE_NAME,
@@ -39,12 +41,13 @@ from logger.logger import log
 from models.assets import Save, Screenshot, State
 from models.rom import Rom
 from models.user import User
-from starlette.background import BackgroundTask
 from utils.filesystem import check_filename_length, sanitize_filename
 
 router = APIRouter(prefix="/retroarch")
 
-ALLOWED_METHODS = "OPTIONS, PROPFIND, GET, HEAD, PUT, DELETE, MKCOL, MOVE, LOCK, UNLOCK"
+ALLOWED_METHODS = (
+    "OPTIONS, PROPFIND, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK"
+)
 
 # Starlette's own threshold for spooling a multipart upload to disk.
 _BODY_MEMORY_MAX_BYTES = 1024 * 1024
@@ -403,7 +406,9 @@ async def retroarch_sync_get(request: Request, file_path: str) -> Response:
         )
         return JSONResponse(content=manifest)
 
-    blob_path = sync_handler.parse_retroarch_sync_blob_path(file_path)
+    blob_path = sync_handler.parse_retroarch_sync_blob_path(
+        file_path, include_backups=True
+    )
     if blob_path:
         return _serve(
             fs_retroarch_sync_handler,
@@ -480,6 +485,33 @@ async def retroarch_sync_get(request: Request, file_path: str) -> Response:
         return _empty(status.HTTP_404_NOT_FOUND)
 
     return _serve(fs_asset_handler, asset.full_path, asset.file_name)
+
+
+@router.api_route("/{file_path:path}", methods=["COPY"], include_in_schema=False)
+async def retroarch_sync_copy(request: Request, file_path: str) -> Response:
+    """Back up the current file before a non-destructive Cloud Sync upload."""
+    for scope in (Scope.ASSETS_READ, Scope.ASSETS_WRITE):
+        denied = _authorize(request, scope)
+        if denied:
+            return denied
+    try:
+        destination = backup.destination_path(
+            request.headers.get("destination", ""), str(request.url), file_path
+        )
+        replaced = await backup.copy_backup(
+            request.user,
+            file_path,
+            destination,
+            _rom_visibility(request),
+            overwrite=request.headers.get("overwrite", "T").upper() != "F",
+        )
+    except FileNotFoundError:
+        return _empty(status.HTTP_404_NOT_FOUND)
+    except FileExistsError:
+        return _empty(status.HTTP_412_PRECONDITION_FAILED)
+    except ValueError:
+        return _empty(status.HTTP_409_CONFLICT)
+    return _empty(status.HTTP_204_NO_CONTENT if replaced else status.HTTP_201_CREATED)
 
 
 @router.api_route("/{file_path:path}", methods=["PUT"], include_in_schema=False)
@@ -739,7 +771,9 @@ async def retroarch_sync_delete(request: Request, file_path: str) -> Response:
     if denied:
         return denied
 
-    blob_path = sync_handler.parse_retroarch_sync_blob_path(file_path)
+    blob_path = sync_handler.parse_retroarch_sync_blob_path(
+        file_path, include_backups=True
+    )
     if blob_path:
         try:
             await fs_retroarch_sync_handler.remove_file(

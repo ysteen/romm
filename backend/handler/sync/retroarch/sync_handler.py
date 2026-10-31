@@ -20,8 +20,9 @@ from datetime import datetime
 from functools import partial
 from typing import Literal, NamedTuple
 
-from config import MAX_SAVES_PER_SLOT
 from fastapi import UploadFile
+
+from config import MAX_SAVES_PER_SLOT
 from handler.asset_store import (
     prune_save_slot,
     reserve_version_name,
@@ -65,6 +66,7 @@ ASSET_ROOTS: tuple[AssetKind, ...] = ("saves", "states")
 # RetroArch's config/thumbnails/system sync categories belong to no ROM, so
 # they're kept as opaque per-user blobs.
 BLOB_CATEGORIES = ("config", "thumbnails", "system")
+BACKUP_CATEGORY = "deleted"
 
 # `<game>.state`, `<game>.state3`, `<game>.state.auto`: the auto suffix makes
 # this a two-segment extension, which splitext alone gets wrong.
@@ -615,13 +617,17 @@ def build_asset_file_path(
     )
 
 
-def parse_retroarch_sync_blob_path(path: str) -> str | None:
+def parse_retroarch_sync_blob_path(
+    path: str, *, include_backups: bool = False
+) -> str | None:
     """A blob-category client path as ``category/...``, or None if it isn't one."""
     segments = split_segments(path)
     if segments is None or len(segments) < 2:
         return None
 
-    if segments[0] not in BLOB_CATEGORIES:
+    if segments[0] not in BLOB_CATEGORIES and not (
+        include_backups and segments[0] == BACKUP_CATEGORY
+    ):
         return None
 
     return "/".join(segments)

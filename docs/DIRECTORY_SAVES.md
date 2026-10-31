@@ -4,11 +4,11 @@ Normal in-game saves from PPSSPP, Azahar and DOSBox Pure are exported to RomM
 and downloaded from the EmulatorJS toolbar as `.zip` with `application/zip`.
 Save states still use `.state`; ordinary SRAM saves keep their existing format.
 
-| Core | ZIP entries |
-| --- | --- |
-| PPSSPP | The game's SAVEDATA directories, for example `ULUS12345DATA/PARAM.SFO` and `ULUS12345DATA/DATA.BIN` |
-| Azahar | `data/00000001/...`, `data/00000001.metadata`, and optional `extdata/...` |
-| DOSBox Pure | `DOSBox-pure/<game>.pure.zip` plus related `.srm` and disk-difference `.sav` files |
+| Core        | ZIP entries                                                                                         |
+| ----------- | --------------------------------------------------------------------------------------------------- |
+| PPSSPP      | The game's SAVEDATA directories, for example `ULUS12345DATA/PARAM.SFO` and `ULUS12345DATA/DATA.BIN` |
+| Azahar      | `data/00000001/...`, `data/00000001.metadata`, and optional `extdata/...`                           |
+| DOSBox Pure | `DOSBox-pure/<game>.pure.zip` plus related `.srm` and disk-difference `.sav` files                  |
 
 The PPSSPP and Azahar layouts follow Argosy's
 [folder handlers](https://github.com/rommapp/argosy-launcher/blob/main/app/src/main/kotlin/com/nendo/argosy/data/sync/platform/PlatformSaveHandlerRegistry.kt)
@@ -44,6 +44,11 @@ Leave sorting by content directory disabled. Native files then use
 rejected because advertising them under a different directory would not sync
 the files the core actually loads.
 
+RetroArch versions that send a WebDAV `COPY` before overwriting a file keep
+the previous bytes under the user's `deleted/` backup path. These backups are
+downloadable but excluded from the active sync manifest. A failed upload after
+the backup leaves the current save intact.
+
 The adapter synchronizes the newest `autosave` bundle for each game and user.
 An existing unslotted ZIP, including a legacy ZIP named `.srm`, is used when
 there is no autosave. Named slots remain separate. Each native file upload
@@ -51,12 +56,12 @@ creates a new ZIP autosave version containing that file and the other current
 members. The existing per-slot retention limit still applies. Concurrent native
 uploads for one game are serialized across server workers.
 
-| Browser ZIP member | RetroArch Cloud Sync path |
-| --- | --- |
-| `DOSBox-pure/Game.pure.zip` | `saves/DOSBox-pure/Game.pure.zip` |
-| `DOSBox-pure/Game-CDRIVE.sav` | `saves/DOSBox-pure/Game-CDRIVE.sav` |
+| Browser ZIP member              | RetroArch Cloud Sync path             |
+| ------------------------------- | ------------------------------------- |
+| `DOSBox-pure/Game.pure.zip`     | `saves/DOSBox-pure/Game.pure.zip`     |
+| `DOSBox-pure/Game-CDRIVE.sav`   | `saves/DOSBox-pure/Game-CDRIVE.sav`   |
 | `DOSBox-pure/Game-1234ABCD.sav` | `saves/DOSBox-pure/Game-1234ABCD.sav` |
-| `DOSBox-pure/Game-DDRIVE.sav` | `saves/DOSBox-pure/Game-DDRIVE.sav` |
+| `DOSBox-pure/Game-DDRIVE.sav`   | `saves/DOSBox-pure/Game-DDRIVE.sav`   |
 
 The inner `.pure.zip` is transferred byte for byte. Manifest hashes cover each
 native file's bytes. SaveDiff works even when only `.sav` files exist, with no

@@ -86,7 +86,13 @@ export class DirectorySaveAdapter {
     return this.EJS.getCore() === "azahar";
   }
   getSaveFilePath() {
-    return this.manager.getSaveFilePath();
+    const path = this.manager.getSaveFilePath();
+    if (path || !this.isDosBoxPure()) return path;
+    // RetroArch sets its save path during boot, after external saves are restored.
+    const name = this.EJS.fileName?.split("/").pop();
+    return name
+      ? "/data/saves/DOSBox-pure/" + name.replace(/\.[^.]+$/, "") + ".srm"
+      : "";
   }
   writeFile(path: string, bytes: Uint8Array) {
     this.manager.writeFile(path, bytes);
@@ -137,8 +143,13 @@ export class DirectorySaveAdapter {
   isDosBoxPureSaveName(name: string) {
     const saveName = this.getSaveFilePath().split("/").pop()!;
     const stem = saveName.replace(/\.[^.]+$/, "");
-    return name === saveName || (name.startsWith(stem) &&
-      /^(?:\.(?:pure\.zip|sav\.zip|sav)|-(?:[A-Z]DRIVE|[0-9A-F]{8})\.sav)$/i.test(name.substring(stem.length)));
+    return (
+      name === saveName ||
+      (name.startsWith(stem) &&
+        /^(?:\.(?:pure\.zip|sav\.zip|sav)|-(?:[A-Z]DRIVE|[0-9A-F]{8})\.sav)$/i.test(
+          name.substring(stem.length),
+        ))
+    );
   }
   getDosBoxPureSavePaths(): string[] {
     const savePath = this.getSaveFilePath();
@@ -146,7 +157,11 @@ export class DirectorySaveAdapter {
     const directory = savePath.substring(0, savePath.lastIndexOf("/"));
     if (!this.FS.analyzePath(directory).exists) return [];
     return this.FS.readdir(directory)
-      .filter((name) => this.isDosBoxPureSaveName(name) && this.FS.isFile(this.FS.stat(directory + "/" + name).mode))
+      .filter(
+        (name) =>
+          this.isDosBoxPureSaveName(name) &&
+          this.FS.isFile(this.FS.stat(directory + "/" + name).mode),
+      )
       .map((name) => (directory + "/" + name).substring("/data/saves/".length));
   }
   getDosBoxPureSaveFiles(): SaveEntry[] {
@@ -412,7 +427,9 @@ export class DirectorySaveAdapter {
         const member = name.replace(/^DOSBox-pure\//, "");
         if (member.includes("/") || !this.isDosBoxPureSaveName(member))
           throw new Error(`Not a DOSBox Pure save path for this game: ${name}`);
-        const directory = this.getSaveFilePath().substring("/data/saves/".length).replace(/[^/]+$/, "");
+        const directory = this.getSaveFilePath()
+          .substring("/data/saves/".length)
+          .replace(/[^/]+$/, "");
         target = directory + member;
       }
       if (prepared.has(target))
