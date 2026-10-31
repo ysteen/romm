@@ -18,12 +18,35 @@ function loadClass(file, name) {
 const {
   createDirectorySaveAdapter,
 } = require("../../frontend/src/services/emulatorjs/directory-saves.ts");
+const { bytesEqual } = require("../../frontend/src/v2/utils/saveSync/hash.ts");
 const Manager = loadClass("GameManager.js", "EJS_GameManager");
 const Emulator = loadClass("emulator.js", "EmulatorJS");
 const sdRoot =
   "Azahar/Azahar/sdmc/Nintendo 3DS/" + "0".repeat(32) + "/" + "0".repeat(32);
 const titleRoot = sdRoot + "/title/00040000/0011aa00/data";
 const extRoot = sdRoot + "/extdata/00000000/000011AA";
+
+test("byte comparison respects unaligned views, word boundaries, and trailing bytes", () => {
+  for (const length of [0, 3, 63, 64, 65, 66, 67, 128]) {
+    const left = new Uint8Array(length + 7).subarray(3, 3 + length);
+    const right = new Uint8Array(length + 11).subarray(5, 5 + length);
+    left.fill(5);
+    right.fill(5);
+    assert.equal(bytesEqual(left, right), true);
+    for (let i = 0; i < length; i++) {
+      right[i] = 6;
+      assert.equal(
+        bytesEqual(left, right),
+        false,
+        `Mismatch at ${i}/${length}`,
+      );
+      right[i] = 5;
+    }
+  }
+  assert.equal(bytesEqual(null, null), true);
+  assert.equal(bytesEqual(null, new Uint8Array()), false);
+  assert.equal(bytesEqual(new Uint8Array(1), new Uint8Array(2)), false);
+});
 
 // Python's standard ZIP reader checks the real central directory and CRCs,
 // independently of the writer. Fixtures use DEFLATE like Argosy's archiver.
@@ -121,6 +144,7 @@ function manager(core, rom = ncch()) {
     stat: (path) => ({
       mode: files.has(path) ? 1 : 2,
       mtime: files.get(path)?.mtime,
+      size: files.get(path)?.bytes.length ?? 0,
     }),
     isFile: (mode) => mode === 1,
     isDir: (mode) => mode === 2,
@@ -478,7 +502,92 @@ test("identical directory saves produce stable archives for autosave deduplicati
   add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [1, 2]);
   const first = gm.getSaveFile(false);
   add("/data/saves/DOSBox-pure/Example-CDRIVE.sav", [1, 2], Date.now() + 5000);
-  assert.deepEqual(gm.getSaveFile(false), first);
+  assert.equal(gm.getSaveFile(false), first);
+});
+
+test("DOS save cache checks contents even when size and timestamp do not change", () => {
+  const { gm, files, add, reads } = manager("dosbox_pure");
+  const path = "/data/saves/DOSBox-pure/Example-CDRIVE.sav";
+  add(path, new Uint8Array(150_000), 1000);
+  const first = gm.getSaveFile(false);
+  gm.FS.readFile = () =>
+    assert.fail("An unchanged save must not be copied in full");
+  assert.equal(gm.getSaveFile(false), first);
+  assert.ok(Math.max(...reads) <= 64 * 1024);
+  gm.FS.readFile = (name) => files.get(name).bytes;
+  files.get(path).bytes[140_000] = 42;
+  const changed = gm.getSaveFile(false);
+  assert.notEqual(changed, first);
+  assert.equal(unzip(changed)["DOSBox-pure/Example-CDRIVE.sav"][140_000], 42);
+  assert.equal(unzip(first)["DOSBox-pure/Example-CDRIVE.sav"][140_000], 0);
+  assert.equal(gm.getSaveFile(false), changed);
+});
+
+test("DOS save cache follows added, truncated, removed, and restored files", async () => {
+  const { gm, files, add } = manager("dosbox_pure");
+  const root = "/data/saves/DOSBox-pure/";
+  add(root + "Example.srm", []);
+  const first = gm.getSaveFile(false);
+  assert.equal(gm.getSaveFile(false), first);
+  add(root + "Example.pure.zip", [1, 2, 3]);
+  assert.equal(Object.keys(unzip(gm.getSaveFile(false))).length, 2);
+  add(root + "Example.pure.zip", [4]);
+  assert.deepEqual(
+    [...unzip(gm.getSaveFile(false))["DOSBox-pure/Example.pure.zip"]],
+    [4],
+  );
+  files.delete(root + "Example.srm");
+  assert.equal(Object.keys(unzip(gm.getSaveFile(false))).length, 1);
+  await gm
+    .getSaveFileAdapter()
+    .restore(zip({ "DOSBox-pure/Example.pure.zip": [9] }));
+  assert.deepEqual(
+    [...unzip(gm.getSaveFile(false))["DOSBox-pure/Example.pure.zip"]],
+    [9],
+  );
+  files.clear();
+  assert.equal(gm.getSaveFile(false), null);
+});
+
+test("forced save returns the emitted snapshot without bundling it twice", () => {
+  const { gm, add } = manager("dosbox_pure");
+  add(gm.getSaveFilePath(), [1]);
+  let emitted;
+  let reads = 0;
+  const adapter = gm.getSaveFileAdapter();
+  const read = adapter.read.bind(adapter);
+  adapter.read = () => {
+    reads++;
+    return read();
+  };
+  gm.functions.saveSaveFiles = () => {};
+  gm.syncSaveFileSystem = () => {};
+  gm.EJS.callEvent = (_name, data) => {
+    emitted = data;
+  };
+  assert.equal(gm.getSaveFile(), emitted);
+  assert.equal(reads, 1);
+});
+
+test("DOS save cache indexes UTF-8 ZIP names and closes partial reads", () => {
+  const { gm, files, add } = manager("dosbox_pure");
+  const path = "/data/saves/DOSBox-pure/한글.srm";
+  gm.functions.getSaveFilePath = () => path;
+  add(path, [1, 2, 3]);
+  const first = gm.getSaveFile(false);
+  let closed = 0;
+  gm.FS.close = () => closed++;
+  const read = gm.FS.read;
+  gm.FS.read = (stream, bytes, start, length, offset) =>
+    read(stream, bytes, start, Math.min(length, 1), offset);
+  assert.equal(gm.getSaveFile(false), first);
+  assert.equal(closed, 1);
+  files.get(path).bytes[2] = 5;
+  assert.deepEqual(
+    [...unzip(gm.getSaveFile(false))["DOSBox-pure/한글.srm"]],
+    [1, 2, 5],
+  );
+  assert.equal(closed, 2);
 });
 
 test("the runtime retains raw SRAM when no host save adapter is installed", () => {

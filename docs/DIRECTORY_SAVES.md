@@ -34,6 +34,51 @@ keeps all siblings in an outer ZIP. The custom RomM 5.4.1 Cloud Sync adapter
 exposes those siblings individually to native RetroArch. The browser continues
 to download and restore the outer ZIP.
 
+## DOSBox web playback
+
+With the default `dosbox_pure_mouse_input = true`, touching the game screen
+selects the core's touchpad mode for that session. Moving a physical mouse
+switches back to mouse input. Explicit `pad`, `direct`, `virtual`, or `false`
+settings remain in effect. Virtual gamepad buttons remain usable.
+
+- Slide one finger to move the cursor and tap to left-click.
+- Hold one finger for about half a second, then move it to drag.
+- Hold two fingers for about half a second to right-click. A quick two-finger
+  tap depends on release timing in the core and can become a left-click if both
+  fingers lift together.
+
+Unchanged DOS saves reuse an immutable outer ZIP. Each check compares actual
+file contents through a 64 KiB buffer, including writes with unchanged size or
+mtime. Changed, added, deleted, or restored files rebuild the archive. Cached
+entry views share its storage, and forced saves serialize only once.
+
+Windows Chrome 156 with the real DOSBox WASM filesystem measured median
+unchanged-save checks of 9.4 to 2.8 ms (4 MiB), 38.4 to 8.5 ms (16 MiB), and
+164.9 to 33.1 ms (64 MiB), across seven samples per size. These measure save
+processing while emulation is paused, not game FPS or Android performance.
+Actual touchscreen events reached DOS INT 33h movement/buttons in the test
+fixture; Android Samsung Internet still needs device verification.
+
+The browser regression harness uses an original DOS program and intercepted
+requests at the test origin `http://127.0.0.1:8081`. It does not access account
+data or existing game saves. Prepare the fixture and browser bundle on Linux:
+
+```sh
+DOSBOX_PREPARE_ONLY=1 node scripts/verify-dosbox-web.mjs
+```
+
+Run the same script in Node with `DOSBOX_CDP` pointing at an isolated Chrome
+remote-debugging endpoint. With a Windows browser, run Node on Windows too;
+the prepared fixture is shared through the workspace. `DOSBOX_PACKAGE_JSON`
+can select the frontend package path when dependencies live in another
+worktree. The harness closes its browser unless `DOSBOX_KEEP_BROWSER=1`.
+The Linux headless build hit a core startup failure during this investigation;
+the recorded passing runs used Windows Chrome.
+
+For a before/after comparison, prepare with `DOSBOX_BASELINE_REF=<old-commit>`
+and run with `DOSBOX_BASELINE=1`. Results and screenshots go under
+`../result/dosbox-web-input/`.
+
 ## DOSBox Pure and RetroArch Cloud Sync
 
 Configure RetroArch 1.22 or newer with WebDAV Cloud Sync, the server URL
