@@ -10,6 +10,8 @@
   "no-state": "Aucun état sauvegardé disponible.",
   "player-slot": "Place du joueur",
   "ready": "Prêt",
+  "relay-launch-error": "Impossible d’ouvrir le lecteur relais. Vérifiez les autorisations des fenêtres contextuelles et réessayez.",
+  "relay-server": "Serveur relais",
   "restart": "Le jeu en liaison redémarre les jeux depuis leurs sauvegardes en jeu. Sauvegardez avant de créer ou de rejoindre un salon.",
   "saving": "Sauvegardez d’abord dans le jeu. Seule votre sauvegarde est synchronisée avec RomM toutes les 10 secondes. Enregistrer et quitter attend la fin de l’envoi.",
   "slot-hint": "Choisissez des places consécutives à partir de 1P pour tous les joueurs du salon.",

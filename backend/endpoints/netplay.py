@@ -1,11 +1,27 @@
 from typing import NotRequired, TypedDict
 
+from fastapi import HTTPException, Query, Request, Response
+
 from decorators.auth import protected_route
+from endpoints.responses.netplay_bridge import (
+    BridgeConfigResponse,
+    BridgeConnectionResponse,
+    BridgeJoinRequest,
+    BridgeRoomRequest,
+    BridgeRoomResponse,
+)
 from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
-from fastapi import HTTPException, Request
 from handler.auth.constants import Scope
 from handler.auth.dependencies import assert_rom_visible, can_access, get_permissions
 from handler.database import db_rom_handler
+from handler.netplay_bridge_handler import (
+    bridge_connection,
+    bridge_enabled,
+    bridge_request,
+    bridge_room,
+    bridge_rooms,
+    bridge_system,
+)
 from handler.netplay_handler import NetplayRoom, get_link_cartridge, netplay_handler
 from models.permission import PermAction, PermEntity
 from utils.router import APIRouter
@@ -129,3 +145,105 @@ async def get_rooms(
                 response["link_roms"] = linked
 
     return open_rooms
+
+
+def _assert_bridge_rom(request: Request, rom_id: int) -> str:
+    rom = db_rom_handler.get_rom_visibility(rom_id)
+    if not rom:
+        raise RomNotFoundInDatabaseException(rom_id)
+    assert_rom_visible(request, rom)
+    if not can_access(get_permissions(request), PermEntity.EMULATION, PermAction.READ):
+        raise HTTPException(status_code=403, detail="Emulation permission required")
+    system = bridge_system(rom_id)
+    if not system:
+        raise HTTPException(
+            status_code=422, detail="Netplay relay supports GB, GBC, GBA and SNES"
+        )
+    return system
+
+
+@protected_route(router.get, "/bridge/config", [Scope.ROMS_READ])
+async def get_bridge_config(request: Request) -> BridgeConfigResponse:
+    return BridgeConfigResponse(
+        enabled=bridge_enabled()
+        and can_access(get_permissions(request), PermEntity.EMULATION, PermAction.READ)
+    )
+
+
+@protected_route(router.get, "/bridge/rooms", [Scope.ROMS_READ])
+async def get_bridge_rooms(
+    request: Request, rom_id: int = Query(gt=0)
+) -> list[BridgeRoomResponse]:
+    _assert_bridge_rom(request, rom_id)
+    try:
+        return [
+            BridgeRoomResponse(
+                id=room["id"],
+                rom_id=rom_id,
+                players=room["players"],
+                current=room["current"],
+                started=room["started"],
+                native_allowed=room["nativeAllowed"],
+                core_name=room["coreName"],
+                core_version=room["coreVersion"],
+                state_size=room["stateSize"],
+                content_crc=room["contentCrc"],
+                has_password=room["hasPassword"],
+                native_calibration=room.get("nativeCalibration"),
+                max_prediction=room.get("maxPrediction", 0),
+            )
+            for room in await bridge_rooms()
+            if room.get("romId") == rom_id
+        ]
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=502, detail="Invalid netplay room response"
+        ) from error
+
+
+@protected_route(router.post, "/bridge/rooms", [Scope.ROMS_READ])
+async def create_bridge_room(
+    request: Request, body: BridgeRoomRequest
+) -> BridgeConnectionResponse:
+    system = _assert_bridge_rom(request, body.rom_id)
+    if body.system != system:
+        raise HTTPException(
+            status_code=422, detail="Core does not match the selected ROM"
+        )
+    payload = body.model_dump(exclude={"rom_id"}, exclude_none=True)
+    payload.update(romId=body.rom_id, owner=str(request.user.id))
+    return bridge_connection(await bridge_request("POST", "", payload))
+
+
+@protected_route(router.post, "/bridge/rooms/{room_id}/join", [Scope.ROMS_READ])
+async def join_bridge_room(
+    request: Request, room_id: str, body: BridgeJoinRequest
+) -> BridgeConnectionResponse:
+    _assert_bridge_rom(request, body.rom_id)
+    room = await bridge_room(room_id)
+    if room.get("romId") != body.rom_id:
+        raise HTTPException(status_code=404, detail="Netplay room not found")
+    value = await bridge_request(
+        "POST",
+        f"/{room_id}/join",
+        {
+            "owner": str(request.user.id),
+            "nickname": body.nickname,
+            "password": body.password,
+        },
+    )
+    return bridge_connection(value)
+
+
+@protected_route(router.delete, "/bridge/rooms/{room_id}", [Scope.ROMS_READ])
+async def delete_bridge_room(
+    request: Request, room_id: str, rom_id: int = Query(gt=0)
+) -> Response:
+    _assert_bridge_rom(request, rom_id)
+    room = await bridge_room(room_id)
+    if room.get("romId") != rom_id:
+        raise HTTPException(status_code=404, detail="Netplay room not found")
+    if room.get("owner") != str(request.user.id):
+        raise HTTPException(status_code=403, detail="Only the room owner can close it")
+    await bridge_request("DELETE", f"/{room_id}")
+    return Response(status_code=204)

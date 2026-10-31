@@ -116,8 +116,10 @@ class EmulatorJS {
             // Construct the full path/URL
             const basePath = notWithPath ? "" : this.config.dataPath;
             let fullPath = basePath + path;
-            if (!notWithPath && this.config.filePaths && typeof this.config.filePaths[path.split("/").pop()] === "string") {
-                fullPath = this.config.filePaths[path.split("/").pop()];
+            const filename = path.split("/").pop();
+            const override = this.config.filePaths?.[filename] ?? this.config.filePaths?.[filename.split(/[?#]/)[0]];
+            if (!notWithPath && typeof override === "string") {
+                fullPath = override;
             }
 
             const attempt = async (targetUrl) => {
@@ -269,7 +271,7 @@ class EmulatorJS {
             this.checkForUpdates();
         }
         this.config = config;
-        this.netplayEnabled = this.supportsNetplay();
+        this.netplayEnabled = typeof this.config.netplayLaunch === "function" || this.supportsNetplay();
 
         this.setup = new EJS_SETUP(this);
         this.setup.checkDeprecatedSettings();
@@ -362,7 +364,7 @@ class EmulatorJS {
         this.capture.video.audioBitrate = (typeof this.capture.video.audioBitrate === "number") ? this.capture.video.audioBitrate : 192 * 1024;
         this.bindListeners();
         this.startLongTaskTelemetry();
-        if (this.netplayEnabled) {
+        if (this.netplayEnabled && typeof this.config.netplayLaunch !== "function") {
             this.netplay = new Netplay(this);
         }
 
@@ -1647,7 +1649,7 @@ class EmulatorJS {
             this.elements.contextMenu.save.style.display = "none";
             this.elements.contextMenu.load.style.display = "none";
         }
-        if (typeof this.config.gameId !== "number" || !this.config.netplayUrl || this.netplayEnabled === false) {
+        if (typeof this.config.netplayLaunch !== "function" && (typeof this.config.gameId !== "number" || !this.config.netplayUrl || this.netplayEnabled === false)) {
             this.elements.bottomBar.netplay[0].style.display = "none";
         }
     }
@@ -2530,6 +2532,7 @@ class EmulatorJS {
             this.gameManager.loadSaveFiles();
         });
         const netplay = addButton(this.config.buttonOpts.netplay, async () => {
+            if (typeof this.config.netplayLaunch === "function") return this.config.netplayLaunch();
             if (!this.netplay) return;
             if (!this.netplay.isMenuCreated()) {
                 this.netplay.createNetplayMenu();

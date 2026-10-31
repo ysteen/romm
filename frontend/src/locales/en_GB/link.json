@@ -10,6 +10,8 @@
   "no-state": "No saved state is available.",
   "player-slot": "Player slot",
   "ready": "Ready",
+  "relay-launch-error": "Could not open the relay player. Check pop-up permissions and try again.",
+  "relay-server": "Relay server",
   "restart": "Link play restarts the games from their in-game saves. Save inside your game before creating or joining a room.",
   "saving": "Save in the game first. Only your save syncs to RomM every 10 seconds. Save and quit waits for the upload to finish.",
   "slot-hint": "Choose consecutive slots from 1P for everyone in the room.",

@@ -10,6 +10,8 @@
   "no-state": "Kayıtlı durum bulunamadı.",
   "player-slot": "Oyuncu yeri",
   "ready": "Hazır",
+  "relay-launch-error": "Aktarma oynatıcısı açılamadı. Açılır pencere izinlerini kontrol edip tekrar deneyin.",
+  "relay-server": "Aktarma sunucusu",
   "restart": "Bağlantılı oyun, oyunları oyun içi kayıtlarından yeniden başlatır. Oda oluşturmadan veya katılmadan önce oyun içinde kaydedin.",
   "saving": "Önce oyun içinde kaydedin. Yalnızca kendi kaydınız her 10 saniyede bir RomM ile eşitlenir. Kaydet ve çık, yüklemenin tamamlanmasını bekler.",
   "slot-hint": "Odadaki herkes için 1P’den başlayarak sıralı yerler seçin.",

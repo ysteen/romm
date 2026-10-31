@@ -10,6 +10,8 @@
   "no-state": "Nessuno stato salvato disponibile.",
   "player-slot": "Posto del giocatore",
   "ready": "Pronto",
+  "relay-launch-error": "Impossibile aprire il lettore tramite inoltro. Controlla le autorizzazioni per le finestre popup e riprova.",
+  "relay-server": "Server di inoltro",
   "restart": "Il collegamento riavvia i giochi dai salvataggi interni. Salva nel gioco prima di creare una stanza o entrarvi.",
   "saving": "Salva prima nel gioco. Solo il tuo salvataggio viene sincronizzato con RomM ogni 10 secondi. Salva ed esci attende il completamento del caricamento.",
   "slot-hint": "Scegliete posti consecutivi da 1P per tutti i giocatori nella stanza.",

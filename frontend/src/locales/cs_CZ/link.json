@@ -10,6 +10,8 @@
   "no-state": "Není dostupný žádný uložený stav.",
   "player-slot": "Pozice hráče",
   "ready": "Připraveno",
+  "relay-launch-error": "Přehrávač pro přenosový server se nepodařilo otevřít. Zkontrolujte povolení vyskakovacích oken a zkuste to znovu.",
+  "relay-server": "Přenosový server",
   "restart": "Propojení restartuje hry z jejich uložených pozic ve hře. Před vytvořením místnosti nebo připojením k ní uložte hru.",
   "saving": "Nejprve uložte hru. Pouze vaše uložená pozice se synchronizuje s RomM každých 10 sekund. Uložit a ukončit počká na dokončení nahrávání.",
   "slot-hint": "Vyberte pro všechny v místnosti po sobě jdoucí místa od 1P.",

@@ -43,11 +43,17 @@ import {
 } from "vue";
 import { useI18n } from "vue-i18n";
 import { onBeforeRouteLeave } from "vue-router";
-import type { FirmwareSchema, SaveSchema, StateSchema } from "@/__generated__";
+import type {
+  BridgeConfigResponse,
+  FirmwareSchema,
+  SaveSchema,
+  StateSchema,
+} from "@/__generated__";
 import {
   userStorage,
   useUserLocalStorage,
 } from "@/composables/useUserLocalStorage";
+import api from "@/services/api";
 import firmwareApi from "@/services/api/firmware";
 import romApi from "@/services/api/rom";
 import { AUTOSAVE_SLOT, SAVE_SLOT_MAX_LENGTH } from "@/services/api/save";
@@ -64,6 +70,11 @@ import AssetPreview from "@/v2/components/Player/AssetPreview.vue";
 import LinkRoomDialog from "@/v2/components/Player/LinkRoomDialog.vue";
 import LinkStage from "@/v2/components/Player/LinkStage.vue";
 import {
+  launchBridgePlayer,
+  resolveBridgeNetplay,
+  supportsBridge,
+} from "@/v2/components/Player/bridgeLaunch";
+import {
   installLinkRoomMenu,
   isLinkRoms,
   supportsLink,
@@ -78,6 +89,7 @@ import { useActivityPresence } from "@/v2/composables/useActivityPresence";
 import { useCanPlay } from "@/v2/composables/useCanPlay";
 import { useCoverArt } from "@/v2/composables/useCoverArt";
 import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
+import { useFetchState } from "@/v2/composables/useFetchState";
 import { useFullscreenFallback } from "@/v2/composables/useFullscreenFallback";
 import { useFullscreenPref } from "@/v2/composables/useFullscreenPref";
 import {
@@ -203,7 +215,10 @@ usePlayFocus(".r-v2-ejs__play:not([disabled])", playReady, gameRunning);
 // cannot host another launch. Tracked from the injection, which a departure
 // taken mid-load would otherwise outrun.
 let runtimeInjected = false;
-const playerRef = ref<{ flushPendingSave: () => Promise<void> } | null>(null);
+const playerRef = ref<{
+  flushPendingSave: () => Promise<void>;
+  syncPendingSave: () => Promise<void>;
+} | null>(null);
 const linkStageRef = ref<{
   flushPendingSave: () => Promise<void>;
   battery: () => Uint8Array<ArrayBuffer> | null;
@@ -215,6 +230,42 @@ const linkRoomDialog = ref(false);
 const linkJoining = shallowRef<LinkRoom | null>(null);
 const linkLaunching = ref(false);
 let removeLinkRoomMenu: (() => void) | undefined;
+let bridgePopup: ReturnType<typeof launchBridgePlayer> | undefined;
+const { state: bridgeEnabled, execute: checkBridge } = useFetchState(
+  async () =>
+    (await api.get<BridgeConfigResponse>("/netplay/bridge/config")).data
+      .enabled,
+  false,
+  { immediate: false },
+);
+watch(
+  () => rom.value?.platform_slug,
+  () => {
+    if (rom.value && supportsBridge(rom.value)) void checkBridge();
+  },
+  { immediate: true },
+);
+function onPlayBridge() {
+  if (!rom.value || !bridgeEnabled.value || !supportsBridge(rom.value)) return;
+  if (bridgePopup?.popup && !bridgePopup.popup.closed) {
+    // eslint-disable-next-line no-restricted-syntax -- Focus a separate browser window.
+    bridgePopup.popup.focus();
+    return;
+  }
+  bridgePopup?.dispose();
+  bridgePopup = launchBridgePlayer(
+    rom.value,
+    (error) =>
+      snackbar.error(
+        error instanceof Error ? error.message : t("link.relay-launch-error"),
+      ),
+    async () => {
+      window.EJS_emulator?.pause();
+      await playerRef.value?.syncPendingSave();
+    },
+  );
+}
+onBeforeUnmount(() => bridgePopup?.dispose());
 const exit = usePlayerExit(
   () => runtimeInjected,
   async () => {
@@ -618,12 +669,18 @@ async function onPlay() {
     await new Promise((resolve) => setTimeout(resolve, insertMs));
   }
 
+  const netplayLaunch = await resolveBridgeNetplay(
+    rom.value?.platform_slug,
+    checkBridge,
+    onPlayBridge,
+  );
   gameRunning.value = true;
   window.EJS_fullscreenOnLoaded = fullscreenOnPlay.value;
+  window.EJS_onNetplay = netplayLaunch;
 
   const EMULATORJS_VERSION = "nightly";
   const EMULATORJS_SNAPSHOT = "cf622ec831e1c68dbbbce9dc49923a82b4b0e2a6";
-  const ROMM_RUNTIME_REVISION = "20261029.2";
+  const ROMM_RUNTIME_REVISION = "20261101.1";
   const LOCAL_PATH = "/assets/emulatorjs/data";
   const CDN_PATH = `https://cdn.emulatorjs.org/${EMULATORJS_VERSION}/data`;
 
@@ -835,6 +892,7 @@ onBeforeUnmount(() => {
   // stays true and pad/hotkey navigation is dead until a reload.
   gameRunning.value = false;
   removeLinkRoomMenu?.();
+  if (window.EJS_onNetplay === onPlayBridge) window.EJS_onNetplay = undefined;
   if (!linkStageRef.value) window.EJS_emulator?.netplay?.leaveRoom();
   exitEmulatorOnce();
 });
@@ -994,6 +1052,16 @@ const saveSlot = computed(() => chosenSlot(slotChoice.value, customSlot.value));
           @click="onPlay"
         >
           {{ canPlayNative ? t("play.play-in-browser") : t("play.play") }}
+        </RBtn>
+        <RBtn
+          v-if="rom && supportsBridge(rom) && bridgeEnabled && !nativeOnly"
+          variant="outlined"
+          block
+          prepend-icon="mdi-access-point-network"
+          :disabled="!playReady || nativeLaunching"
+          @click="onPlayBridge"
+        >
+          {{ t("link.relay-server") }}
         </RBtn>
         <div class="r-v2-ejs__hero-links">
           <RBtn

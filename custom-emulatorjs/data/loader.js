@@ -190,6 +190,7 @@ const config = {
     gamePatchUrl: window.EJS_gamePatchUrl,
     gameParentUrl: window.EJS_gameParentUrl,
     netplayUrl: window.EJS_netplayServer,
+    netplayLaunch: window.EJS_onNetplay,
     netplaySocketOptions: window.EJS_netplaySocketOptions,
     netplayRoomListUrl: window.EJS_netplayRoomListUrl,
     netplayICEServers: window.EJS_netplayICEServers,

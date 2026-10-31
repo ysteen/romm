@@ -10,6 +10,8 @@
   "no-state": "No hay ningún estado guardado disponible.",
   "player-slot": "Puesto del jugador",
   "ready": "Listo",
+  "relay-launch-error": "No se pudo abrir el reproductor de retransmisión. Comprueba los permisos de ventanas emergentes e inténtalo de nuevo.",
+  "relay-server": "Servidor de retransmisión",
   "restart": "El modo enlace reinicia los juegos desde sus partidas guardadas. Guarda dentro del juego antes de crear una sala o unirte a ella.",
   "saving": "Guarda primero dentro del juego. Solo tu partida se sincroniza con RomM cada 10 segundos. Guardar y salir espera a que termine la subida.",
   "slot-hint": "Elegid puestos consecutivos desde 1P para todos los jugadores de la sala.",

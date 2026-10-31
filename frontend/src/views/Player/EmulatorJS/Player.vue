@@ -573,6 +573,20 @@ function uninstallAutoSaveSync() {
   stopSavePolling?.();
   stopSavePolling = null;
 }
+// Multiplayer handoff must finish the save upload while keeping autosave active.
+async function syncPendingSave() {
+  const emulator = window.EJS_emulator;
+  if (!emulator?.gameManager) return;
+  if (stateBusy || saveLoading)
+    throw new Error("The current save is still loading");
+  await saveWrite;
+  const saveFile: Uint8Array | null = emulator.gameManager.getSaveFile();
+  if (!saveFile?.byteLength || !saveTracker.hasChanges(saveFile)) return;
+  const saved = await writeSave({ saveFile: toArrayBuffer(saveFile) });
+  if (!saved) throw new Error("The current save could not be synced");
+  romsStore.update(romRef.value);
+}
+
 // A save written right before Quit or a back navigation has not had its two
 // ticks yet, so leaving the player uploads whatever the server lacks.
 async function flushPendingSave() {
@@ -613,7 +627,7 @@ onBeforeRouteLeave(async () => {
 });
 // A v2 shell that leaves by replacing the document aborts the navigation, so
 // the guard above never runs and the flush has to be asked for. Idempotent.
-defineExpose({ flushPendingSave });
+defineExpose({ flushPendingSave, syncPendingSave });
 // Closing the tab cancels requests in flight, so a save the tick has not
 // uploaded goes out on `pagehide` with fetch keepalive, which the browser caps
 // at 64 KB. `beforeunload` asks first while one is pending: for a bigger save

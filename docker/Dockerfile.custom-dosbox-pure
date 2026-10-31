@@ -24,6 +24,10 @@ COPY custom-emulatorjs/data/cores/ /custom-cores/
 COPY scripts/download-emulatorjs-cores.sh /download-emulatorjs-cores.sh
 RUN sh /download-emulatorjs-cores.sh
 
+FROM scratch AS rollback-assets
+COPY custom-emulatorjs/data/src/bridge-*.js custom-emulatorjs/data/src/bridge-vendor.json /src/
+COPY custom-emulatorjs/data/cores/compat/rollback/ /cores/compat/rollback/
+
 FROM ${ROMM_BASE_IMAGE}
 ARG ROMM_CUSTOM_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/ysteen/romm" \
@@ -45,6 +49,7 @@ COPY custom-emulatorjs/data/src/cache.js custom-emulatorjs/data/src/cache-storag
 COPY custom-emulatorjs/data/src/GameManager.js /var/www/html/assets/emulatorjs/data/src/GameManager.js
 COPY custom-emulatorjs/data/src/azahar-system-data.js /var/www/html/assets/emulatorjs/data/src/azahar-system-data.js
 COPY custom-emulatorjs/data/src/consts.js custom-emulatorjs/data/src/input-netplay.js custom-emulatorjs/data/src/link-core.js custom-emulatorjs/data/src/link-netplay.js custom-emulatorjs/data/src/link-lobby.js custom-emulatorjs/data/src/netplay.js /var/www/html/assets/emulatorjs/data/src/
+COPY --from=rollback-assets / /var/www/html/assets/emulatorjs/data/
 COPY custom-emulatorjs/input-netplay/ /var/www/html/assets/emulatorjs/input-netplay/
 COPY custom-emulatorjs/data/cores/sameboy-wasm.data /var/www/html/assets/emulatorjs/data/cores/sameboy-wasm.data
 COPY custom-emulatorjs/data/cores/reports/sameboy.json /var/www/html/assets/emulatorjs/data/cores/reports/sameboy.json

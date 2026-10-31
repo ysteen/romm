@@ -10,6 +10,8 @@
   "no-state": "Nu există nicio stare salvată disponibilă.",
   "player-slot": "Poziția jucătorului",
   "ready": "Pregătit",
+  "relay-launch-error": "Playerul de retransmisie nu a putut fi deschis. Verifică permisiunile ferestrelor pop-up și încearcă din nou.",
+  "relay-server": "Server de retransmisie",
   "restart": "Conectarea repornește jocurile din salvările lor interne. Salvează în joc înainte de a crea sau de a intra într-o cameră.",
   "saving": "Salvează mai întâi în joc. Doar salvarea ta se sincronizează cu RomM la fiecare 10 secunde. Salvare și ieșire așteaptă finalizarea încărcării.",
   "slot-hint": "Alegeți locuri consecutive de la 1P pentru toți jucătorii din cameră.",

@@ -10,6 +10,8 @@
   "no-state": "Nenhum estado salvo disponível.",
   "player-slot": "Posição do jogador",
   "ready": "Pronto",
+  "relay-launch-error": "Não foi possível abrir o player de retransmissão. Verifique as permissões de janelas pop-up e tente novamente.",
+  "relay-server": "Servidor de retransmissão",
   "restart": "O modo de conexão reinicia os jogos a partir dos salvamentos internos. Salve no jogo antes de criar ou entrar em uma sala.",
   "saving": "Salve primeiro no jogo. Apenas seu salvamento é sincronizado com o RomM a cada 10 segundos. Salvar e sair aguarda o fim do envio.",
   "slot-hint": "Escolham posições consecutivas a partir de 1P para todos na sala.",

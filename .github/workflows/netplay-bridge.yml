@@ -1,0 +1,56 @@
+name: Netplay Adapter
+
+on:
+  push:
+    branches:
+      - custom/netplay-retroarch-bridge
+  pull_request:
+    paths:
+      - "custom-emulatorjs/data/src/bridge-*.js"
+      - "custom-emulatorjs/data/src/link-core.js"
+      - "custom-emulatorjs/input-netplay/**"
+      - "custom-emulatorjs/data/src/bridge-vendor.json"
+      - "scripts/check-netplay-client.mjs"
+      - "docker/Dockerfile.custom-dosbox-pure"
+      - "custom-emulatorjs/data/cores/compat/rollback/**"
+      - "custom-emulatorjs/tests/bridge-*.test.mjs"
+      - ".github/workflows/netplay-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Test vendored rollback client
+        run: node --test custom-emulatorjs/tests/bridge-*.test.mjs
+
+      - name: Check client provenance
+        run: node scripts/check-netplay-client.mjs
+
+      - name: Package rollback runtime assets
+        run: |
+          docker build --target rollback-assets -f docker/Dockerfile.custom-dosbox-pure \
+            --output type=local,dest=/tmp/rollback-assets .
+          test -f /tmp/rollback-assets/src/bridge-session.js
+          test -f /tmp/rollback-assets/src/bridge-profile.js
+          test -f /tmp/rollback-assets/cores/compat/rollback/sameboy-sbr2/BUILD.txt
+          test -f /tmp/rollback-assets/cores/compat/rollback/mgba-spst4/BUILD.txt
+          test -f /tmp/rollback-assets/cores/compat/rollback/snes9x-2d4cce69/BUILD.txt

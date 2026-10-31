@@ -36,6 +36,11 @@ def _get_env_set(var: str, fallback: str | None = None) -> frozenset[str]:
 ROMM_BASE_URL: Final[str] = _get_env("ROMM_BASE_URL", "http://0.0.0.0")
 ROMM_PORT: Final[int] = safe_int(_get_env("ROMM_PORT"), 8080)
 
+NETPLAY_BRIDGE_URL: Final[str] = _get_env("NETPLAY_BRIDGE_URL", "")
+NETPLAY_BRIDGE_TOKEN: Final[str] = _get_env("NETPLAY_BRIDGE_TOKEN", "")
+NETPLAY_BRIDGE_PUBLIC_URL: Final[str] = _get_env("NETPLAY_BRIDGE_PUBLIC_URL", "")
+NETPLAY_BRIDGE_PUBLIC_HOST: Final[str] = _get_env("NETPLAY_BRIDGE_PUBLIC_HOST", "")
+
 # GUNICORN
 DEV_MODE: Final[bool] = safe_str_to_bool(_get_env("DEV_MODE"))
 DEV_HOST: Final[str] = _get_env("DEV_HOST", "127.0.0.1")

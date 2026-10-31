@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RomM multiplayer room</title>
+    <link rel="stylesheet" href="bridge.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1 id="title">Multiplayer room</h1>
+        <p id="status" role="status" aria-live="polite">Opening game…</p>
+      </header>
+      <section id="setup" aria-label="Multiplayer room">
+        <label
+          >Players
+          <select id="players">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select></label
+        >
+        <label
+          ><input type="checkbox" id="native" /> Allow desktop RetroArch
+          clients</label
+        >
+        <button id="create" disabled>Create room</button>
+        <button id="refresh" disabled>Refresh rooms</button>
+        <label
+          >Open rooms
+          <select id="rooms">
+            <option value="">Choose a room</option>
+          </select></label
+        >
+        <label
+          >Room password
+          <input id="join-password" type="password" autocomplete="off"
+        /></label>
+        <button id="join" disabled>Join room</button>
+      </section>
+      <section id="connection" hidden aria-label="Connection details">
+        <p id="address"></p>
+        <p id="password"></p>
+        <p>
+          <a id="room-link" target="_blank" rel="noopener"
+            >Open room invitation</a
+          >
+          <button id="copy-room">Copy room link</button>
+        </p>
+        <p id="core-info"></p>
+        <p id="native-details">
+          <a id="core-download" download>Download matching core</a> ·
+          <a id="core-build" target="_blank" rel="noopener"
+            >Source and build instructions</a
+          >
+        </p>
+      </section>
+      <div id="screen"></div>
+      <section id="controls" hidden aria-label="Player controls">
+        <label
+          >Volume
+          <input
+            id="volume"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value="0.4"
+        /></label>
+        <button id="pause">Pause</button
+        ><button id="save">Save progress</button>
+        <button id="download">Download save</button
+        ><button id="disconnect">Disconnect</button>
+        <button id="quit">Save and close</button>
+      </section>
+      <p id="save-status" role="status"></p>
+      <p id="play-hint" class="hint"></p>
+      <p id="save-hint" class="hint"></p>
+    </main>
+    <script type="module" src="bridge.js"></script>
+  </body>
+</html>

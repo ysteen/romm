@@ -1,5 +1,5 @@
 // Digital rollback. Link emulation belongs to the libretro core.
-import { linkCore } from "./link-core.js?v=20261021.10";
+import { linkCore } from "./link-core.js?v=20261101.1";
 
 export const PROTOCOL = 1;
 
@@ -257,9 +257,14 @@ export class RollbackSession {
 }
 
 export class LibretroAdapter {
-  constructor(module, core = "sameboy", players = 2) {
+  constructor(
+    module,
+    core = "sameboy",
+    players = 2,
+    profile = linkCore(core, players),
+  ) {
     this.module = module;
-    this.profile = linkCore(core, players);
+    this.profile = profile;
     this.memoryIds = this.profile.memoryIds;
     this.begin();
     // SameBoy initializes its snapshot format on the first frame.

@@ -1,0 +1,7 @@
+{
+  "core": "sameboy",
+  "buildStart": "05df87d0488c7e27931da943e64254eca2216aa33c45c85b405eb7cf862ba7f7",
+  "options": {
+    "defaultWebGL2": true
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "core": "snes9x",
+  "buildStart": "d570ee064ce874fd0fe001d444e7ca1ad6dd7ee2c27513d6446640309ed5489f",
+  "options": {
+    "defaultWebGL2": true
+  }
+}

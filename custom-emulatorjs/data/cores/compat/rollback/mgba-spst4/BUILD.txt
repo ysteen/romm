@@ -1,0 +1,15 @@
+# mGBA Splitscreen compatibility core
+
+The included `mgba_splitscreen_libretro.so` is a qualified Linux x86_64 RetroArch core. The RetroArch application is unchanged. Select this core with **Load Core → Install or Restore a Core**, then load the matching cartridge and connect through Netplay.
+
+Source: https://github.com/Spuds0588/mgba-splitscreen/tree/f1d5975d77285f77affbfe64b7050ebd5c4b6a77
+
+Source archive: https://github.com/Spuds0588/mgba-splitscreen/archive/f1d5975d77285f77affbfe64b7050ebd5c4b6a77.tar.gz
+
+State patch: mgba-rollback-state.patch
+
+The local `retroarch-netplay-bridge` project provides `scripts/build-retroarch-rollback-mgba.sh`. Run it in a fresh `COMPAT_WORK` directory with the prepared Emscripten and RetroArch frontend dependencies; use `COMPAT_BUILD_WEB=1` for the matching web package. `manifest.json` records the tested artifact hashes.
+
+The exact library version is `0.1.0-f1d5975-rollback1`. Both participants need matching core options and cartridges. Windows binaries are not included in this package. See the upstream libretro build instructions for other platforms; these qualification results cover Linux and WebAssembly.
+
+The source license is provided in `license.txt`.

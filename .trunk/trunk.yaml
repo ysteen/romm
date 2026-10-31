@@ -57,6 +57,17 @@ lint:
     - trufflehog@3.99.2
     - yamllint@1.38.0
   ignore:
+    # Retain the upstream EmulatorJS snapshot's formatting around local patches.
+    - linters: [prettier]
+      paths:
+        - custom-emulatorjs/data/loader.js
+        - custom-emulatorjs/data/src/emulator.js
+    # Keep independently maintained client modules byte-identical to their manifest.
+    - linters: [prettier]
+      paths:
+        - custom-emulatorjs/data/src/bridge-session.js
+        - custom-emulatorjs/data/src/bridge-calibration.js
+        - custom-emulatorjs/data/src/link-core.js
     - linters: [ALL]
       paths:
         - frontend/src/__generated__/**

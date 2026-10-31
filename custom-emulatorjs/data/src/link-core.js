@@ -76,7 +76,12 @@ export function linkCore(core = "sameboy", players = 2) {
 }
 
 export function selectLinkCartridge(files, profile) {
-  const extension = profile.extension === "gba" ? /\.gba$/i : /\.(gb|gbc)$/i;
+  const extension =
+    profile.extension === "sfc"
+      ? /\.(sfc|smc)$/i
+      : profile.extension === "gba"
+        ? /\.gba$/i
+        : /\.(gb|gbc)$/i;
   const candidates = files.filter(
     ({ filename }) =>
       extension.test(filename) &&
@@ -86,16 +91,14 @@ export function selectLinkCartridge(files, profile) {
   );
   if (candidates.length !== 1)
     throw new Error(
-      "Link play requires exactly one compatible cartridge in each ZIP.",
+      "Multiplayer requires exactly one compatible cartridge in each ZIP.",
     );
   const file = candidates[0];
   if (
     file.bytes.length < profile.minRomSize ||
     file.bytes.length > profile.maxRomSize
   )
-    throw new Error(
-      "The link cartridge exceeds this system's supported ROM size.",
-    );
+    throw new Error("The cartridge exceeds this system's supported ROM size.");
   return file;
 }
 
@@ -103,7 +106,7 @@ export async function unpackLinkCartridge(bytes, profile, compression) {
   const format = compression.isCompressed(bytes);
   if (format && format !== "zip")
     throw new Error(
-      "Link play supports raw cartridges and single-game ZIP files.",
+      "Multiplayer supports raw cartridges and single-game ZIP files.",
     );
   const files = format
     ? Object.entries(await compression.decompress(bytes, () => {})).map(

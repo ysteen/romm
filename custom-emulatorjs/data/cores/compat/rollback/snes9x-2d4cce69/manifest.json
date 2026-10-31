@@ -1,0 +1,19 @@
+{
+  "core": "Snes9x",
+  "version": "1.632d4cce69",
+  "sourceRevision": "2d4cce69f4fe1c53a2c1423cdc06f2dea8b870a1",
+  "corePatched": false,
+  "sha256": {
+    "snes9x_libretro.so": "3f7ee1087d80679d32f2253f604377febb37029f90e9d68506d480b0834a735e",
+    "license.txt": "70efeee282d82a6e9d26aeed5466d08c632369858371dc6a4644c8dcedc2be78",
+    "snes9x-wasm.data": "d570ee064ce874fd0fe001d444e7ca1ad6dd7ee2c27513d6446640309ed5489f"
+  },
+  "platform": "linux-x86_64",
+  "nativeCore": "snes9x_libretro.so",
+  "webBundle": "snes9x-wasm.data",
+  "license": "license.txt",
+  "upstream": "https://github.com/snes9xgit/snes9x/tree/2d4cce69f4fe1c53a2c1423cdc06f2dea8b870a1",
+  "sourceArchive": "https://github.com/snes9xgit/snes9x/archive/2d4cce69f4fe1c53a2c1423cdc06f2dea8b870a1.tar.gz",
+  "buildInstructions": "BUILD.txt",
+  "buildScript": "build-retroarch-rollback-snes9x.sh"
+}

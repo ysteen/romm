@@ -9,3 +9,8 @@
 # execute inside Linux containers with "no such file or directory".
 *.sh text eol=lf
 docker/init_scripts/init text eol=lf
+
+# Preserve upstream license bytes, patch context, and generated API output.
+custom-emulatorjs/data/cores/compat/rollback/**/*.patch -whitespace
+custom-emulatorjs/data/cores/compat/rollback/**/license.txt -whitespace
+frontend/src/__generated__/** whitespace=-blank-at-eof

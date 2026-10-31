@@ -49,6 +49,7 @@ declare global {
     EJS_disableAutoUnload: boolean;
     EJS_disableBatchBootup: boolean;
     EJS_onGameStart: () => void;
+    EJS_onNetplay?: (() => void) | undefined;
     EJS_onSaveState: (args: {
       screenshot?: ArrayBuffer;
       state: ArrayBuffer;

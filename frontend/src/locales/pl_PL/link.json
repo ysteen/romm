@@ -10,6 +10,8 @@
   "no-state": "Brak dostępnego zapisanego stanu.",
   "player-slot": "Pozycja gracza",
   "ready": "Gotowe",
+  "relay-launch-error": "Nie udało się otworzyć odtwarzacza pośredniczącego. Sprawdź uprawnienia wyskakujących okien i spróbuj ponownie.",
+  "relay-server": "Serwer pośredniczący",
   "restart": "Połączenie uruchamia gry ponownie z ich zapisów w grze. Zapisz grę przed utworzeniem pokoju lub dołączeniem do niego.",
   "saving": "Najpierw zapisz grę. Tylko twój zapis jest synchronizowany z RomM co 10 sekund. Zapisz i wyjdź czeka na zakończenie przesyłania.",
   "slot-hint": "Wybierzcie kolejne miejsca od 1P dla wszystkich graczy w pokoju.",

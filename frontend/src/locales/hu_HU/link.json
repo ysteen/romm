@@ -10,6 +10,8 @@
   "no-state": "Nincs elérhető mentett állapot.",
   "player-slot": "Játékos helye",
   "ready": "Kész",
+  "relay-launch-error": "Nem sikerült megnyitni a közvetített játékot. Ellenőrizd a felugró ablakok engedélyezését, majd próbáld újra.",
+  "relay-server": "Közvetítőszerver",
   "restart": "Az összekapcsolás újraindítja a játékokat a játékon belüli mentéseikből. Szoba létrehozása vagy csatlakozás előtt ments a játékban.",
   "saving": "Először ments a játékban. Csak a saját mentésed szinkronizálódik a RomM-mel 10 másodpercenként. A mentés és kilépés megvárja a feltöltés befejezését.",
   "slot-hint": "Válasszatok egymást követő helyeket 1P-től a szoba minden játékosának.",

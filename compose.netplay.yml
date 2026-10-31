@@ -1,0 +1,17 @@
+services:
+  romm:
+    environment:
+      NETPLAY_BRIDGE_URL: http://netplay-bridge:8080
+      NETPLAY_BRIDGE_TOKEN: ${NETPLAY_BRIDGE_TOKEN:?Set a shared token of at least 24 characters}
+      NETPLAY_BRIDGE_PUBLIC_URL: ${NETPLAY_BRIDGE_PUBLIC_URL:?Set the public HTTPS bridge URL}
+      NETPLAY_BRIDGE_PUBLIC_HOST: ${NETPLAY_BRIDGE_PUBLIC_HOST:-}
+    depends_on:
+      netplay-bridge:
+        condition: service_started
+
+  netplay-bridge:
+    extends:
+      file: docker/compose.netplay-bridge.yml
+      service: netplay-bridge
+    build:
+      context: ${NETPLAY_BRIDGE_SOURCE:-../retroarch-netplay-bridge}

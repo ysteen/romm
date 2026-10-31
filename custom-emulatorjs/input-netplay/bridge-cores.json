@@ -1,0 +1,94 @@
+{
+  "sameboy": {
+    "web": {
+      "coreName": "SameBoy",
+      "coreVersion": "1.0.4c87d256-rollback2",
+      "maxPrediction": 12,
+      "paths": {
+        "sameboy-wasm.data": "../data/cores/compat/rollback/sameboy-sbr2/sameboy-wasm.data",
+        "sameboy.json": "../data/cores/compat/rollback/sameboy-sbr2/sameboy.json"
+      },
+      "nativeDownload": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so",
+      "manifest": "../data/cores/compat/rollback/sameboy-sbr2/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/sameboy-sbr2/BUILD.txt",
+      "nativePlatform": "Linux x86_64"
+    },
+    "native": {
+      "coreName": "SameBoy",
+      "coreVersion": "1.0.4c87d256-rollback2",
+      "maxPrediction": 12,
+      "paths": {
+        "sameboy-wasm.data": "../data/cores/compat/rollback/sameboy-sbr2/sameboy-wasm.data",
+        "sameboy.json": "../data/cores/compat/rollback/sameboy-sbr2/sameboy.json"
+      },
+      "nativeDownload": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so",
+      "manifest": "../data/cores/compat/rollback/sameboy-sbr2/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/sameboy-sbr2/BUILD.txt",
+      "nativePlatform": "Linux x86_64"
+    }
+  },
+  "mgba_splitscreen": {
+    "web": {
+      "coreName": "mGBA Splitscreen",
+      "coreVersion": "0.1.0-f1d5975-rollback1",
+      "maxPrediction": 12,
+      "paths": {
+        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen-wasm.data",
+        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen.json"
+      },
+      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so",
+      "manifest": "../data/cores/compat/rollback/mgba-spst4/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4/BUILD.txt",
+      "nativePlatform": "Linux x86_64",
+      "waitForCoreInitialization": true,
+      "options": {
+        "splitscreen_layout": "auto"
+      }
+    },
+    "native": {
+      "coreName": "mGBA Splitscreen",
+      "coreVersion": "0.1.0-f1d5975-rollback1",
+      "maxPrediction": 12,
+      "paths": {
+        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen-wasm.data",
+        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen.json"
+      },
+      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so",
+      "manifest": "../data/cores/compat/rollback/mgba-spst4/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4/BUILD.txt",
+      "nativePlatform": "Linux x86_64",
+      "waitForCoreInitialization": true,
+      "options": {
+        "splitscreen_layout": "auto"
+      }
+    }
+  },
+  "snes9x": {
+    "web": {
+      "coreName": "Snes9x",
+      "coreVersion": "1.632d4cce69",
+      "maxPrediction": 12,
+      "paths": {
+        "snes9x-wasm.data": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x-wasm.data",
+        "snes9x.json": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x.json"
+      },
+      "nativeDownload": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x_libretro.so",
+      "manifest": "../data/cores/compat/rollback/snes9x-2d4cce69/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/snes9x-2d4cce69/BUILD.txt",
+      "nativePlatform": "Linux x86_64"
+    },
+    "native": {
+      "coreName": "Snes9x",
+      "coreVersion": "1.632d4cce69",
+      "maxPrediction": 12,
+      "paths": {
+        "snes9x-wasm.data": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x-wasm.data",
+        "snes9x.json": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x.json"
+      },
+      "nativeDownload": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x_libretro.so",
+      "manifest": "../data/cores/compat/rollback/snes9x-2d4cce69/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/snes9x-2d4cce69/BUILD.txt",
+      "nativePlatform": "Linux x86_64"
+    }
+  }
+}

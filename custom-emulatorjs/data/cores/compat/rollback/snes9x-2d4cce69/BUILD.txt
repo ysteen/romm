@@ -1,0 +1,15 @@
+# Snes9x compatibility core
+
+The included `snes9x_libretro.so` is a qualified Linux x86_64 RetroArch core. The RetroArch application is unchanged. Select this core with **Load Core → Install or Restore a Core**, then load the matching cartridge and connect through Netplay.
+
+Source: https://github.com/snes9xgit/snes9x/tree/2d4cce69f4fe1c53a2c1423cdc06f2dea8b870a1
+
+Source archive: https://github.com/snes9xgit/snes9x/archive/2d4cce69f4fe1c53a2c1423cdc06f2dea8b870a1.tar.gz
+
+State patch: None; the upstream source is unmodified.
+
+The local `retroarch-netplay-bridge` project provides `scripts/build-retroarch-rollback-snes9x.sh`. Run it in a fresh `COMPAT_WORK` directory with the prepared Emscripten and RetroArch frontend dependencies; use `COMPAT_BUILD_WEB=1` for the matching web package. `manifest.json` records the tested artifact hashes.
+
+The exact library version is `1.632d4cce69`. Both participants need matching core options and cartridges. Windows binaries are not included in this package. See the upstream libretro build instructions for other platforms; these qualification results cover Linux and WebAssembly.
+
+The source license is provided in `license.txt`.
