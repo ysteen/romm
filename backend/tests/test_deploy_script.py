@@ -241,10 +241,13 @@ if os.environ.get('DEPLOY_TEST_FAIL_PULL') and 'pull' in args:
                 {
                     "compose.dosbox-pure.yml",
                     "compose.romforge.yml",
+                    "compose.netplay.yml",
+                    "docker/compose.netplay-bridge.yml",
                     "deploy/.env.example",
                     "deploy/config.yml",
                     "scripts/deploy-dosbox-pure.sh",
                     "docs/PRIVATE_GHCR.md",
+                    "docs/NETPLAY_BRIDGE.md",
                     "LICENSE",
                 },
             )
