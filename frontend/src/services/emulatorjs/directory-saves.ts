@@ -1,9 +1,10 @@
 import { unzipSync, zipSync } from "fflate";
-import { saveContentHash } from "../../v2/utils/saveSync/hash.ts";
+import { bytesEqual, saveContentHash } from "../../v2/utils/saveSync/hash.ts";
 
 interface SaveStat {
   mode: number;
   mtime: Date | number | string;
+  size: number;
 }
 
 export interface SaveFileSystem {
@@ -62,6 +63,11 @@ export class DirectorySaveAdapter {
   private manager: SaveManager;
   lastRestoredHash: string | null = null;
   private azaharSaveRoots?: Partial<Record<"data" | "extdata", string>>;
+  private dosBoxSaveCache?: {
+    bundle: Uint8Array;
+    entries: SaveEntry[];
+  };
+  private saveCompareBuffer?: Uint8Array;
 
   constructor(manager: SaveManager) {
     this.manager = manager;
@@ -359,7 +365,83 @@ export class DirectorySaveAdapter {
     }
   }
   createDosBoxPureSaveBundle() {
-    return this.createZipSaveBundle(this.getDosBoxPureSaveFiles());
+    const names = this.getDosBoxPureSavePaths().sort((a, b) =>
+      a.localeCompare(b),
+    );
+    const cached = this.dosBoxSaveCache;
+    if (
+      cached &&
+      names.length === cached.entries.length &&
+      names.every((name, index) => name === cached.entries[index]!.name) &&
+      cached.entries.every((entry) => this.matchesSaveFile(entry))
+    ) {
+      return cached.bundle;
+    }
+    delete this.dosBoxSaveCache;
+    const files = names.map((name) => ({
+      name,
+      bytes: this.FS.readFile("/data/saves/" + name),
+    }));
+    const bundle = this.createZipSaveBundle(files);
+    if (!bundle) return null;
+
+    // Level-zero ZIP entries share the cached archive's buffer, avoiding a
+    // second retained copy of potentially large disk differences.
+    const view = new DataView(
+      bundle.buffer,
+      bundle.byteOffset,
+      bundle.byteLength,
+    );
+    let offset = 0;
+    const entries: SaveEntry[] = [];
+    for (const file of files) {
+      if (
+        view.getUint32(offset, true) !== 0x04034b50 ||
+        view.getUint16(offset + 8, true) !== 0
+      )
+        return bundle;
+      const start =
+        offset +
+        30 +
+        view.getUint16(offset + 26, true) +
+        view.getUint16(offset + 28, true);
+      const size = view.getUint32(offset + 18, true);
+      if (size !== file.bytes.length || start + size > bundle.length)
+        return bundle;
+      entries.push({
+        name: file.name,
+        bytes: bundle.subarray(start, start + size),
+      });
+      offset = start + size;
+    }
+    this.dosBoxSaveCache = { bundle, entries };
+    return bundle;
+  }
+  private matchesSaveFile(entry: SaveEntry): boolean {
+    const path = "/data/saves/" + entry.name;
+    if (this.FS.stat(path).size !== entry.bytes.length) return false;
+    const buffer = (this.saveCompareBuffer ??= new Uint8Array(64 * 1024));
+    const stream = this.FS.open(path, "r");
+    try {
+      // Compare contents, not timestamps: DOS can rewrite a sector within
+      // the same millisecond, or restore a file with its original mtime.
+      for (let offset = 0; offset < entry.bytes.length;) {
+        const length = Math.min(buffer.length, entry.bytes.length - offset);
+        const read = this.FS.read(stream, buffer, 0, length, offset);
+        if (
+          read <= 0 ||
+          !bytesEqual(
+            buffer.subarray(0, read),
+            entry.bytes.subarray(offset, offset + read),
+          )
+        )
+          return false;
+        offset += read;
+      }
+      return true;
+    } finally {
+      this.FS.close(stream);
+    }
   }
   createPpssppSaveBundle() {
     const prefix = "PPSSPP/PSP/SAVEDATA/";

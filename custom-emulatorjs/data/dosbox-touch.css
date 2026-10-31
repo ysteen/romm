@@ -1,0 +1,18 @@
+.ejs-touch-mouse .ejs_canvas {
+  touch-action: none;
+}
+
+.ejs-touch-mouse .ejs_virtualGamepad_parent,
+.ejs-touch-mouse .ejs_virtualGamepad_top,
+.ejs-touch-mouse .ejs_virtualGamepad_bottom,
+.ejs-touch-mouse .ejs_virtualGamepad_left,
+.ejs-touch-mouse .ejs_virtualGamepad_right {
+  pointer-events: none;
+}
+
+.ejs-touch-mouse .ejs_virtualGamepad_top > *,
+.ejs-touch-mouse .ejs_virtualGamepad_bottom > *,
+.ejs-touch-mouse .ejs_virtualGamepad_left > *,
+.ejs-touch-mouse .ejs_virtualGamepad_right > * {
+  pointer-events: auto;
+}

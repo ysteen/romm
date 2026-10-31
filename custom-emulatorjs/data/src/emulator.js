@@ -1,14 +1,14 @@
-import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js?v=20261024.1";
+import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js?v=20261101.2";
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Bump changed module queries and the active player's ROMM_RUNTIME_REVISION together.
-import { EJS_GameManager } from "./GameManager.js?v=20261024.1";
+import { EJS_GameManager } from "./GameManager.js?v=20261101.2";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
 import { cyrb53 } from "./utils.js";
 import { EJS_SETUP } from "./setup.js";
-import { Netplay } from "./netplay.js?v=20261024.1";
+import { Netplay } from "./netplay.js?v=20261101.2";
 import { EJS_license } from "./license.js";
 import * as CONSTS from "./consts.js?v=20261029.1";
 import { linkCore, selectLinkCartridge, unpackLinkCartridge } from "./link-core.js?v=20261024.1";
@@ -370,7 +370,12 @@ class EmulatorJS {
 
         if ((this.isMobile || this.hasTouchScreen) && this.virtualGamepad) {
             this.virtualGamepad.classList.add("ejs-vgamepad-active");
-            this.canvas.classList.add("ejs-canvas-no-pointer");
+            if (["dos", "dosbox_pure"].includes(this.getCore())) {
+                this.elements.parent.classList.add("ejs-touch-mouse");
+                this.addEventListener(this.canvas, "pointerdown pointermove", event => this.updateDosBoxMouseInput(event));
+            } else {
+                this.canvas.classList.add("ejs-canvas-no-pointer");
+            }
         }
 
         this.fullscreen = false;
@@ -454,6 +459,16 @@ class EmulatorJS {
         if (this.config.fixedSaveInterval) {
             this.startSaveInterval(this.config.fixedSaveInterval);
         }
+    }
+
+    updateDosBoxMouseInput(event) {
+        if (!this.started || this.paused || !["touch", "mouse", "pen"].includes(event.pointerType)) return;
+        const option = "dosbox_pure_mouse_input";
+        const selected = this.getSettingValue(option) || this.preGetSetting(option) || "true";
+        const value = selected === "true" && event.pointerType === "touch" ? "pad" : selected;
+        if ((this.dosBoxMouseInput || selected) === value) return;
+        this.gameManager.setVariable(option, value);
+        this.dosBoxMouseInput = value;
     }
 
     startSaveInterval(period) {
@@ -5301,6 +5316,7 @@ class EmulatorJS {
         if (!this.gameManager) return;
         this.handleSpecialOptions(option, value);
         this.gameManager.setVariable(option, value);
+        if (option === "dosbox_pure_mouse_input") this.dosBoxMouseInput = value;
         this.saveSettings();
     }
     setupDisksMenu() {

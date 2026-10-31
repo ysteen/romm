@@ -46,8 +46,17 @@ export function bytesEqual(
   a: Uint8Array | null,
   b: Uint8Array | null,
 ): boolean {
-  if (!a || !b) return a === b;
+  if (a === b) return true;
+  if (!a || !b) return false;
   if (a.byteLength !== b.byteLength) return false;
-  for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+  let i = 0;
+  if (a.byteLength >= 64) {
+    const left = new DataView(a.buffer, a.byteOffset, a.byteLength);
+    const right = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    for (; i + 4 <= a.byteLength; i += 4) {
+      if (left.getUint32(i) !== right.getUint32(i)) return false;
+    }
+  }
+  for (; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
   return true;
 }

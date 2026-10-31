@@ -257,6 +257,8 @@ async function prepareLanguage() {
         await loadStyle("emulator.css");
     }
 
+    if (isDosBoxPure) await loadStyle("dosbox-touch.css");
+
     if (!EmulatorJS) {
         console.error("EmulatorJS failed to load. Check for missing files.");
         return;

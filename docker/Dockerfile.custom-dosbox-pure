@@ -43,6 +43,7 @@ COPY docker/nginx/templates/default.conf.template /etc/nginx/templates/default.c
 RUN rm -rf /var/www/html/assets/emulatorjs/data
 COPY --from=emulatorjs-nightly /emulatorjs/data/ /var/www/html/assets/emulatorjs/data/
 COPY custom-emulatorjs/data/loader.js /var/www/html/assets/emulatorjs/data/loader.js
+COPY custom-emulatorjs/data/dosbox-touch.css /var/www/html/assets/emulatorjs/data/dosbox-touch.css
 COPY custom-emulatorjs/data/version.json /var/www/html/assets/emulatorjs/data/version.json
 COPY custom-emulatorjs/data/src/emulator.js /var/www/html/assets/emulatorjs/data/src/emulator.js
 COPY custom-emulatorjs/data/src/cache.js custom-emulatorjs/data/src/cache-storage.js /var/www/html/assets/emulatorjs/data/src/
