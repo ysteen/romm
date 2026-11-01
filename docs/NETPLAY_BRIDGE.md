@@ -2,7 +2,7 @@
 
 This adapter runs with [ysteen/retroarch-netplay-bridge](https://github.com/ysteen/retroarch-netplay-bridge), a separate private repository. The RomM integration is on [`ysteen/romm`, branch `custom/netplay-retroarch-bridge`](https://github.com/ysteen/romm/tree/custom/netplay-retroarch-bridge). It is not part of an upstream RomM release.
 
-Every player runs a local core. The bridge exchanges inputs and synchronization messages. RomM handles browser login, game access and saves. The current host is a **browser player** and must keep the room open. Native-only hosting, late joining and host migration are not implemented.
+Every player runs a local core. The bridge exchanges inputs and synchronization messages. RomM handles browser login, game access and saves. A **browser player** creates the room and controls starting or restarting. If that browser leaves, another browser receives host controls. Remaining native players can keep playing until a browser rejoins to control the next restart.
 
 ## Supported clients
 
@@ -15,6 +15,8 @@ Every player runs a local core. The bridge exchanges inputs and synchronization 
 The room provides matching native cores for Linux x86_64; Windows x64, x86 and ARM64; and Android arm64-v8a, armeabi-v7a, x86_64 and x86. SameBoy and mGBA need these patched builds. RetroArch itself requires no modification; Linux qualification used RetroArch 1.22.2. Android builds target API 24 or later and use 16 KiB ELF alignment.
 
 Windows x64 and x86 passed DLL loading and version checks for all three cores. mGBA and Snes9x also passed rollback/replay and produced identical 120-frame states from a Linux snapshot. Android and Windows ARM64 passed binary architecture, exported API and dependency checks; device gameplay is not qualified. SNES currently accepts standard NTSC LoROM/HiROM up to 4 MiB, including a single-ROM ZIP or a 512-byte copier header. PAL and extended/interleaved images are rejected.
+
+The new leave/rejoin, host transfer and restart flow passed browser mGBA/Snes9x tests. Native restart qualification is incomplete: its local WSL harness coincided with RAM/swap exhaustion and is now blocked under WSL. The native restart wire exchange passes unit tests, but previous native rollback results do not establish live rejoin compatibility. Use a separate runner with hard memory and CPU limits for that remaining validation.
 
 ## Install the source and image
 
@@ -119,11 +121,15 @@ Check bridge startup with `curl -fsS http://127.0.0.1:8082/health`. While signed
 1. Sign in to RomM with game access and emulation permission. Use the **v2 UI** and open a supported game's player page.
 2. Choose a save under **Resume from save**, or choose a fresh start, then select **Relay server** (the label is translated). The room opens inside the player. A supported single-player game's **Netplay** toolbar button also opens this flow, carrying its current in-game save.
 3. Select the player count. Enable **Allow RetroArch clients** if a native player will join. A room password is optional; leave it blank for a passwordless room. Select **Create room**.
-4. Copy the room invitation and, if set, send the displayed room password separately. Keep the host window open.
+4. Copy the room invitation and, if set, send the displayed room password separately.
 5. A web guest signs in to the same RomM server and opens the invitation, enters the room password if required and selects **Join room**. Alternatively, open that game's player page, select **Relay server**, and choose the room under **Open rooms**. Use a separate browser profile or device for a second account.
 6. Everyone enters the waiting room with **Not selected** as their player number, including the host. Each guest can choose or clear their own number. The host can change anyone's number, including native guests. A number already selected by another participant is unavailable; clear it first to exchange numbers.
 7. Once all selected player slots are connected, ready and assigned a number, the host selects **Start game**. Joining alone does not start play. Numbers are fixed after starting.
 8. The room panel closes when play starts. Use the EmulatorJS toolbar for volume, shared pause, **Sync save** and **Save and close**. Its **Netplay** button reopens the room panel; **Return to game** or Escape closes it. Automatic room saves run every 15 seconds. Each player uses their own keyboard, touch controls or gamepad.
+
+Open **Netplay** during play to see each person's ping beside their name. The value is that device's round-trip time to the relay, refreshed about every two seconds. It does not measure the complete player-to-player delay or rollback time. **Measuring…** appears until a reply arrives, or if the previous reply is stale.
+
+Leaving removes only that participant. Other players continue with neutral input for the empty seat, and host controls move to another browser when needed. The last player leaving closes the room. New participants can open the same invitation, join the running room and choose a free number while the existing game continues. The host opens **Netplay** and selects **Restart game for waiting players** to reset everyone together. Current confirmed battery saves are preserved, and new handheld players supply their selected account saves. This restarts the game from its boot state; it does not resume at the exact scene where the newcomer joined.
 
 The invitation contains the ROM/room identifiers, not the room password or service token. An invitation does not bypass the guest's RomM game permissions, even in a passwordless room. When set, the password is shared by the room, including native guests; per-player native passwords and native RomM login are not implemented.
 

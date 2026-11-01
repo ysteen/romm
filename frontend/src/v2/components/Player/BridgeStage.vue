@@ -82,7 +82,7 @@ defineExpose({
     />
     <iframe
       ref="frame"
-      :src="`${BRIDGE_PLAYER_PATH}?v=20261102`"
+      :src="`${BRIDGE_PLAYER_PATH}?v=lifecycle-20261102`"
       :title="rom.name || rom.fs_name"
       allow="autoplay; gamepad; fullscreen"
       @load="start"

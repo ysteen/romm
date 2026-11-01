@@ -122,6 +122,13 @@ body {
   flex: 1 1 180px;
   overflow-wrap: anywhere;
 }
+.romm-room-panel .member-ping {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  color: light-dark(#45566c, #b3bfd0);
+}
 .romm-room-panel #connection,
 .romm-room-panel #native-details {
   display: block;

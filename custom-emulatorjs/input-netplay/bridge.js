@@ -9,7 +9,7 @@ import {
 import {
   BridgeConnection,
   crc32,
-} from "../data/src/bridge-session.js?v=lobby-20261101";
+} from "../data/src/bridge-session.js?v=lifecycle-20261102";
 import { installBridgeMenu } from "./bridge-menu.js?v=20261102";
 import { installNativeDownloads } from "./native-downloads.js?v=20261101";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
@@ -38,8 +38,6 @@ function showRoom(open) {
 function releasePlayer() {
   clearInterval(ticker);
   clearInterval(autosave);
-  const owned = room?.player === 0 || (room && connection?.player === 0);
-  const id = room?.id;
   room = null;
   connection?.stop();
   connection = null;
@@ -53,11 +51,6 @@ function releasePlayer() {
   adapter = null;
   updateMenu = () => {};
   $("screen").hidden = true;
-  if (owned && id)
-    void api(
-      `/netplay/bridge/rooms/${encodeURIComponent(id)}?rom_id=${rom.id}`,
-      { method: "DELETE" },
-    ).catch(() => {});
 }
 let rom, profile, coreCatalog, frame, adapter, connection, room;
 let cartridge, initialBattery, targetSave, lastSave, saving;
@@ -211,7 +204,7 @@ async function refreshRooms() {
         `Room ${item.id.slice(0, 6)} · ${item.current}/${item.players} · ${item.started ? "Playing" : item.has_password ? "Password required" : "No password"}`,
         item.id,
       );
-      option.disabled = item.started || item.current >= item.players;
+      option.disabled = item.current >= item.players;
       $("rooms").append(option);
     }
     const invited = new URLSearchParams(location.search).get("room");
@@ -225,8 +218,7 @@ async function refreshRooms() {
 
 function updateJoin() {
   const selected = rooms.get($("rooms").value);
-  $("join").disabled =
-    !selected || selected.started || selected.current >= selected.players;
+  $("join").disabled = !selected || selected.current >= selected.players;
   $("join-password-label").hidden = !selected?.has_password;
   $("join-help").textContent = !selected
     ? "Choose an open room."
@@ -234,29 +226,56 @@ function updateJoin() {
       ? "Enter this room's password, not your RomM account password."
       : "No room password is required. Select Join room.";
   if (!selected?.has_password) $("join-password").value = "";
+  if (selected?.started)
+    $("join-help").textContent +=
+      " The current game continues until the host restarts for you.";
+}
+
+function renderLatency(members) {
+  for (const member of members ?? []) {
+    const label = $("participants").querySelector(
+      `[data-ping-player="${Number(member.player)}"]`,
+    );
+    if (!label) continue;
+    label.textContent = Number.isFinite(member.ping)
+      ? `${member.ping} ms`
+      : "Measuring…";
+    label.title = "Round-trip time to the relay server";
+  }
 }
 
 function renderLobby(value) {
   $("lobby").hidden = false;
-  showRoom(true);
-  const host = connection.player === 0;
+  if (!connection.started) showRoom(true);
+  const host = connection.player === value.host;
   $("start").hidden = !host;
   $("start").disabled = !value.canStart;
+  $("start").textContent = value.running
+    ? "Restart game for waiting players"
+    : "Start game";
   $("lobby-status").textContent = value.starting
     ? "Preparing the game…"
-    : value.canStart
-      ? host
-        ? "Everyone has a number. Start when you are ready."
-        : "Waiting for the host to start."
-      : `${value.members.length}/${value.players} connected. Every player must choose a number.`;
-  status(value.starting ? "Preparing the game…" : "Waiting room");
-  const activePlayer = document.activeElement?.dataset.player;
+    : value.running
+      ? "The game continues. The host can restart once waiting players choose their numbers."
+      : value.canStart
+        ? host
+          ? "Everyone has a number. Start when you are ready."
+          : "Waiting for the host to start."
+        : `${value.members.length}/${value.players} connected. Every player must choose a number.`;
+  if (!connection.started)
+    status(value.starting ? "Preparing the game…" : "Waiting room");
+  const activePlayer =
+    $("participants").ownerDocument.activeElement?.dataset.player;
   $("participants").replaceChildren();
   for (const member of value.members) {
     const row = document.createElement("li");
     const name = document.createElement("span");
     name.className = "member-name";
-    name.textContent = `${member.nickname || (member.kind === "native" ? "RetroArch" : "Player")}${member.player === 0 ? " · Host" : ""}${member.player === connection.player ? " · You" : ""}`;
+    name.textContent = `${member.nickname || (member.kind === "native" ? "RetroArch" : "Player")}${member.player === value.host ? " · Host" : ""}${member.player === connection.player ? " · You" : ""}`;
+    const ping = document.createElement("span");
+    ping.className = "member-ping";
+    ping.dataset.pingPlayer = String(member.player);
+    name.append(" ", ping);
     const select = document.createElement("select");
     select.dataset.player = String(member.player);
     select.setAttribute("aria-label", `Player number for ${name.textContent}`);
@@ -272,18 +291,25 @@ function renderLobby(value) {
         ? ""
         : String(value.seats[member.player]);
     select.disabled =
-      value.starting || (!host && member.player !== connection.player);
+      value.starting ||
+      (value.running && member.playing) ||
+      (!host && member.player !== connection.player);
     select.onchange = () =>
       connection.assignPlayer(
         member.player,
         select.value === "" ? null : Number(select.value),
       );
     const readiness = document.createElement("span");
-    readiness.textContent = member.ready ? "Ready" : "Connecting…";
+    readiness.textContent = member.playing
+      ? "Playing"
+      : member.ready
+        ? "Ready"
+        : "Connecting…";
     row.append(name, select, readiness);
     $("participants").append(row);
     if (activePlayer === String(member.player)) select.focus();
   }
+  renderLatency(value.members);
 }
 
 async function boot(players, nativeAllowed) {
@@ -356,7 +382,7 @@ async function boot(players, nativeAllowed) {
   frame.contentDocument.body.classList.add("romm-player");
   const style = frame.contentDocument.createElement("link");
   style.rel = "stylesheet";
-  style.href = new URL("bridge.css?v=player-20261102", location.href).href;
+  style.href = new URL("bridge.css?v=lifecycle-20261102", location.href).href;
   frame.contentDocument.head.append(style);
   frame.contentDocument.documentElement.style.colorScheme =
     document.documentElement.style.colorScheme;
@@ -438,7 +464,7 @@ async function launch(joinId) {
         build.nativeCalibration === "sameboy-v1" ? calibrateSameBoy : null,
       onStatus(value) {
         if (value === "connected") {
-          $("lobby").hidden = true;
+          $("lobby").hidden = false;
           $("screen").hidden = false;
           showRoom(false);
         }
@@ -462,6 +488,11 @@ async function launch(joinId) {
         }
       },
       onLobby: renderLobby,
+      onLatency: renderLatency,
+      onRestart() {
+        frame?.contentWindow.audioOutput.flush();
+        frame.contentWindow.localButtons = 0;
+      },
       onSeats(seat) {
         screen.select(profile.sharedSave ? 0 : seat);
         if (profile.audioOption)
@@ -486,6 +517,7 @@ async function launch(joinId) {
     const invite = new URL("bridge.html", location.href);
     invite.searchParams.set("romId", String(rom.id));
     invite.searchParams.set("room", room.id);
+    invite.searchParams.set("v", "lifecycle-20261102");
     $("room-link").href = invite.href;
     $("room-link").textContent = "Open room invitation";
     $("core-info").textContent = nativeAllowed

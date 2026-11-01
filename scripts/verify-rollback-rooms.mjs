@@ -226,22 +226,21 @@ try {
               return json({ detail: value.error }, response.status);
             if (request.method() === "GET")
               return json(
-                value
-                  .filter((item) => !item.started)
-                  .map((item) => ({
-                    id: item.id,
-                    rom_id: item.romId,
-                    players: item.players,
-                    nickname: item.nickname,
-                    current: item.current,
-                    native_allowed: item.nativeAllowed,
-                    core_name: item.coreName,
-                    core_version: item.coreVersion,
-                    state_size: item.stateSize,
-                    content_crc: item.contentCrc,
-                    max_prediction: item.maxPrediction,
-                    has_password: item.hasPassword,
-                  })),
+                value.map((item) => ({
+                  id: item.id,
+                  rom_id: item.romId,
+                  players: item.players,
+                  nickname: item.nickname,
+                  current: item.current,
+                  started: item.started,
+                  native_allowed: item.nativeAllowed,
+                  core_name: item.coreName,
+                  core_version: item.coreVersion,
+                  state_size: item.stateSize,
+                  content_crc: item.contentCrc,
+                  max_prediction: item.maxPrediction,
+                  has_password: item.hasPassword,
+                })),
               );
             return json({
               id: value.id,
@@ -647,6 +646,120 @@ try {
               path: resolve(output, `${system}-${theme}.png`),
             });
           }
+          const openRoom = async (page) => {
+            await page.evaluate(() =>
+              document
+                .querySelector("iframe")
+                .contentWindow.EJS_emulator.menu.open(true),
+            );
+            await page
+              .frameLocator("#screen iframe")
+              .locator(".ejs_menu_bar button")
+              .filter({ hasText: /^Netplay$/ })
+              .click();
+          };
+          await openRoom(host);
+          await hostUI
+            .locator('[data-ping-player="0"]')
+            .filter({ hasText: /\d+ ms/ })
+            .waitFor();
+          await hostUI
+            .locator('[data-ping-player="1"]')
+            .filter({ hasText: /\d+ ms/ })
+            .waitFor();
+          const pings = await hostUI
+            .locator("[data-ping-player]")
+            .allTextContents();
+          await host.screenshot({
+            path: resolve(output, `${system}-room-pings.png`),
+          });
+          await hostUI.locator("#close-room").click();
+          await host.evaluate(() => window.bridgeConnection.pause(false));
+          await openRoom(guest);
+          await guestUI.locator("#disconnect").click();
+          const beforeLeave = await host.evaluate(
+            () => window.bridgeConnection.session.frame,
+          );
+          await host.waitForFunction(
+            (frame) => window.bridgeConnection.session.frame >= frame + 120,
+            beforeLeave,
+          );
+          assert.equal(room.peers.size, 1);
+          await guest.goto(invite);
+          await guest
+            .locator("#rooms")
+            .filter({ has: guest.locator(`option[value="${room.id}"]`) })
+            .waitFor();
+          await guest.locator("#join").click();
+          await guestUI
+            .locator('#participants select[data-player="1"]')
+            .selectOption("0");
+          const beforeWaiting = await host.evaluate(
+            () => window.bridgeConnection.session.frame,
+          );
+          await host.waitForFunction(
+            (frame) => window.bridgeConnection.session.frame >= frame + 120,
+            beforeWaiting,
+          );
+          assert.equal(
+            await guest.evaluate(() => window.bridgeConnection.started),
+            false,
+          );
+          await openRoom(host);
+          await hostUI.locator("#start").filter({ hasText: "Restart" }).click();
+          await Promise.all(
+            pages.map((page) =>
+              page.waitForFunction(
+                () =>
+                  window.bridgeConnection.generation === 2 &&
+                  window.bridgeConnection.session?.confirmed >= 120,
+              ),
+            ),
+          );
+          await host.evaluate(() => window.bridgeConnection.pause(true));
+          await Promise.all(
+            pages.map((page) =>
+              page.waitForFunction(
+                () => window.bridgeConnection.session.paused,
+              ),
+            ),
+          );
+          const restartCommon = Math.min(
+            ...(await Promise.all(
+              pages.map((page) =>
+                page.evaluate(() => window.bridgeConnection.session.confirmed),
+              ),
+            )),
+          );
+          const restartStates = await Promise.all(
+            pages.map((page) =>
+              page.evaluate(
+                (frame) =>
+                  Array.from(window.bridgeConnection.session.stateAt(frame)),
+                restartCommon,
+              ),
+            ),
+          );
+          assert(
+            Buffer.from(restartStates[0]).equals(Buffer.from(restartStates[1])),
+            `${system}: restarted state mismatch`,
+          );
+          await host.evaluate(() => window.bridgeConnection.pause(false));
+          await openRoom(host);
+          await hostUI.locator("#disconnect").click();
+          await guest.waitForFunction(() => window.bridgeConnection.host === 1);
+          const beforeHostLeave = await guest.evaluate(
+            () => window.bridgeConnection.session.frame,
+          );
+          await guest.waitForFunction(
+            (frame) => window.bridgeConnection.session.frame >= frame + 120,
+            beforeHostLeave,
+          );
+          await openRoom(guest);
+          assert(await guestUI.locator("#start").isVisible());
+          await guestUI.locator("#disconnect").click();
+          await guest.waitForFunction(() => window.bridgeConnection === null);
+          assert(!broker.rooms.has(room.id));
           assert.deepEqual(errors, []);
           results.push({
             system,
@@ -658,6 +771,14 @@ try {
             stats,
             controls,
             responsive,
+            lifecycle: {
+              pings,
+              guestLeft: true,
+              waitingJoin: true,
+              restartCommon,
+              hostTransferred: true,
+              roomRemoved: true,
+            },
             saves: uploads.map(({ actor, data, slot, method }) => ({
               actor,
               bytes: data.length,
