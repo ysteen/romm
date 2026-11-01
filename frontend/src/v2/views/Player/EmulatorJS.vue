@@ -67,10 +67,12 @@ import {
   getSupportedEJSCores,
 } from "@/utils";
 import AssetPreview from "@/v2/components/Player/AssetPreview.vue";
+import BridgeStage from "@/v2/components/Player/BridgeStage.vue";
 import LinkRoomDialog from "@/v2/components/Player/LinkRoomDialog.vue";
 import LinkStage from "@/v2/components/Player/LinkStage.vue";
 import {
-  launchBridgePlayer,
+  bridgeLaunchFor,
+  type BridgeLaunch,
   resolveBridgeNetplay,
   supportsBridge,
 } from "@/v2/components/Player/bridgeLaunch";
@@ -92,6 +94,7 @@ import { useEmitterEvent } from "@/v2/composables/useEmitterEvent";
 import { useFetchState } from "@/v2/composables/useFetchState";
 import { useFullscreenFallback } from "@/v2/composables/useFullscreenFallback";
 import { useFullscreenPref } from "@/v2/composables/useFullscreenPref";
+import { useIsAlive } from "@/v2/composables/useIsAlive";
 import {
   hasSharedArrayBuffer,
   useIsolatedLaunch,
@@ -230,7 +233,12 @@ const linkRoomDialog = ref(false);
 const linkJoining = shallowRef<LinkRoom | null>(null);
 const linkLaunching = ref(false);
 let removeLinkRoomMenu: (() => void) | undefined;
-let bridgePopup: ReturnType<typeof launchBridgePlayer> | undefined;
+const bridgeLaunch = shallowRef<BridgeLaunch | null>(null);
+const playerViewAlive = useIsAlive();
+const bridgeLaunching = ref(false);
+const bridgeStageRef = ref<{ flushPendingSave: () => Promise<void> } | null>(
+  null,
+);
 const { state: bridgeEnabled, execute: checkBridge } = useFetchState(
   async () =>
     (await api.get<BridgeConfigResponse>("/netplay/bridge/config")).data
@@ -245,33 +253,61 @@ watch(
   },
   { immediate: true },
 );
-function onPlayBridge() {
-  if (!rom.value || !bridgeEnabled.value || !supportsBridge(rom.value)) return;
-  if (bridgePopup?.popup && !bridgePopup.popup.closed) {
-    // eslint-disable-next-line no-restricted-syntax -- Focus a separate browser window.
-    bridgePopup.popup.focus();
+async function onPlayBridge() {
+  if (
+    !rom.value ||
+    !bridgeEnabled.value ||
+    !supportsBridge(rom.value) ||
+    bridgeLaunching.value
+  )
+    return;
+  const selected = { ...resume.value };
+  const id = rom.value.id;
+  bridgeLaunching.value = true;
+  try {
+    let battery: Uint8Array<ArrayBuffer> | undefined;
+    const player = playerRef.value;
+    if (player && window.EJS_emulator) {
+      const emulator = window.EJS_emulator;
+      emulator.pause();
+      await player.syncPendingSave();
+      if (!playerViewAlive.value) return;
+      const bytes = dumpSaveFile();
+      if (bytes?.length) battery = new Uint8Array(bytes);
+      await player.flushPendingSave();
+      if (!playerViewAlive.value) return;
+      emulator.setVolume(0);
+      emulator.netplay?.updateList?.stop();
+      removeLinkRoomMenu?.();
+      emulator.__rommExited = true;
+      emulator.callEvent("exit", { restart: false });
+    }
+    bridgeLaunch.value = bridgeLaunchFor(id, selected, battery);
+    gameRunning.value = true;
+  } catch (error) {
+    snackbar.error(
+      error instanceof Error ? error.message : t("link.relay-launch-error"),
+    );
+  } finally {
+    bridgeLaunching.value = false;
+  }
+}
+function exitBridge() {
+  if (runtimeInjected || window.crossOriginIsolated) {
+    exit.leave(`/rom/${romId}/ejs`);
     return;
   }
-  bridgePopup?.dispose();
-  bridgePopup = launchBridgePlayer(
-    rom.value,
-    (error) =>
-      snackbar.error(
-        error instanceof Error ? error.message : t("link.relay-launch-error"),
-      ),
-    async () => {
-      window.EJS_emulator?.pause();
-      await playerRef.value?.syncPendingSave();
-    },
-  );
+  bridgeLaunch.value = null;
+  gameRunning.value = false;
+  void refreshRomAfterSync();
 }
-onBeforeUnmount(() => bridgePopup?.dispose());
 const exit = usePlayerExit(
   () => runtimeInjected,
   async () => {
     // The flush also uninstalls v1's auto-save sync, which is what keeps its
     // own `beforeunload` handler from prompting on the way out.
-    if (linkStageRef.value) await linkStageRef.value.flushPendingSave();
+    if (bridgeStageRef.value) await bridgeStageRef.value.flushPendingSave();
+    else if (linkStageRef.value) await linkStageRef.value.flushPendingSave();
     else await playerRef.value?.flushPendingSave();
     endSession();
   },
@@ -296,7 +332,8 @@ watch(
       !instance ||
       !rom.value ||
       !supportsLink(rom.value) ||
-      !configStore.config.EJS_NETPLAY_ENABLED
+      !configStore.config.EJS_NETPLAY_ENABLED ||
+      bridgeEnabled.value
     )
       return;
     const start = window.EJS_onGameStart;
@@ -672,7 +709,7 @@ async function onPlay() {
   const netplayLaunch = await resolveBridgeNetplay(
     rom.value?.platform_slug,
     checkBridge,
-    onPlayBridge,
+    () => void onPlayBridge(),
   );
   gameRunning.value = true;
   window.EJS_fullscreenOnLoaded = fullscreenOnPlay.value;
@@ -1059,6 +1096,7 @@ const saveSlot = computed(() => chosenSlot(slotChoice.value, customSlot.value));
           block
           prepend-icon="mdi-access-point-network"
           :disabled="!playReady || nativeLaunching"
+          :loading="bridgeLaunching"
           @click="onPlayBridge"
         >
           {{ t("link.relay-server") }}
@@ -1303,8 +1341,15 @@ const saveSlot = computed(() => chosenSlot(slotChoice.value, customSlot.value));
 
     <!-- Running state -->
     <div v-else-if="rom" ref="stageRef" class="r-v2-ejs__stage">
+      <BridgeStage
+        v-if="bridgeLaunch"
+        ref="bridgeStageRef"
+        :rom="rom"
+        :launch="bridgeLaunch"
+        @exit="exitBridge"
+      />
       <LinkStage
-        v-if="linkLaunch"
+        v-else-if="linkLaunch"
         :key="linkStageKey"
         ref="linkStageRef"
         :rom="rom"
@@ -1333,7 +1378,7 @@ const saveSlot = computed(() => chosenSlot(slotChoice.value, customSlot.value));
            keeps framing the game; otherwise it renders here over the stage. -->
       <Teleport :to="bezelHost" :disabled="!bezelHost">
         <img
-          v-if="bezelUrl && showBezel && !linkLaunch"
+          v-if="bezelUrl && showBezel && !linkLaunch && !bridgeLaunch"
           :src="bezelUrl"
           class="r-v2-ejs__bezel"
           alt=""

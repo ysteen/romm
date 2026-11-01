@@ -18,10 +18,11 @@ const output = resolve(
 );
 const origin = "http://127.0.0.1:8081";
 const romId = 2147483589;
-const popupPath = "/assets/emulatorjs/input-netplay/bridge.html";
+const playerPath = "/assets/emulatorjs/input-netplay/bridge.html";
 const report = {
   application: "Production v2 frontend with isolated API fixtures",
-  popup: "Origin/source handshake recorder; real room UI is tested separately",
+  embedded:
+    "Inline player initialization recorder; real room UI is tested separately",
   gamepad: "Injected standard Gamepad API polled by actual useGamepad",
   screenWakeLock: "Optional OS capability disabled in headless Chrome",
   scenarios: [],
@@ -78,16 +79,17 @@ const heartbeat = {
   OIDC: {},
   TASKS: {},
 };
-const popupDocument = `<!doctype html><title>Bridge handshake fixture</title>
-<script>
-window.addEventListener("message", event => {
-  if (event.source !== opener || event.origin !== location.origin) return;
-  if (event.data?.type !== "romm-bridge-init") return;
-  window.handshake = { ...event.data, receivedAt: Date.now() };
-  document.body.textContent = JSON.stringify(window.handshake);
-});
-opener.postMessage({ type: "romm-bridge-ready" }, location.origin);
-</script><body>Waiting for launcher</body>`;
+const playerDocument = `<!doctype html><title>Embedded bridge fixture</title><body>Room loading<script>
+window.bridgePlayer = {
+  async initialize(options) {
+    const {onExit,...data}=options;
+    window.handshake={...data,receivedAt:Date.now()};
+    window.returnToConfig=onExit;
+    document.body.textContent="Room initialized";
+  },
+  async save() {}, destroy() {},
+};
+</script></body>`;
 
 async function fixture(
   browser,
@@ -179,8 +181,8 @@ async function fixture(
       evidence.unexpectedRequests.push(url.origin + path);
       return route.abort();
     }
-    if (path === popupPath)
-      return route.fulfill({ contentType: "text/html", body: popupDocument });
+    if (path === playerPath)
+      return route.fulfill({ contentType: "text/html", body: playerDocument });
     if (path.startsWith("/api/")) {
       if (path.includes("/content/"))
         return route.fulfill({
@@ -194,7 +196,7 @@ async function fixture(
       if (request.method() === "POST" && path === "/api/saves") {
         const upload = { startedAt: Date.now(), finishedAt: null };
         evidence.saveUploads.push(upload);
-        // Make the save-before-popup ordering observable across the handshake.
+        // Make the save-before-room ordering observable across the handshake.
         await new Promise((resolve) => setTimeout(resolve, 150));
         upload.finishedAt = Date.now();
         return route.fulfill({
@@ -312,26 +314,35 @@ async function tabTo(page, locator) {
   throw new Error("Relay launcher is not reachable with Tab");
 }
 
-async function openAndInspect(page, activate, expected) {
-  const popupPromise = page.waitForEvent("popup");
+async function openAndInspect(page, activate, expected, returnToConfig = true) {
+  const beforePages = page.context().pages().length;
   await activate();
-  const popup = await popupPromise;
-  await popup.waitForFunction(() => window.handshake);
-  const handshake = await popup.evaluate(() => window.handshake);
-  assert.deepEqual(
-    { ...handshake, receivedAt: undefined },
-    {
-      type: "romm-bridge-init",
-      romId,
-      romName: expected.rom.name,
-      platform: expected.evidence.platform,
-      theme: expected.evidence.theme,
-      receivedAt: undefined,
-    },
+  const frame = page.frameLocator(".bridge-stage iframe");
+  await frame.locator("body").filter({ hasText: "Room initialized" }).waitFor();
+  const handshake = await frame
+    .locator("body")
+    .evaluate(() => window.handshake);
+  assert.equal(handshake.romId, romId);
+  assert.equal(handshake.theme, expected.evidence.theme);
+  assert.equal(handshake.resume.saveId, null);
+  assert.equal(handshake.resume.stateId, null);
+  assert.equal(
+    page.context().pages().length,
+    beforePages,
+    "Relay opened a popup",
   );
-  assert.equal(new URL(popup.url()).pathname, popupPath);
-  await popup.close();
-  await page.bringToFront();
+  if (returnToConfig) {
+    await page.evaluate(() => {
+      setTimeout(
+        () =>
+          document
+            .querySelector(".bridge-stage iframe")
+            .contentWindow.returnToConfig(),
+        0,
+      );
+    });
+    await page.locator(".r-v2-ejs__play").waitFor();
+  }
   return handshake;
 }
 
@@ -361,8 +372,14 @@ async function checkSnesToolbar(item, label) {
   await page.screenshot({
     path: resolve(output, `snes-toolbar-${label}.png`),
   });
-  const handshake = await openAndInspect(page, () => menuButton.click(), item);
+  const handshake = await openAndInspect(
+    page,
+    () => menuButton.click(),
+    item,
+    false,
+  );
   assert(await page.evaluate(() => window.EJS_emulator.paused));
+  assert.equal(Object.keys(handshake.resume.battery).length, 2048);
   assert(
     evidence.saveUploads.length > 0,
     "SNES SRAM was not flushed before relay launch",
@@ -372,7 +389,7 @@ async function checkSnesToolbar(item, label) {
       (save) =>
         save.finishedAt !== null && save.finishedAt <= handshake.receivedAt,
     ),
-    "Popup initialized before SRAM upload completed",
+    "Room initialized before SRAM upload completed",
   );
   evidence.snesToolbar = {
     realCore: true,

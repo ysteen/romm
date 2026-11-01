@@ -1,60 +1,114 @@
-:root {
-  color-scheme: light dark;
-  font:
-    16px/1.5 system-ui,
-    sans-serif;
-}
+html,
 body {
   margin: 0;
-  background: light-dark(#f4f5f7, #121722);
-  color: light-dark(#17202c, #edf2f8);
+  width: 100%;
+  height: 100%;
 }
-main {
-  max-width: 1100px;
-  margin: auto;
-  padding: 20px;
+body {
+  background: #111827;
 }
-h1 {
-  margin: 0;
-  font-size: 1.5rem;
-}
-section {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin: 16px 0;
+#screen,
+#screen iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
 }
 [hidden] {
   display: none !important;
 }
-fieldset {
+.romm-room-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 20px;
+  background: light-dark(#f4f5f7, #121722);
+  color: light-dark(#17202c, #edf2f8);
+  font:
+    16px/1.5 system-ui,
+    sans-serif;
+  text-align: left;
+  user-select: text;
+}
+.romm-room-panel > * {
+  max-width: 1100px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.romm-room-panel h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+.romm-room-panel h2 {
+  font-size: 1.2rem;
+  margin-bottom: 0;
+}
+.romm-room-panel section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+.romm-room-panel fieldset {
   flex: 1 1 300px;
   min-width: 0;
   border: 1px solid #78879a;
   border-radius: 8px;
   padding: 16px;
 }
-fieldset label,
-fieldset button {
+.romm-room-panel fieldset label,
+.romm-room-panel fieldset button {
   margin: 8px 0;
 }
-fieldset label {
+.romm-room-panel label {
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
 }
-#lobby {
+.romm-room-panel button,
+.romm-room-panel select,
+.romm-room-panel input[type="password"] {
+  font: inherit;
+  padding: 8px 12px;
+  border: 1px solid #78879a;
+  border-radius: 6px;
+  color: inherit;
+  background: light-dark(#fff, #222d3d);
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.romm-room-panel input[type="password"] {
+  min-width: 0;
+}
+.romm-room-panel input[type="checkbox"] {
+  appearance: auto;
+}
+.romm-room-panel button {
+  cursor: pointer;
+  min-height: 44px;
+}
+.romm-room-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.romm-room-panel :focus-visible {
+  outline: 3px solid #4d9cff;
+  outline-offset: 3px;
+}
+.romm-room-panel #lobby {
   display: block;
 }
-#lobby h2,
-#native-details h2 {
-  font-size: 1.2rem;
-  margin-bottom: 0;
-}
-#participants {
+.romm-room-panel #participants {
   list-style: none;
   padding: 0;
 }
-#participants li {
+.romm-room-panel #participants li {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -64,86 +118,38 @@ fieldset label {
   border-radius: 6px;
   margin: 8px 0;
 }
-#participants .member-name {
+.romm-room-panel .member-name {
   flex: 1 1 180px;
   overflow-wrap: anywhere;
 }
-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-button,
-select {
-  font: inherit;
-  padding: 8px 12px;
-  border: 1px solid #78879a;
-  border-radius: 6px;
-  color: inherit;
-  background: light-dark(#fff, #222d3d);
-}
-button {
-  cursor: pointer;
-  min-height: 44px;
-}
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-:focus-visible {
-  outline: 3px solid #4d9cff;
-  outline-offset: 3px;
-}
-#screen iframe {
-  display: block;
-  width: 100%;
-  height: min(65vh, 700px);
-  min-height: 280px;
-  border: 0;
-}
-#connection,
-#native-details {
+.romm-room-panel #connection,
+.romm-room-panel #native-details {
   display: block;
   padding: 12px;
   border: 1px solid #78879a;
   border-radius: 6px;
   overflow-wrap: anywhere;
 }
-#native-details label {
-  flex-wrap: wrap;
-}
-#connection p {
+.romm-room-panel #connection p {
   margin: 4px;
 }
-.hint {
+.romm-room-panel .hint {
   color: light-dark(#45566c, #b3bfd0);
 }
-.error {
+.romm-room-panel .error {
   color: light-dark(#a31224, #ffabb5);
 }
+.romm-room-panel a {
+  color: light-dark(#1259a8, #9dc8ff);
+}
+.romm-room-panel .room-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
 @media (max-width: 480px) {
-  main {
+  .romm-room-panel {
     padding: 12px;
   }
-  #screen iframe {
-    min-height: 240px;
-  }
-}
-input[type="password"] {
-  min-width: 0;
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border: 1px solid #78879a;
-  border-radius: 6px;
-  font: inherit;
-  color: inherit;
-  background: light-dark(#fff, #222d3d);
-}
-label,
-select {
-  max-width: 100%;
-}
-a {
-  color: light-dark(#1259a8, #9dc8ff);
 }

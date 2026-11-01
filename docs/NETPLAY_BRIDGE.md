@@ -117,13 +117,13 @@ Check bridge startup with `curl -fsS http://127.0.0.1:8082/health`. While signed
 ## Create and join a web room
 
 1. Sign in to RomM with game access and emulation permission. Use the **v2 UI** and open a supported game's player page.
-2. Select **Relay server** (the label is translated). Allow the popup. The ordinary SNES player's in-game **Netplay** button also opens this flow when configured.
+2. Choose a save under **Resume from save**, or choose a fresh start, then select **Relay server** (the label is translated). The room opens inside the player. A supported single-player game's **Netplay** toolbar button also opens this flow, carrying its current in-game save.
 3. Select the player count. Enable **Allow RetroArch clients** if a native player will join. A room password is optional; leave it blank for a passwordless room. Select **Create room**.
 4. Copy the room invitation and, if set, send the displayed room password separately. Keep the host window open.
 5. A web guest signs in to the same RomM server and opens the invitation, enters the room password if required and selects **Join room**. Alternatively, open that game's player page, select **Relay server**, and choose the room under **Open rooms**. Use a separate browser profile or device for a second account.
 6. Everyone enters the waiting room with **Not selected** as their player number, including the host. Each guest can choose or clear their own number. The host can change anyone's number, including native guests. A number already selected by another participant is unavailable; clear it first to exchange numbers.
 7. Once all selected player slots are connected, ready and assigned a number, the host selects **Start game**. Joining alone does not start play. Numbers are fixed after starting.
-8. Each player uses their own keyboard, touch controls or gamepad. Use **Save progress** or **Save and close** to save to the signed-in account. Automatic room saves run every 15 seconds. **Download save** provides a local battery-save copy.
+8. The room panel closes when play starts. Use the EmulatorJS toolbar for volume, shared pause, **Sync save** and **Save and close**. Its **Netplay** button reopens the room panel; **Return to game** or Escape closes it. Automatic room saves run every 15 seconds. Each player uses their own keyboard, touch controls or gamepad.
 
 The invitation contains the ROM/room identifiers, not the room password or service token. An invitation does not bypass the guest's RomM game permissions, even in a passwordless room. When set, the password is shared by the room, including native guests; per-player native passwords and native RomM login are not implemented.
 
@@ -155,12 +155,16 @@ The port is allocated per room and may differ from `55435`. Native guests start 
 
 ## Save behavior and troubleshooting
 
-Web GB/GBC and GBA participants import their own account's battery save into their assigned console. GBA selects the newest compatible `mgba`/`mgba_splitscreen` save and writes back to the room's core/slot. SNES starts from the host's save and shares one console; each web participant can store that shared progress in their own account. A running single-player session must finish uploading its save before the room starts. Save states are separate from this battery-save flow.
+Web GB/GBC and GBA participants import their chosen in-game save into their assigned console. An explicit selection is honored even when a newer save exists; choosing a fresh start imports none. A direct invitation uses the newest compatible account save. GBA accepts `mgba`/`mgba_splitscreen` saves and writes back to the room's own core/slot. SNES starts from the host's save and shares one console; each web participant can store that shared progress in their own account.
+
+Switching through a running game's Netplay toolbar copies its current battery data after the server upload succeeds. Selecting a save state directly for a room reports an error: load it in single-player first, then switch through the toolbar to carry its in-game save. This does not transfer the exact machine state from a different single-player core.
+
+Rollback replay suppresses audio output. Short processing stalls can still empty the browser audio queue. Room playback keeps about 60 ms of audio headroom, smooths sample discontinuities, and catches up a bounded number of delayed frames. This adds a small audio delay and reduces short dropouts; sustained low frame rate or long network stalls can still interrupt sound. Already-played predicted audio cannot be undone.
 
 | Symptom                                 | Check                                                                                                     |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | No multiplayer button                   | v2 UI, GB/GBC/GBA/SNES platform slug, updated image, four backend variables, `/api/netplay/bridge/config` |
-| Room window does not open               | Browser popup permission and page error message                                                           |
+| Room does not open                      | Player error message, game permissions and updated frontend/runtime assets                                |
 | Room creation fails                     | Bridge health, shared network, identical service tokens, RomM permissions                                 |
 | Incorrect room password                 | Enter the password set by the host, not your RomM login password; passwordless rooms need no password     |
 | WebSocket fails                         | TLS, upgrade headers, exact allowed RomM origin, browser-reachable public URL                             |

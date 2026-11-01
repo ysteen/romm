@@ -11,6 +11,36 @@ import {
 } from "../data/src/bridge-profile.js";
 import { unpackLinkCartridge, importBattery } from "../data/src/link-core.js";
 
+test("an explicit save or fresh start is never replaced by the newest save", () => {
+  const profile = bridgeCore("mgba_splitscreen");
+  const older = { id: 1, emulator: "mgba", updated_at: "2026-10-01" };
+  const newer = {
+    id: 2,
+    emulator: "mgba_splitscreen",
+    slot: "link",
+    updated_at: "2026-11-01",
+  };
+  assert.equal(bridgeSaveSelection(profile, [older, newer], 1).selected, older);
+  assert.equal(bridgeSaveSelection(profile, [older, newer], 1).target, newer);
+  assert.equal(
+    bridgeSaveSelection(profile, [older, newer], null).selected,
+    null,
+  );
+  assert.equal(bridgeSaveSelection(profile, [older, newer]).selected, newer);
+  for (const save of [
+    { ...older, missing_from_fs: true },
+    { ...older, emulator: "snes9x" },
+  ])
+    assert.throws(
+      () => bridgeSaveSelection(profile, [save, newer], 1),
+      /selected save/,
+    );
+  assert.throws(
+    () => bridgeSaveSelection(profile, [newer], 1),
+    /selected save/,
+  );
+});
+
 test("handheld room profiles retain separate cartridges and battery slots", () => {
   for (const [platform, core] of [
     ["gb", "sameboy"],

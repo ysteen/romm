@@ -278,26 +278,50 @@ try {
             host
               .waitForFunction(
                 () =>
-                  document.querySelector("#status").classList.contains("error"),
+                  (
+                    document.querySelector("#status") ??
+                    document
+                      .querySelector("iframe")
+                      ?.contentDocument.querySelector("#status")
+                  )?.classList.contains("error"),
                 null,
                 { timeout: 60000 },
               )
               .then(async () => {
-                throw new Error(await host.locator("#status").textContent());
+                throw new Error(
+                  await host.evaluate(
+                    () =>
+                      (
+                        document.querySelector("#status") ??
+                        document
+                          .querySelector("iframe")
+                          ?.contentDocument.querySelector("#status")
+                      )?.textContent,
+                  ),
+                );
               }),
           ]);
           const room = [...broker.rooms.values()].at(-1);
-          const invite = await host.locator("#room-link").getAttribute("href");
+          const hostUI = host.frameLocator("#screen iframe");
+          const invite = await hostUI
+            .locator("#room-link")
+            .getAttribute("href");
           assert.equal(new URL(invite).searchParams.get("room"), room.id);
           assert.equal(room.password, "");
           assert(!new URL(invite).searchParams.has("password"));
           assert(
-            (await host.locator("#core-download").textContent()).includes(
+            (await hostUI.locator("#core-download").textContent()).includes(
               "Linux x86_64",
             ),
           );
           const docs = await host.evaluate(async () =>
-            (await fetch(document.querySelector("#core-build").href)).text(),
+            (
+              await fetch(
+                document
+                  .querySelector("iframe")
+                  .contentDocument.querySelector("#core-build").href,
+              )
+            ).text(),
           );
           assert(docs.includes("Linux"));
           const guest = await context.newPage();
@@ -309,41 +333,45 @@ try {
           );
           assert(await guest.locator("#join-password-label").isHidden());
           await guest.locator("#join").tap();
-          await guest
+          const guestUI = guest.frameLocator("#screen iframe");
+          await guestUI
             .locator('#participants select[data-player="1"]')
             .waitFor();
           assert.equal(
-            await host
+            await hostUI
               .locator('#participants select[data-player="0"]')
               .inputValue(),
             "",
           );
           assert.equal(
-            await guest
+            await guestUI
               .locator('#participants select[data-player="1"]')
               .inputValue(),
             "",
           );
           assert(
-            await guest
+            await guestUI
               .locator('#participants select[data-player="0"]')
               .isDisabled(),
           );
-          assert(await guest.locator("#start").isHidden());
-          await guest
+          assert(await guestUI.locator("#start").isHidden());
+          await guestUI
             .locator('#participants select[data-player="1"]')
             .selectOption("0");
-          await host
+          await hostUI
             .locator('#participants select[data-player="0"]')
             .selectOption("1");
           await host.waitForFunction(
-            () => !document.querySelector("#start").disabled,
+            () =>
+              !document
+                .querySelector("iframe")
+                .contentDocument.querySelector("#start").disabled,
           );
           assert.equal(
             await host.evaluate(() => window.bridgeConnection.started),
             false,
           );
-          await host.locator("#start").focus();
+          await hostUI.locator("#start").focus();
           await host.keyboard.press("Enter");
           await Promise.all(
             pages.map((page) =>
@@ -495,7 +523,15 @@ try {
               ),
             ),
           );
-          await host.locator("#pause").tap();
+          await host.evaluate(() =>
+            document
+              .querySelector("iframe")
+              .contentWindow.EJS_emulator.menu.open(true),
+          );
+          await hostUI
+            .locator(".ejs_menu_bar button")
+            .filter({ hasText: /^Pause$/ })
+            .tap();
           await Promise.all(
             pages.map((page) =>
               page.waitForFunction(
@@ -531,10 +567,11 @@ try {
             "No delayed input rollback observed",
           );
           for (const [player, page] of pages.entries()) {
-            await page.locator("#save").click();
+            await page.evaluate(() => window.bridgePlayer.save());
             await page.waitForFunction(() =>
               document
-                .querySelector("#save-status")
+                .querySelector("iframe")
+                .contentDocument.querySelector("#save-status")
                 .textContent.includes("saved"),
             );
             const upload = uploads
@@ -554,8 +591,8 @@ try {
             );
             assert.equal(upload.slot, system === "snes" ? "netplay" : "link");
           }
-          await host.locator("#volume").fill("0.2");
-          await host.locator("#volume").dispatchEvent("input");
+          await hostUI.locator('[data-range="volume"]').fill("0.2");
+          await hostUI.locator('[data-range="volume"]').dispatchEvent("input");
           assert.equal(
             await host.evaluate(
               () =>
@@ -565,6 +602,33 @@ try {
             0.2,
           );
           const responsive = [];
+          await host.evaluate(() =>
+            document
+              .querySelector("iframe")
+              .contentWindow.EJS_emulator.menu.open(true),
+          );
+          await hostUI
+            .locator(".ejs_menu_bar button")
+            .filter({ hasText: /^Enter fullscreen$/i })
+            .click();
+          await hostUI
+            .locator(".ejs_menu_bar button")
+            .filter({ hasText: /^Netplay$/ })
+            .click();
+          assert(await hostUI.locator("#room-panel").isVisible());
+          assert(
+            await host.evaluate(() => {
+              const doc = document.querySelector("iframe").contentDocument;
+              return !!doc.fullscreenElement?.contains(
+                doc.querySelector("#room-panel"),
+              );
+            }),
+            "Room controls must remain inside the fullscreen player",
+          );
+          await hostUI.locator("#close-room").click();
+          await host.evaluate(() =>
+            document.querySelector("iframe").contentDocument.exitFullscreen(),
+          );
           for (const theme of ["dark", "light"]) {
             await host.emulateMedia({ colorScheme: theme });
             for (const width of [320, 768, 1100, 3840]) {
@@ -610,7 +674,12 @@ try {
             pages.map((page) =>
               page
                 .evaluate(() => ({
-                  status: document.querySelector("#status")?.textContent,
+                  status: (
+                    document.querySelector("#status") ??
+                    document
+                      .querySelector("iframe")
+                      ?.contentDocument.querySelector("#status")
+                  )?.textContent,
                   frame: window.bridgeConnection?.session?.frame,
                   stopped: window.bridgeConnection?.session?.stopped,
                 }))

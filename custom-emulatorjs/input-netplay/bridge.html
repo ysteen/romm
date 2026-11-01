@@ -4,10 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RomM multiplayer room</title>
-    <link rel="stylesheet" href="bridge.css?v=native-platforms-20261101" />
+    <link rel="stylesheet" href="bridge.css?v=player-20261102" />
   </head>
   <body>
-    <main>
+    <div id="screen" hidden></div>
+    <main id="room-panel" class="romm-room-panel" aria-label="Multiplayer room">
+      <div class="room-actions">
+        <button id="back">Back</button
+        ><button id="close-room" hidden>Return to game</button>
+      </div>
       <header>
         <h1 id="title">Multiplayer room</h1>
         <p id="status" role="status" aria-live="polite">Opening game…</p>
@@ -102,28 +107,11 @@
           >
         </p>
       </section>
-      <div id="screen" hidden></div>
-      <section id="controls" hidden aria-label="Player controls">
-        <label
-          >Volume
-          <input
-            id="volume"
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value="0.4"
-        /></label>
-        <button id="pause">Pause</button
-        ><button id="save">Save progress</button>
-        <button id="download">Download save</button>
-        <button id="quit">Save and close</button>
-      </section>
       <button id="disconnect" hidden>Leave room</button>
       <p id="save-status" role="status"></p>
       <p id="play-hint" class="hint"></p>
       <p id="save-hint" class="hint"></p>
     </main>
-    <script type="module" src="bridge.js?v=native-platforms-20261101"></script>
+    <script type="module" src="bridge.js?v=player-20261102"></script>
   </body>
 </html>

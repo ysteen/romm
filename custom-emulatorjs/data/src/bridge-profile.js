@@ -55,7 +55,7 @@ export function bridgeSeed(profile, player, battery) {
   return profile.sharedSave && player !== 0 ? new Uint8Array() : battery;
 }
 
-export function bridgeSaveSelection(profile, saves = []) {
+export function bridgeSaveSelection(profile, saves = [], saveId) {
   // mGBA single-player and the split-screen core use the same raw cartridge
   // battery format. Keep unrelated core formats out of this import path.
   const cores =
@@ -69,10 +69,18 @@ export function bridgeSaveSelection(profile, saves = []) {
         (!save.emulator || cores.includes(save.emulator)),
     )
     .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+  const selected =
+    saveId === undefined
+      ? (compatible[0] ?? null)
+      : saveId === null
+        ? null
+        : compatible.find((save) => save.id === saveId);
+  if (saveId !== undefined && saveId !== null && !selected)
+    throw new Error(
+      "The selected save is unavailable or incompatible with this multiplayer core. Choose another save before starting.",
+    );
   return {
-    // Seed from the freshest compatible save, including a single-player save
-    // uploaded immediately before opening this room.
-    selected: compatible[0] ?? null,
+    selected,
     // Room uploads keep their own core/slot; never overwrite an alias's slot.
     target:
       compatible.find(

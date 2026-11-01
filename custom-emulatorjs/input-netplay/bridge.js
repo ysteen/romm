@@ -5,15 +5,60 @@ import {
   bridgeBatteryId,
   bridgeSeed,
   bridgeSaveSelection,
-} from "../data/src/bridge-profile.js";
+} from "../data/src/bridge-profile.js?v=20261102";
 import {
   BridgeConnection,
   crc32,
 } from "../data/src/bridge-session.js?v=lobby-20261101";
+import { installBridgeMenu } from "./bridge-menu.js?v=20261102";
 import { installNativeDownloads } from "./native-downloads.js?v=20261101";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
 
-const $ = (id) => document.getElementById(id);
+const elements = new Map(
+  [...document.querySelectorAll("[id]")].map((element) => [
+    element.id,
+    element,
+  ]),
+);
+const $ = (id) => elements.get(id);
+let integration = {},
+  updateMenu = () => {},
+  screenView;
+function showRoom(open) {
+  const panel = $("room-panel");
+  panel.hidden = !open;
+  $("close-room").hidden = !connection?.started;
+  if (frame?.contentWindow) frame.contentWindow.localButtons = 0;
+  if (open) (connection?.started ? $("close-room") : $("create")).focus();
+  else
+    frame?.contentWindow.EJS_emulator.elements.parent.focus({
+      preventScroll: true,
+    });
+}
+function releasePlayer() {
+  clearInterval(ticker);
+  clearInterval(autosave);
+  const owned = room?.player === 0 || (room && connection?.player === 0);
+  const id = room?.id;
+  room = null;
+  connection?.stop();
+  connection = null;
+  window.bridgeConnection = null;
+  window.bridgeAdapter = null;
+  screenView?.destroy();
+  frame?.contentWindow.audioOutput?.destroy();
+  document.body.append($("room-panel"));
+  frame?.remove();
+  frame = null;
+  adapter = null;
+  updateMenu = () => {};
+  $("screen").hidden = true;
+  if (owned && id)
+    void api(
+      `/netplay/bridge/rooms/${encodeURIComponent(id)}?rom_id=${rom.id}`,
+      { method: "DELETE" },
+    ).catch(() => {});
+}
 let rom, profile, coreCatalog, frame, adapter, connection, room;
 let cartridge, initialBattery, targetSave, lastSave, saving;
 let ticker,
@@ -63,16 +108,9 @@ function status(text, error = false) {
 }
 
 function fail(error) {
-  clearInterval(ticker);
-  clearInterval(autosave);
-  connection?.stop();
-  room = null;
-  $("lobby").hidden =
-    $("connection").hidden =
-    $("screen").hidden =
-    $("controls").hidden =
-    $("disconnect").hidden =
-      true;
+  releasePlayer();
+  $("lobby").hidden = $("connection").hidden = $("disconnect").hidden = true;
+  showRoom(true);
   status(error.message, true);
   $("setup").hidden = false;
   $("create").disabled = $("refresh").disabled = false;
@@ -86,11 +124,15 @@ async function bytes(url) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-async function initialize({ romId, theme }) {
+async function initialize({ romId, theme, resume, ...callbacks }) {
+  integration = callbacks;
   if (initialized || !Number.isSafeInteger(romId) || romId <= 0) return;
   initialized = true;
   if (theme === "light" || theme === "dark")
     document.documentElement.style.colorScheme = theme;
+  if (integration.labels?.back) $("back").textContent = integration.labels.back;
+  if (integration.labels?.resume)
+    $("close-room").textContent = integration.labels.resume;
   try {
     rom = await api(`/roms/${romId}`);
     profile = bridgeCore(bridgeCoreFor(rom.platform_slug));
@@ -122,11 +164,26 @@ async function initialize({ romId, theme }) {
     cartridge = await bytes(
       `/api/roms/${rom.id}/content/${encodeURIComponent(nested)}?purpose=play`,
     );
-    const { selected, target } = bridgeSaveSelection(profile, rom.user_saves);
+    if (resume?.stateId && !resume?.battery)
+      throw new Error(
+        "Save states cannot start this multiplayer core. Select an in-game save, or load the state in single-player first.",
+      );
+    const { selected, target } = bridgeSaveSelection(
+      profile,
+      rom.user_saves,
+      resume?.saveId,
+    );
     targetSave = target;
-    initialBattery = selected
-      ? await bytes(selected.download_path)
-      : new Uint8Array();
+    initialBattery = resume?.battery
+      ? new Uint8Array(resume.battery)
+      : selected
+        ? await bytes(selected.download_path)
+        : new Uint8Array();
+    $("save-status").textContent = resume?.battery
+      ? "Continuing current progress."
+      : selected
+        ? `Starting from: ${selected.file_name ?? selected.slot ?? "selected save"}`
+        : "Starting without a save.";
     $("create").disabled = $("refresh").disabled = false;
     status("Create a room or join another player.");
     $("save-hint").textContent = profile.sharedSave
@@ -181,7 +238,7 @@ function updateJoin() {
 
 function renderLobby(value) {
   $("lobby").hidden = false;
-  $("screen").hidden = $("controls").hidden = true;
+  showRoom(true);
   const host = connection.player === 0;
   $("start").hidden = !host;
   $("start").disabled = !value.canStart;
@@ -230,10 +287,7 @@ function renderLobby(value) {
 }
 
 async function boot(players, nativeAllowed) {
-  connection?.stop();
-  clearInterval(ticker);
-  clearInterval(autosave);
-  frame?.remove();
+  releasePlayer();
   profile = bridgeCore(profile.core, players);
   const build = coreCatalog[profile.core]?.[nativeAllowed ? "native" : "web"];
   if (!build)
@@ -249,7 +303,7 @@ async function boot(players, nativeAllowed) {
     frame.onload = resolve;
     frame.onerror = () => reject(new Error("Could not open player"));
   });
-  frame.src = "player.html?v=rollback-20261101";
+  frame.src = "player.html?v=player-20261102";
   $("screen").replaceChildren(frame);
   await loaded;
   // A background tab may deny a wake lock. Emulation can continue without it.
@@ -281,12 +335,44 @@ async function boot(players, nativeAllowed) {
       profile,
       paths,
       waitForCoreInitialization: !!build.waitForCoreInitialization,
+      onNetplay: () => showRoom(true),
+      bufferAudio: true,
+      language: integration.language,
+      buttons: {
+        saveState: false,
+        loadState: false,
+        loadSavFiles: false,
+        restart: false,
+        exitEmulation: true,
+        saveSavFiles: { displayName: integration.labels?.save ?? "Sync save" },
+        pause: { displayName: integration.labels?.pause ?? "Pause" },
+        play: { displayName: integration.labels?.resume ?? "Resume" },
+        netplay: { displayName: integration.labels?.netplay ?? "Netplay" },
+      },
     },
   );
   window.bridgeAdapter = adapter;
   const emulator = frame.contentWindow.EJS_emulator;
-  emulator.setVolume(Number($("volume").value));
-  const screen = installPlayerScreen(emulator, profile);
+  frame.contentDocument.body.classList.add("romm-player");
+  const style = frame.contentDocument.createElement("link");
+  style.rel = "stylesheet";
+  style.href = new URL("bridge.css?v=player-20261102", location.href).href;
+  frame.contentDocument.head.append(style);
+  frame.contentDocument.documentElement.style.colorScheme =
+    document.documentElement.style.colorScheme;
+  updateMenu = installBridgeMenu(emulator, {
+    panel: $("room-panel"),
+    showRoom,
+    pause: (paused) => {
+      if (connection?.started) connection.pause(paused);
+    },
+    save: () => save().catch(saveError),
+    leave,
+    exitLabel: integration.labels?.exit,
+  });
+  updateMenu(false, false);
+  $("screen").hidden = false;
+  const screen = (screenView = installPlayerScreen(emulator, profile));
   const actualRom = emulator.gameManager.FS.readFile("/" + emulator.fileName);
   return { build, screen, contentCrc: crc32(actualRom) };
 }
@@ -353,7 +439,8 @@ async function launch(joinId) {
       onStatus(value) {
         if (value === "connected") {
           $("lobby").hidden = true;
-          $("screen").hidden = $("controls").hidden = false;
+          $("screen").hidden = false;
+          showRoom(false);
         }
         status(
           value === "connected"
@@ -362,10 +449,16 @@ async function launch(joinId) {
               ? "Waiting for all players…"
               : value,
         );
-        $("pause").textContent = value === "paused" ? "Resume" : "Pause";
+        updateMenu(value === "paused", !!connection?.started);
+        if (value === "paused") {
+          frame?.contentWindow.audioOutput.flush();
+          frame?.contentWindow.EJS_emulator.displayMessage("Paused");
+        }
         if (value === "stopped") {
           clearInterval(ticker);
           clearInterval(autosave);
+          frame?.contentWindow.audioOutput.flush();
+          showRoom(true);
         }
       },
       onLobby: renderLobby,
@@ -382,7 +475,6 @@ async function launch(joinId) {
     });
     window.bridgeConnection = connection;
     $("setup").hidden = true;
-    $("controls").hidden = true;
     $("disconnect").hidden = false;
     $("connection").hidden = false;
     $("address").textContent = room.native_port
@@ -401,12 +493,27 @@ async function launch(joinId) {
       : "Share this invitation with the other players.";
     let next = performance.now();
     ticker = setInterval(() => {
+      if (!connection || !frame) return;
       const now = performance.now();
       if (now - next > 200) next = now;
-      if (now < next) return;
-      if (connection.tick(frame.contentWindow.localButtons || 0))
-        next += 1000 / profile.frameRate;
-      else next = now;
+      try {
+        for (let steps = 0; steps < 3 && performance.now() >= next; steps++) {
+          if (
+            !connection.tick(
+              $("room-panel").hidden
+                ? frame.contentWindow.localButtons || 0
+                : 0,
+            )
+          ) {
+            next = performance.now();
+            break;
+          }
+          next += 1000 / profile.frameRate;
+          if (performance.now() - now >= 8) break;
+        }
+      } catch (error) {
+        fail(error);
+      }
     }, 4);
     autosave = setInterval(() => {
       if (connection?.started) void save().catch(saveError);
@@ -421,7 +528,7 @@ async function launch(joinId) {
       frame.contentWindow.audioOutput.setActive(false),
     );
     frame.contentWindow.audioOutput.setActive(true);
-    $("disconnect").focus();
+    showRoom(true);
   } catch (error) {
     fail(error);
   }
@@ -436,12 +543,13 @@ function ownBattery() {
 }
 
 function saveError(error) {
+  showRoom(true);
   $("save-status").textContent = `Could not save: ${error.message}`;
   $("save-status").classList.add("error");
 }
 
 async function save() {
-  if (saving) return saving;
+  if (saving) return saving.then(() => save());
   const data = ownBattery();
   if (
     !data?.length ||
@@ -470,6 +578,7 @@ async function save() {
       initialBattery = data.slice();
       $("save-status").textContent = "Progress saved.";
       $("save-status").classList.remove("error");
+      frame?.contentWindow.EJS_emulator.displayMessage("Progress saved.");
     })
     .finally(() => {
       saving = null;
@@ -496,47 +605,51 @@ $("copy-room").onclick = async () => {
     status("Open the room invitation and copy its address.");
   }
 };
-$("volume").oninput = () =>
-  frame?.contentWindow.EJS_emulator.setVolume(Number($("volume").value));
-$("pause").onclick = () => connection?.pause(!connection.session?.paused);
-$("save").onclick = () => save().catch(saveError);
 $("disconnect").onclick = async () => {
   $("disconnect").disabled = true;
-  await save().catch(saveError);
-  connection?.stop();
-  room = null;
-  $("lobby").hidden =
-    $("connection").hidden =
-    $("screen").hidden =
-    $("controls").hidden =
-    $("disconnect").hidden =
-      true;
-  $("setup").hidden = false;
-  $("create").disabled = $("refresh").disabled = false;
-  $("disconnect").disabled = false;
-  void refreshRooms();
+  try {
+    await save();
+    releasePlayer();
+    $("lobby").hidden = $("connection").hidden = $("disconnect").hidden = true;
+    $("setup").hidden = false;
+    $("create").disabled = $("refresh").disabled = false;
+    showRoom(true);
+    void refreshRooms();
+  } catch (error) {
+    saveError(error);
+  } finally {
+    $("disconnect").disabled = false;
+  }
 };
-$("download").onclick = () => {
-  const data = ownBattery();
-  if (!data?.length) return;
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([data]));
-  link.download = `${rom.fs_name_no_ext}.srm`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-};
-$("quit").onclick = async () => {
+async function leave() {
   try {
     await save();
     closed = true;
-    connection?.stop();
-    window.close();
+    releasePlayer();
+    if (integration.onExit) integration.onExit();
+    else location.assign(`/rom/${rom.id}/ejs`);
   } catch (error) {
     saveError(error);
   }
-};
+}
+$("back").onclick = leave;
+$("close-room").onclick = () => showRoom(false);
+$("room-panel").addEventListener("keydown", (event) => {
+  event.stopPropagation();
+  if (event.key === "Escape" && connection?.started) {
+    event.preventDefault();
+    event.stopPropagation();
+    showRoom(false);
+  }
+});
+$("room-panel").addEventListener("keyup", (event) => event.stopPropagation());
 window.addEventListener("beforeunload", (event) => {
-  if (!closed && connection?.started && ownBattery()?.length) {
+  if (
+    !integration.onExit &&
+    !closed &&
+    connection?.started &&
+    ownBattery()?.length
+  ) {
     event.preventDefault();
     event.returnValue = "";
   }
@@ -555,6 +668,7 @@ window.addEventListener("message", (event) => {
     return;
   void initialize(event.data);
 });
+window.bridgePlayer = { initialize, save, destroy: releasePlayer };
 window.opener?.postMessage({ type: "romm-bridge-ready" }, location.origin);
 const romId = Number(new URLSearchParams(location.search).get("romId"));
 if (romId > 0) void initialize({ romId });

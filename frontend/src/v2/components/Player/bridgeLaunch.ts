@@ -13,77 +13,36 @@ export async function resolveBridgeNetplay(
   check: () => Promise<boolean | undefined>,
   launch: () => void,
 ): Promise<(() => void) | undefined> {
-  return platform === "snes" && (await check()) ? launch : undefined;
+  return platform &&
+    supportsBridge({ platform_slug: platform }) &&
+    (await check())
+    ? launch
+    : undefined;
 }
 
 export const BRIDGE_PLAYER_PATH =
   "/assets/emulatorjs/input-netplay/bridge.html";
 
-export function launchBridgePlayer(
-  rom: Pick<SimpleRomSchema, "id" | "name" | "fs_name" | "platform_slug">,
-  onError: (error?: unknown) => void,
-  beforeInitialize?: () => Promise<void>,
-): { popup: Window | null; dispose: () => void } {
-  const origin = window.location.origin;
-  const popup = window.open(
-    BRIDGE_PLAYER_PATH,
-    "_blank",
-    "popup,width=1100,height=800",
-  );
-  if (!popup) {
-    onError();
-    return { popup: null, dispose: () => {} };
-  }
-  let disposed = false;
-  let initializing = false;
-  const dispose = () => {
-    disposed = true;
-    clearTimeout(timer);
-    window.removeEventListener("message", ready);
+export interface BridgeLaunch {
+  romId: number;
+  resume: {
+    saveId: number | null;
+    stateId: number | null;
+    battery?: Uint8Array<ArrayBuffer>;
   };
-  const ready = (event: MessageEvent) => {
-    if (
-      disposed ||
-      initializing ||
-      event.origin !== origin ||
-      event.source !== popup ||
-      event.data?.type !== "romm-bridge-ready"
-    )
-      return;
-    initializing = true;
-    const initialize = () => {
-      if (disposed) return;
-      popup.postMessage(
-        {
-          type: "romm-bridge-init",
-          romId: rom.id,
-          romName: rom.name || rom.fs_name,
-          platform: rom.platform_slug,
-          theme: document.documentElement.classList.contains("r-v2-light")
-            ? "light"
-            : "dark",
-        },
-        origin,
-      );
-      dispose();
-    };
-    if (beforeInitialize) {
-      Promise.resolve()
-        .then(beforeInitialize)
-        .then(initialize)
-        .catch((error: unknown) => {
-          if (disposed) return;
-          dispose();
-          popup.close();
-          onError(error);
-        });
-    } else initialize();
+}
+
+export function bridgeLaunchFor(
+  romId: number,
+  selection: { save: { id: number } | null; state: { id: number } | null },
+  battery?: Uint8Array<ArrayBuffer>,
+): BridgeLaunch {
+  return {
+    romId,
+    resume: {
+      saveId: selection.save?.id ?? null,
+      stateId: battery ? null : (selection.state?.id ?? null),
+      ...(battery ? { battery: battery.slice() } : {}),
+    },
   };
-  window.addEventListener("message", ready);
-  const timer = setTimeout(() => {
-    dispose();
-    popup.close();
-    onError();
-  }, 30_000);
-  return { popup, dispose };
 }

@@ -28,7 +28,7 @@
     import {
       bindPlayerVolume,
       installPlayerAudio,
-    } from "./audio.js?v=20261101.1";
+    } from "./audio.js?v=20261102";
     import { makeManifest } from "./lab.js?v=20261101.1";
     import {
       installPlayerActions,
@@ -41,6 +41,7 @@
     window.audioOutput = installPlayerAudio();
 
     window.boot = async (roms, options, integration = {}) => {
+      if (integration.bufferAudio) window.audioOutput.enableBuffering();
       const profile =
         integration.profile ?? linkCore(integration.core, roms.length);
       if (profile.standardGame) {
@@ -73,6 +74,7 @@
             : "link-player-1",
           EJS_pathtodata: "../data/",
           EJS_startOnLoaded: true,
+          EJS_language: integration.language,
           EJS_paths: integration.paths,
           EJS_DEBUG_XX: true,
           EJS_threads: false,
@@ -101,6 +103,7 @@
             loadSavFiles: false,
             exitEmulation: false,
           },
+          EJS_onNetplay: integration.onNetplay,
           EJS_onSaveState: integration.onSaveState,
           EJS_onLoadState: integration.onLoadState,
           EJS_onSaveSave: integration.onSave,
@@ -121,6 +124,18 @@
                 profile,
               );
               bindPlayerVolume(EJS_emulator, window.audioOutput);
+              if (integration.bufferAudio) {
+                const step = adapter.step.bind(adapter);
+                const stepPlayers = adapter.stepPlayers.bind(adapter);
+                adapter.step = (a, b, present = true) => {
+                  if (!present) window.audioOutput.markDiscontinuity();
+                  return step(a, b, present);
+                };
+                adapter.stepPlayers = (buttons, present = true) => {
+                  if (!present) window.audioOutput.markDiscontinuity();
+                  return stepPlayers(buttons, present);
+                };
+              }
               window.localButtons = 0;
               window.secondButtons = 0;
               const simulateInput = EJS_emulator.gameManager.simulateInput.bind(

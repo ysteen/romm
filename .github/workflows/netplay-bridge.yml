@@ -14,6 +14,7 @@ on:
       - "docker/Dockerfile.custom-dosbox-pure"
       - "custom-emulatorjs/data/cores/compat/rollback/**"
       - "custom-emulatorjs/tests/bridge-*.test.mjs"
+      - "custom-emulatorjs/tests/link-audio.test.mjs"
       - "custom-emulatorjs/tests/native-downloads.test.mjs"
       - ".github/workflows/netplay-bridge.yml"
   workflow_dispatch:
@@ -41,7 +42,7 @@ jobs:
           node-version: "24"
 
       - name: Test vendored rollback client
-        run: node --test custom-emulatorjs/tests/bridge-*.test.mjs
+        run: node --test custom-emulatorjs/tests/bridge-*.test.mjs custom-emulatorjs/tests/link-audio.test.mjs
 
       - name: Verify native downloads and platform selection
         run: node --test custom-emulatorjs/tests/native-downloads.test.mjs
