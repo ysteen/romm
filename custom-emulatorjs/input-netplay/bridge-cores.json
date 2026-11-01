@@ -101,6 +101,10 @@
       "waitForCoreInitialization": true,
       "options": {
         "splitscreen_layout": "auto"
+      },
+      "coreInfo": {
+        "path": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.info",
+        "sha256": "17ec3288f295b86694f3f62ff0a9e55ebfe05c63d2606562631c867b53240f05"
       }
     },
     "downloads": {

@@ -11,7 +11,7 @@ import {
   crc32,
 } from "../data/src/bridge-session.js?v=lifecycle-20261102";
 import { installBridgeMenu } from "./bridge-menu.js?v=20261102";
-import { installNativeDownloads } from "./native-downloads.js?v=20261101";
+import { installNativeDownloads } from "./native-downloads.js?v=core-info-20261102";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
 
 const elements = new Map(
@@ -146,6 +146,8 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
         catalog: coreCatalog[profile.core],
         select: $("native-platform"),
         download: $("core-download"),
+        infoDownload: $("core-info-download"),
+        infoHint: $("core-info-install"),
         hint: $("native-platform-hint"),
         instructions: $("core-build"),
       });

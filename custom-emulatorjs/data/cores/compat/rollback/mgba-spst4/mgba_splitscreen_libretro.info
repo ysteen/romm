@@ -1,0 +1,36 @@
+# Source: https://github.com/Spuds0588/mgba-splitscreen/tree/f1d5975d77285f77affbfe64b7050ebd5c4b6a77
+# License: MPL-2.0
+display_name = "mGBA Splitscreen"
+authors = "Spuds0588 (mgba-splitscreen), endrift (mGBA)"
+supported_extensions = "gba"
+corename = "mGBA Splitscreen"
+license = "MPLv2.0"
+permissions = ""
+categories = "Emulator"
+display_version = "0.1.0-f1d5975-rollback1"
+
+manufacturer = "Nintendo"
+systemname = "Game Boy Advance (2-4 linked players; multiplayer only)"
+systemid = "game_boy_advance"
+
+supports_no_game = "false"
+database = "Nintendo - Game Boy Advance"
+savestate = "true"
+savestate_features = "deterministic"
+cheats = "false"
+input_descriptors = "true"
+memory_descriptors = "false"
+libretro_saves = "true"
+core_options = "true"
+load_subsystem = "true"
+hw_render = "false"
+needs_fullpath = "false"
+disk_control = "false"
+is_experimental = "true"
+
+description = "Two to four linked Game Boy Advance consoles using the same cartridge. Load one GBA ROM and select the player count, or load the same ROM into each GBA Link subsystem slot. Includes the SPST4 rollback state format for matching browser and RetroArch rooms."
+
+firmware_count = 1
+firmware0_desc = "gba_bios.bin (Game Boy Advance BIOS)"
+firmware0_path = "gba_bios.bin"
+firmware0_opt = "true"

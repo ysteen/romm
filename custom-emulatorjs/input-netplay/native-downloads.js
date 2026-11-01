@@ -70,6 +70,8 @@ export async function installNativeDownloads({
   catalog,
   select,
   download,
+  infoDownload,
+  infoHint,
   hint,
   instructions,
   browser = navigator,
@@ -80,6 +82,16 @@ export async function installNativeDownloads({
     select.append(new Option(build.label, id));
   function update() {
     const build = builds[select.value];
+    const coreInfo = catalog.native.coreInfo;
+    if (infoDownload && infoHint) {
+      infoDownload.hidden = infoHint.hidden = !build || !coreInfo;
+      if (build && coreInfo) {
+        infoDownload.href = coreInfo.path;
+        infoDownload.download = coreInfo.path.split("/").at(-1);
+      } else {
+        infoDownload.removeAttribute("href");
+      }
+    }
     download.hidden = !build;
     if (build) {
       download.href = build.path;

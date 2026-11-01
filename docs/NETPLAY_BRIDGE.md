@@ -138,8 +138,9 @@ The invitation contains the ROM/room identifiers, not the room password or servi
 1. Have a browser host create a room with native clients allowed. Ask for the displayed hostname, room port and room password. Open its invitation while signed in to RomM.
 2. Under **Play in RetroArch**, download the suggested core. This section is available before joining as a web player. Browser OS/CPU information selects a suggested platform; choose the architecture of your installed RetroArch app if it differs, such as a 32-bit app on a 64-bit phone. Unsupported or unknown platforms require a manual selection. Downloading does not reserve a player slot.
 3. Install the provided `.dll` (Windows) or `.so` (Android/Linux) using RetroArch's **Load Core → Install or Restore a Core**, or select the downloaded core with `-L`. Use the same unmodified ROM bytes and the room's core options. A stock core with the same general name is insufficient.
-4. For SameBoy/mGBA, load the same cartridge into every linked console slot through the core's subsystem content loader. SNES loads one cartridge. Set SameBoy audio output to **48000 Hz**.
-5. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. Do not start another native host or rely on the public RetroArch lobby. The browser host assigns your player number in the waiting room and selects **Start game** once everyone is ready. The native client waits until then.
+4. For mGBA Splitscreen, also select **Download core info (.info)**. Copy `mgba_splitscreen_libretro.info` into **Settings → Directory → Core Info**, without changing its name or adding `.txt`. Close RetroArch, remove `core_info.cache` from that folder if present, and reopen it. Select the installed **mGBA Splitscreen** under **Load Core**, then browse for the cartridge under **Load Content**. See the [RetroArch manual core installation guide](https://docs.libretro.com/guides/download-cores/) for the separate Cores and Core Info directories.
+5. For the qualified SameBoy/mGBA Netplay path, load the same cartridge into every linked console slot through the core's subsystem content loader. mGBA also accepts a single ROM through **Load Content** and opens a player-count menu; that shortcut has not been separately qualified for native bridge joining. SNES loads one cartridge. Set SameBoy audio output to **48000 Hz**.
+6. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. Do not start another native host or rely on the public RetroArch lobby. The browser host assigns your player number in the waiting room and selects **Start game** once everyone is ready. The native client waits until then.
 
 For two-player rooms, these commands use the subsystem identifiers exercised by the Linux qualification harness. Replace paths, host and port with the room details. Enter its password through RetroArch's prompt.
 
@@ -167,19 +168,21 @@ Switching through a running game's Netplay toolbar copies its current battery da
 
 Rollback replay suppresses audio output. Short processing stalls can still empty the browser audio queue. Room playback keeps about 60 ms of audio headroom, smooths sample discontinuities, and catches up a bounded number of delayed frames. This adds a small audio delay and reduces short dropouts; sustained low frame rate or long network stalls can still interrupt sound. Already-played predicted audio cannot be undone.
 
-| Symptom                                 | Check                                                                                                     |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| No multiplayer button                   | v2 UI, GB/GBC/GBA/SNES platform slug, updated image, four backend variables, `/api/netplay/bridge/config` |
-| Room does not open                      | Player error message, game permissions and updated frontend/runtime assets                                |
-| Room creation fails                     | Bridge health, shared network, identical service tokens, RomM permissions                                 |
-| Incorrect room password                 | Enter the password set by the host, not your RomM login password; passwordless rooms need no password     |
-| WebSocket fails                         | TLS, upgrade headers, exact allowed RomM origin, browser-reachable public URL                             |
-| Native connection times out             | Native-enabled room, correct allocated port, DNS-only hostname, TCP bindings/NAT/firewall                 |
-| Waiting for players                     | All chosen slots must join and have a unique player number, then the host selects Start game              |
-| Core/cartridge mismatch                 | Room-provided core, identical ROM bytes, player count and options                                         |
-| SNES is rejected                        | NTSC LoROM/HiROM restriction; supported single-ROM archive/header layout                                  |
-| Expected personal native save is absent | Native guests inherit host state; separate native guest SRAM import is unsupported                        |
-| Disconnect or host closes               | Guests can rejoin before starting; a host departure or any departure during play requires a new room      |
+| Symptom                                 | Check                                                                                                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| No multiplayer button                   | v2 UI, GB/GBC/GBA/SNES platform slug, updated image, four backend variables, `/api/netplay/bridge/config`                                                                |
+| Room does not open                      | Player error message, game permissions and updated frontend/runtime assets                                                                                               |
+| Room creation fails                     | Bridge health, shared network, identical service tokens, RomM permissions                                                                                                |
+| Incorrect room password                 | Enter the password set by the host, not your RomM login password; passwordless rooms need no password                                                                    |
+| WebSocket fails                         | TLS, upgrade headers, exact allowed RomM origin, browser-reachable public URL                                                                                            |
+| Native connection times out             | Native-enabled room, correct allocated port, DNS-only hostname, TCP bindings/NAT/firewall                                                                                |
+| Waiting for players                     | All chosen slots must join and have a unique player number, then the host selects Start game                                                                             |
+| Core/cartridge mismatch                 | Room-provided core, identical ROM bytes, player count and options                                                                                                        |
+| GBA files missing from Load Content     | Install the room's `.info` in Core Info, close RetroArch and remove `core_info.cache`; temporarily disable Settings → File Browser → Filter Unknown Extensions if needed |
+| ZIP contents missing or not loading     | Extract the `.gba` first; the core accepts GBA bytes and RetroArch handles archive extraction                                                                            |
+| SNES is rejected                        | NTSC LoROM/HiROM restriction; supported single-ROM archive/header layout                                                                                                 |
+| Expected personal native save is absent | Native guests inherit host state; separate native guest SRAM import is unsupported                                                                                       |
+| Disconnect or host closes               | Guests can rejoin before starting; a host departure or any departure during play requires a new room                                                                     |
 
 For qualification details, see [rollback room behavior and browser verification](ROLLBACK_ROOMS.md) and the [standalone core qualification report](https://github.com/ysteen/retroarch-netplay-bridge/blob/main/docs/core-qualification.md). The checks use original diagnostic games; they do not establish compatibility for every commercial title. SameBoy's attempted long soak is not recorded as a pass.
 

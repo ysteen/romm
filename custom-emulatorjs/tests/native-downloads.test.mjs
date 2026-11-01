@@ -84,6 +84,34 @@ test("blocked client hints fall back to the user agent", async () => {
   );
 });
 
+test("mGBA ships matching core info for GBA filtering and subsystem discovery", async () => {
+  const base = new URL("../input-netplay/", import.meta.url);
+  const catalog = JSON.parse(
+    await readFile(new URL("bridge-cores.json", base), "utf8"),
+  );
+  const profile = catalog.mgba_splitscreen.native;
+  assert(profile.coreInfo, "The custom core needs its own info download");
+  const url = new URL(profile.coreInfo.path, base);
+  assert.equal(
+    url.pathname.split("/").at(-1),
+    "mgba_splitscreen_libretro.info",
+  );
+  const bytes = await readFile(url);
+  assert.equal(
+    createHash("sha256").update(bytes).digest("hex"),
+    profile.coreInfo.sha256,
+  );
+  const fields = Object.fromEntries(
+    [...bytes.toString().matchAll(/^(\w+)\s*=\s*"([^"]*)"/gm)].map(
+      ([, key, value]) => [key, value],
+    ),
+  );
+  assert.equal(fields.supported_extensions, "gba");
+  assert.equal(fields.corename, profile.coreName);
+  assert.equal(fields.display_version, profile.coreVersion);
+  assert.equal(fields.load_subsystem, "true");
+});
+
 test("all catalog downloads exist and match their core versions and checksums", async () => {
   const base = new URL("../input-netplay/", import.meta.url);
   const catalog = JSON.parse(

@@ -102,6 +102,18 @@
         <p id="native-platform-hint" class="hint"></p>
         <p><a id="core-download" download hidden>Download matching core</a></p>
         <p>
+          <a id="core-info-download" download hidden
+            >Download core info (.info)</a
+          >
+        </p>
+        <p id="core-info-install" class="hint" hidden>
+          Also copy the .info file into the folder shown under RetroArch
+          Settings → Directory → Core Info. Close RetroArch, remove
+          core_info.cache from that folder if present, then reopen it. Select
+          the matching core under Load Core, then choose your game under Load
+          Content.
+        </p>
+        <p>
           <a id="core-build" target="_blank" rel="noopener"
             >Source and build instructions</a
           >
@@ -112,6 +124,6 @@
       <p id="play-hint" class="hint"></p>
       <p id="save-hint" class="hint"></p>
     </main>
-    <script type="module" src="bridge.js?v=lifecycle-20261102"></script>
+    <script type="module" src="bridge.js?v=core-info-20261102"></script>
   </body>
 </html>

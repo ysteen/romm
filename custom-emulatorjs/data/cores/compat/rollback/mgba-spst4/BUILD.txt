@@ -1,6 +1,12 @@
 # mGBA Splitscreen compatibility core
 
-The included `mgba_splitscreen_libretro.so` is a qualified Linux x86_64 RetroArch core. The RetroArch application is unchanged. Select this core with **Load Core → Install or Restore a Core**, then load the matching cartridge and connect through Netplay.
+The included `mgba_splitscreen_libretro.so` is a qualified Linux x86_64 RetroArch core. The RetroArch application is unchanged. Install the core for your platform with **Load Core → Install or Restore a Core**.
+
+Also download `mgba_splitscreen_libretro.info` from the room and copy it, without renaming, into the folder shown under **Settings → Directory → Core Info**. This file registers `.gba` content and the GBA Link subsystems. Close RetroArch, remove `core_info.cache` from that folder if present, then reopen it. Select **Load Core → mGBA Splitscreen**, then **Load Content** to browse for the game. The core installation browser selects DLL/SO files, not games.
+
+If GBA files remain hidden, turn off **Settings → File Browser → Filter Unknown Extensions** temporarily. Under **Information → Core Information**, the core should show GBA as a supported extension. The info file belongs in the configured Core Info directory; the DLL belongs in the Cores directory. Windows must not append `.txt` to the info filename.
+
+The core accepts one `.gba` and opens a player-count menu. For the qualified two-player Netplay path, use the **GBA Link 2 Player** subsystem and load the same cartridge in both slots. RetroArch handles supported ZIP archives before passing the ROM to the core; extract the `.gba` first when troubleshooting archive browsing. Use matching cartridges and core options before connecting through Netplay.
 
 Source: https://github.com/Spuds0588/mgba-splitscreen/tree/f1d5975d77285f77affbfe64b7050ebd5c4b6a77
 
