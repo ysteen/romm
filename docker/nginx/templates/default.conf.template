@@ -23,13 +23,13 @@ map $request_uri $coep_header {
     default        "";
     ~^/rom/[0-9]+/(ejs|jsdos)/?(?:\?.*)?$ "require-corp";
     ~^/console/rom/[0-9]+/play/?(?:\?.*)?$ "require-corp";
-    ~^/assets/emulatorjs/input-netplay/player\.html(?:\?.*)?$ "require-corp";
+    ~^/assets/emulatorjs/input-netplay/(player|bridge)\.html(?:\?.*)?$ "require-corp";
 }
 map $request_uri $coop_header {
     default        "";
     ~^/rom/[0-9]+/(ejs|jsdos)/?(?:\?.*)?$ "same-origin";
     ~^/console/rom/[0-9]+/play/?(?:\?.*)?$ "same-origin";
-    ~^/assets/emulatorjs/input-netplay/player\.html(?:\?.*)?$ "same-origin";
+    ~^/assets/emulatorjs/input-netplay/(player|bridge)\.html(?:\?.*)?$ "same-origin";
 }
 
 # The EasyRPG web player fetches each file of a game from games/<rom id>-<user id>/

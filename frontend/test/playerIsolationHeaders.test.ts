@@ -91,6 +91,8 @@ describe("playerIsolationHeaders", () => {
     "/rom/1/ejs?core=snes9x",
     "/console/rom/1/play",
     "/assets/emulatorjs/input-netplay/player.html?v=20261019.5",
+    "/assets/emulatorjs/input-netplay/bridge.html",
+    "/assets/emulatorjs/input-netplay/bridge.html?v=20261102",
   ])("isolates %s", (url) => {
     expect(headersFor(url)).toEqual(ISOLATED);
   });

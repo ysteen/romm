@@ -19,6 +19,23 @@ const output = resolve(
 const origin = "http://127.0.0.1:8081";
 const romId = 2147483589;
 const playerPath = "/assets/emulatorjs/input-netplay/bridge.html";
+const nginx = await readFile(
+  resolve(root, "docker/nginx/templates/default.conf.template"),
+  "utf8",
+);
+const isolatedPaths = [...nginx.matchAll(/^\s+~(\S+) "require-corp";/gm)].map(
+  (match) => new RegExp(match[1]),
+);
+function isolationHeaders(url) {
+  return isolatedPaths.some((pattern) =>
+    pattern.test(url.pathname + url.search),
+  )
+    ? {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+      }
+    : {};
+}
 const report = {
   application: "Production v2 frontend with isolated API fixtures",
   embedded:
@@ -182,7 +199,11 @@ async function fixture(
       return route.abort();
     }
     if (path === playerPath)
-      return route.fulfill({ contentType: "text/html", body: playerDocument });
+      return route.fulfill({
+        contentType: "text/html",
+        body: playerDocument,
+        headers: isolationHeaders(url),
+      });
     if (path.startsWith("/api/")) {
       if (path.includes("/content/"))
         return route.fulfill({
@@ -287,6 +308,7 @@ async function fixture(
       return route.fulfill({
         body,
         contentType: contentTypes[extname(file)] ?? "application/octet-stream",
+        headers: isolationHeaders(url),
       });
     } catch {
       evidence.missingAssets.push(path);
