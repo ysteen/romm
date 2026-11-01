@@ -5,9 +5,11 @@
   "target": "windows-x86_64",
   "compiler": "clang version 23.1.0 (https://github.com/llvm/llvm-project.git ea7d852a70e8bdfaf601d6626a760f9771b2c4b4)",
   "sha256": {
-    "mgba_splitscreen_libretro.dll": "701d24e5987d49848321e0835fd7b4a10f7270acbb96d3bfbaf1677785f35fde"
+    "mgba_splitscreen_libretro.dll": "9d41c8de697bf047dd8802dab1025e74e2613f3d84a2a7311cd60a7fb9a4969c"
   },
   "stateProfile": "SPST4",
   "patchSha256": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+  "startupPatchSha256": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede",
+  "nativeStartup": "configured-players-v1",
   "platformPatchSha256": "6b6e55deed5410c4b59a8245452476dc707258998cc9d48f14e030b6d488c872"
 }

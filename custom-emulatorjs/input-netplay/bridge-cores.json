@@ -29,7 +29,8 @@
     "downloads": {
       "linux-x86_64": {
         "label": "Linux x86_64",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so"
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so",
+        "sha256": "4437abafb749c883482e3f6f0451271eb091f8736abfd2b205981325e41932c8"
       },
       "windows-x86_64": {
         "label": "Windows x64 (64-bit)",
@@ -104,48 +105,49 @@
       },
       "coreInfo": {
         "path": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.info",
-        "sha256": "17ec3288f295b86694f3f62ff0a9e55ebfe05c63d2606562631c867b53240f05"
+        "sha256": "6ae1f79afd9d7972389a4225999521cffa4792bc3673b816daffd461bf12c775"
       }
     },
     "downloads": {
       "linux-x86_64": {
         "label": "Linux x86_64",
-        "path": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so"
+        "path": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so",
+        "sha256": "5138cf39770d10e4bd50c02a9b1889e27dfcf0145446fe0aa4a3e6a961678089"
       },
       "windows-x86_64": {
         "label": "Windows x64 (64-bit)",
         "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-x86_64/mgba_splitscreen_libretro.dll",
-        "sha256": "701d24e5987d49848321e0835fd7b4a10f7270acbb96d3bfbaf1677785f35fde"
+        "sha256": "9d41c8de697bf047dd8802dab1025e74e2613f3d84a2a7311cd60a7fb9a4969c"
       },
       "windows-x86": {
         "label": "Windows x86 (32-bit)",
         "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-x86/mgba_splitscreen_libretro.dll",
-        "sha256": "000df90fd4db581fd9f985c8062bbaf37b96063055bcf622085a1c8da06957c9"
+        "sha256": "df10dc94668747e6e2bab97aa7b5f93002371e696dcfde04ab29e77c48311f41"
       },
       "windows-arm64": {
         "label": "Windows ARM64",
         "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-arm64/mgba_splitscreen_libretro.dll",
-        "sha256": "28ae24810d1ca79143141967bb3e88d3debbc40d74d38af4c7e7cee56d1bac50"
+        "sha256": "89d6f68a47524afacdaa71f128a5c3094dc300f169ba5647dde4ec6c73a6e8f9"
       },
       "android-arm64-v8a": {
         "label": "Android ARM64 (arm64-v8a)",
         "path": "../data/cores/compat/rollback/mgba-spst4/native/android-arm64-v8a/mgba_splitscreen_libretro.so",
-        "sha256": "69f75b7e2cd0a5e1838ba44ffa89108282e1030d1ac1bfb4dfc01eb40bf8972e"
+        "sha256": "65be08511f9b3bc208ef6d2ac2d0a40839428cca6eff4e0eb74118b53eb39697"
       },
       "android-armeabi-v7a": {
         "label": "Android ARM32 (armeabi-v7a)",
         "path": "../data/cores/compat/rollback/mgba-spst4/native/android-armeabi-v7a/mgba_splitscreen_libretro.so",
-        "sha256": "394a3d8873e847904e9ff30fe9ef89f9baea332256b34ef218037a83f882b9cc"
+        "sha256": "70cb553dbf3cf36a37b28cd4d623b24769f4a959420e4e84543e84814e879cc2"
       },
       "android-x86_64": {
         "label": "Android x86_64",
         "path": "../data/cores/compat/rollback/mgba-spst4/native/android-x86_64/mgba_splitscreen_libretro.so",
-        "sha256": "e19ebba01d728f72a51136439523ee60ee3b20f92a6a2ca42a9bc2ca9bd9228b"
+        "sha256": "9eaca80693337f78b4c71c6c857f0bf31161a79e68aef789eec0871c0ac6b4cf"
       },
       "android-x86": {
         "label": "Android x86 (32-bit)",
         "path": "../data/cores/compat/rollback/mgba-spst4/native/android-x86/mgba_splitscreen_libretro.so",
-        "sha256": "7b15ae14709425d144a69470d193c2228706f70f74ed97c187ed940785683c21"
+        "sha256": "65735665ff973790a484c8960f492bf34033fc338abeb1024f33d927b3db27ac"
       }
     }
   },
@@ -179,7 +181,8 @@
     "downloads": {
       "linux-x86_64": {
         "label": "Linux x86_64",
-        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x_libretro.so"
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x_libretro.so",
+        "sha256": "3f7ee1087d80679d32f2253f604377febb37029f90e9d68506d480b0834a735e"
       },
       "windows-x86_64": {
         "label": "Windows x64 (64-bit)",

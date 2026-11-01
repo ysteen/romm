@@ -11,7 +11,7 @@ import {
   crc32,
 } from "../data/src/bridge-session.js?v=lifecycle-20261102";
 import { installBridgeMenu } from "./bridge-menu.js?v=20261102";
-import { installNativeDownloads } from "./native-downloads.js?v=core-info-20261102";
+import { installNativeDownloads } from "./native-downloads.js?v=native-startup-20261102";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
 
 const elements = new Map(
@@ -151,6 +151,7 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
         hint: $("native-platform-hint"),
         instructions: $("core-build"),
       });
+      $("native-game-load").hidden = profile.core !== "mgba_splitscreen";
     }
     const nested =
       rom.has_nested_single_file && rom.files?.length === 1
@@ -511,7 +512,7 @@ async function launch(joinId) {
     $("disconnect").hidden = false;
     $("connection").hidden = false;
     $("address").textContent = room.native_port
-      ? `RetroArch: ${room.native_host}:${room.native_port}`
+      ? `RetroArch host address: ${room.native_host}|${room.native_port}`
       : `Web room: ${room.id}`;
     $("password").textContent = room.password
       ? `Room password: ${room.password}`

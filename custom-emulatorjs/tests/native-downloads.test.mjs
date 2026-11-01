@@ -5,7 +5,21 @@ import test from "node:test";
 import {
   detectNativeTarget,
   nativeTarget,
+  versionedDownload,
 } from "../input-netplay/native-downloads.js";
+
+test("native downloads invalidate cached binaries without changing their filenames", () => {
+  const path = "../data/cores/example_libretro.dll";
+  assert.notEqual(
+    versionedDownload({ path, sha256: "old" }),
+    versionedDownload({ path, sha256: "new" }),
+  );
+  assert.equal(
+    versionedDownload({ path, sha256: "new" }),
+    `${path}?sha256=new`,
+  );
+  assert.equal(versionedDownload({ path }), path);
+});
 
 const cases = [
   [
@@ -146,6 +160,19 @@ test("all catalog downloads exist and match their core versions and checksums", 
       assert.equal(digest, manifest.sha256[url.pathname.split("/").at(-1)]);
       assert.equal(manifest.version, profile.native.coreVersion);
       assert.equal(manifest.target, target);
+      if (core === "mgba_splitscreen") {
+        const patch = await readFile(
+          new URL(
+            "../data/cores/compat/rollback/mgba-spst4/mgba-native-startup.patch",
+            base,
+          ),
+        );
+        assert.equal(manifest.nativeStartup, "configured-players-v1");
+        assert.equal(
+          manifest.startupPatchSha256,
+          createHash("sha256").update(patch).digest("hex"),
+        );
+      }
     }
   }
 });

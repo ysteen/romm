@@ -139,8 +139,8 @@ The invitation contains the ROM/room identifiers, not the room password or servi
 2. Under **Play in RetroArch**, download the suggested core. This section is available before joining as a web player. Browser OS/CPU information selects a suggested platform; choose the architecture of your installed RetroArch app if it differs, such as a 32-bit app on a 64-bit phone. Unsupported or unknown platforms require a manual selection. Downloading does not reserve a player slot.
 3. Install the provided `.dll` (Windows) or `.so` (Android/Linux) using RetroArch's **Load Core → Install or Restore a Core**, or select the downloaded core with `-L`. Use the same unmodified ROM bytes and the room's core options. A stock core with the same general name is insufficient.
 4. For mGBA Splitscreen, also select **Download core info (.info)**. Copy `mgba_splitscreen_libretro.info` into **Settings → Directory → Core Info**, without changing its name or adding `.txt`. Close RetroArch, remove `core_info.cache` from that folder if present, and reopen it. Select the installed **mGBA Splitscreen** under **Load Core**, then browse for the cartridge under **Load Content**. See the [RetroArch manual core installation guide](https://docs.libretro.com/guides/download-cores/) for the separate Cores and Core Info directories.
-5. For the qualified SameBoy/mGBA Netplay path, load the same cartridge into every linked console slot through the core's subsystem content loader. mGBA also accepts a single ROM through **Load Content** and opens a player-count menu; that shortcut has not been separately qualified for native bridge joining. SNES loads one cartridge. Set SameBoy audio output to **48000 Hz**.
-6. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. Do not start another native host or rely on the public RetroArch lobby. The browser host assigns your player number in the waiting room and selects **Start game** once everyone is ready. The native client waits until then.
+5. For mGBA, load one matching GBA through **Load Content**. Updated native builds boot two linked consoles directly. For three or four players, change **Quick Menu → Core Options → Players per ROM**, then reload before joining. The GBA Link subsystems also accept the same cartridge in every slot. If **How many players** still appears, quit RetroArch completely and replace its installed DLL/SO with the room's current download. The startup patch preserves the state format; these replacement binaries have static ABI checks, with interactive validation pending user testing. SameBoy uses its two-console subsystem and **48000 Hz** audio; SNES loads one cartridge.
+6. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. RetroArch 1.22.2's address prompt accepts `hostname|port` (for example `192.168.3.100|55435`), or set the server address and TCP port separately. Do not enter `hostname:port` in that prompt. Do not start another native host or rely on the public RetroArch lobby. The browser host assigns your player number in the waiting room and selects **Start game** once everyone is ready. The native client waits until then.
 
 For two-player rooms, these commands use the subsystem identifiers exercised by the Linux qualification harness. Replace paths, host and port with the room details. Enter its password through RetroArch's prompt.
 
@@ -159,6 +159,10 @@ retroarch -L /path/to/snes9x_libretro.so /path/to/game.sfc \
 ```
 
 The port is allocated per room and may differ from `55435`. Native guests start from the host's synchronized machine state. Importing a native guest's separate personal battery save into a handheld link seat is not implemented.
+
+Entering the host address before loading content only defers the connection in
+unmodified RetroArch; it does not reserve or display a room participant. A
+separate RomM waiting-room registration would be needed for that flow.
 
 ## Save behavior and troubleshooting
 

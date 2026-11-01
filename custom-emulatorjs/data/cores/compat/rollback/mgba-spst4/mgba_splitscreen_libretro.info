@@ -28,7 +28,7 @@ needs_fullpath = "false"
 disk_control = "false"
 is_experimental = "true"
 
-description = "Two to four linked Game Boy Advance consoles using the same cartridge. Load one GBA ROM and select the player count, or load the same ROM into each GBA Link subsystem slot. Includes the SPST4 rollback state format for matching browser and RetroArch rooms."
+description = "Two to four linked Game Boy Advance consoles using the same cartridge. Load one GBA ROM to boot with the Players per ROM core option (default: 2), or load the same ROM into each GBA Link subsystem slot. Includes the SPST4 rollback state format for matching browser and RetroArch rooms."
 
 firmware_count = 1
 firmware0_desc = "gba_bios.bin (Game Boy Advance BIOS)"

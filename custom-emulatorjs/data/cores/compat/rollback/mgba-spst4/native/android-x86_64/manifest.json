@@ -5,12 +5,14 @@
   "target": "android-x86_64",
   "compiler": "Android (16134705, +pgo, +bolt, +lto, +mlgo, based on r574158c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 9f872551d3c681d06fd303b36f16ed5c274735eb)",
   "sha256": {
-    "mgba_splitscreen_libretro.so": "e19ebba01d728f72a51136439523ee60ee3b20f92a6a2ca42a9bc2ca9bd9228b"
+    "mgba_splitscreen_libretro.so": "9eaca80693337f78b4c71c6c857f0bf31161a79e68aef789eec0871c0ac6b4cf"
   },
   "androidApi": 24,
   "androidAbi": "x86_64",
   "pageAlignment": 16384,
   "stateProfile": "SPST4",
   "patchSha256": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+  "startupPatchSha256": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede",
+  "nativeStartup": "configured-players-v1",
   "platformPatchSha256": "6b6e55deed5410c4b59a8245452476dc707258998cc9d48f14e030b6d488c872"
 }

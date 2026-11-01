@@ -6,9 +6,10 @@
   "patchSha256": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
   "sha256": {
     "mgba_splitscreen-wasm.data": "1bc7f133dc8568e6f1bfcdd43f635c7ebd1dfab4bc0df09de25ece166a8c1dbc",
-    "mgba_splitscreen_libretro.so": "200be7228071a8d66f29ad3c79bd1b9cf902b9717b2807cb1138d37d6a1a4f4a",
+    "mgba_splitscreen_libretro.so": "5138cf39770d10e4bd50c02a9b1889e27dfcf0145446fe0aa4a3e6a961678089",
     "license.txt": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
-    "mgba-rollback-state.patch": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701"
+    "mgba-rollback-state.patch": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+    "mgba-native-startup.patch": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede"
   },
   "platform": "linux-x86_64",
   "nativeCore": "mgba_splitscreen_libretro.so",
@@ -18,5 +19,7 @@
   "sourceArchive": "https://github.com/Spuds0588/mgba-splitscreen/archive/f1d5975d77285f77affbfe64b7050ebd5c4b6a77.tar.gz",
   "buildInstructions": "BUILD.txt",
   "buildScript": "build-retroarch-rollback-mgba.sh",
-  "patch": "mgba-rollback-state.patch"
+  "patch": "mgba-rollback-state.patch",
+  "nativeStartup": "configured-players-v1",
+  "startupPatchSha256": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede"
 }

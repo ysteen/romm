@@ -86,7 +86,7 @@ export async function installNativeDownloads({
     if (infoDownload && infoHint) {
       infoDownload.hidden = infoHint.hidden = !build || !coreInfo;
       if (build && coreInfo) {
-        infoDownload.href = coreInfo.path;
+        infoDownload.href = versionedDownload(coreInfo);
         infoDownload.download = coreInfo.path.split("/").at(-1);
       } else {
         infoDownload.removeAttribute("href");
@@ -94,7 +94,7 @@ export async function installNativeDownloads({
     }
     download.hidden = !build;
     if (build) {
-      download.href = build.path;
+      download.href = versionedDownload(build);
       download.download = build.path.split("/").at(-1);
       download.textContent = `Download core (${build.label})`;
       hint.textContent =
@@ -111,4 +111,8 @@ export async function installNativeDownloads({
   const detected = await detectNativeTarget(browser);
   if (!select.value && builds[detected]) select.value = detected;
   update();
+}
+
+export function versionedDownload(build) {
+  return build.sha256 ? `${build.path}?sha256=${build.sha256}` : build.path;
 }

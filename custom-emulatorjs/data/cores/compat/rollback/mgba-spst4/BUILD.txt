@@ -6,7 +6,9 @@ Also download `mgba_splitscreen_libretro.info` from the room and copy it, withou
 
 If GBA files remain hidden, turn off **Settings → File Browser → Filter Unknown Extensions** temporarily. Under **Information → Core Information**, the core should show GBA as a supported extension. The info file belongs in the configured Core Info directory; the DLL belongs in the Cores directory. Windows must not append `.txt` to the info filename.
 
-The core accepts one `.gba` and opens a player-count menu. For the qualified two-player Netplay path, use the **GBA Link 2 Player** subsystem and load the same cartridge in both slots. RetroArch handles supported ZIP archives before passing the ROM to the core; extract the `.gba` first when troubleshooting archive browsing. Use matching cartridges and core options before connecting through Netplay.
+The native core accepts one `.gba` through **Load Content** and boots the **Players per ROM** setting directly (default: 2). For three or four players, change that option under **Quick Menu → Core Options**, then reload the game before joining. It does not open the in-core player-count menu, so a Netplay-triggered reload can initialize without menu input. The **GBA Link 2/3/4 Player** subsystems remain available; use the same cartridge in every slot. RetroArch handles supported ZIP archives before passing the ROM to the core; extract the `.gba` first when troubleshooting archive browsing.
+
+Native startup patch: mgba-native-startup.patch. Manifests identify this build as `nativeStartup: configured-players-v1` and include `startupPatchSha256`. The patch changes startup only; the SPST4 state format and library compatibility version remain unchanged. Replacement binaries passed ABI/export/checksum inspection; interactive RetroArch validation is pending user testing.
 
 Source: https://github.com/Spuds0588/mgba-splitscreen/tree/f1d5975d77285f77affbfe64b7050ebd5c4b6a77
 
