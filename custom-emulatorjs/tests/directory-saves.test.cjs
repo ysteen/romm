@@ -6,7 +6,7 @@ const { runInNewContext } = require("node:vm");
 
 function loadClass(file, name) {
   const source = readFileSync(require.resolve("../data/src/" + file), "utf8")
-    .replace(/^import .*;$/gm, "")
+    .replace(/^import\s[^;]+;/gm, "")
     .replace(/^export .*;$/gm, "");
   return runInNewContext(source + "\n" + name, {
     Uint8Array,
