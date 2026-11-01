@@ -1,0 +1,15 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1045,7 +1045,10 @@ if(BUILD_LIBRETRO_SPLITSCREEN)
+ 	if(M_CORE_GB)
+ 		list(APPEND SP_SIO_SRC ${GB_SIO_SRC})
+ 	endif()
+-	add_library(mgba_splitscreen_libretro SHARED ${CORE_SRC} ${SP_SRC} ${SP_SIO_SRC} ${CORE_VFS_SRC})
++	set(SP_CORE_SRC ${CORE_SRC})
++	# MINIMAL_CORE=2 omits directory APIs, including the Windows directory backend.
++	list(FILTER SP_CORE_SRC EXCLUDE REGEX "/vfs-w32[.]c$")
++	add_library(mgba_splitscreen_libretro SHARED ${SP_CORE_SRC} ${SP_SRC} ${SP_SIO_SRC} ${CORE_VFS_SRC})
+ 	add_dependencies(mgba_splitscreen_libretro ${BINARY_NAME}-version-info)
+ 	set_target_properties(mgba_splitscreen_libretro PROPERTIES PREFIX "" OUTPUT_NAME "mgba_splitscreen_libretro" COMPILE_DEFINITIONS "__LIBRETRO__;COLOR_16_BIT;COLOR_5_6_5;DISABLE_THREADING;MGBA_STANDALONE;${OS_DEFINES};${FUNCTION_DEFINES};ENABLE_VFS;MINIMAL_CORE=2")
+ 	target_include_directories(mgba_splitscreen_libretro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro-splitscreen)

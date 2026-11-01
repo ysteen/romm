@@ -1,0 +1,13 @@
+{
+  "core": "mGBA Splitscreen",
+  "version": "0.1.0-f1d5975-rollback1",
+  "sourceRevision": "f1d5975d77285f77affbfe64b7050ebd5c4b6a77",
+  "target": "windows-arm64",
+  "compiler": "clang version 23.1.0 (https://github.com/llvm/llvm-project.git ea7d852a70e8bdfaf601d6626a760f9771b2c4b4)",
+  "sha256": {
+    "mgba_splitscreen_libretro.dll": "28ae24810d1ca79143141967bb3e88d3debbc40d74d38af4c7e7cee56d1bac50"
+  },
+  "stateProfile": "SPST4",
+  "patchSha256": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+  "platformPatchSha256": "6b6e55deed5410c4b59a8245452476dc707258998cc9d48f14e030b6d488c872"
+}

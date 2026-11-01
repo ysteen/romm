@@ -1,0 +1,13 @@
+{
+  "core": "Snes9x",
+  "version": "1.632d4cce69",
+  "sourceRevision": "2d4cce69f4fe1c53a2c1423cdc06f2dea8b870a1",
+  "target": "android-armeabi-v7a",
+  "compiler": "Android (16134705, +pgo, +bolt, +lto, +mlgo, based on r574158c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 9f872551d3c681d06fd303b36f16ed5c274735eb)",
+  "sha256": {
+    "snes9x_libretro.so": "6685d30fd7f66f2b46a3a1f5b5db8eda1b1873365b7fc7116af81c65b398e2aa"
+  },
+  "androidApi": 24,
+  "androidAbi": "armeabi-v7a",
+  "pageAlignment": 16384
+}

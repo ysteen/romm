@@ -12,7 +12,9 @@ Every player runs a local core. The bridge exchanges inputs and synchronization 
 | GBA    | mGBA Splitscreen `0.1.0-f1d5975-rollback1` | Two to four linked consoles; two-player live UI qualified |
 | SNES   | Snes9x `1.632d4cce69`                      | One console, two joypads                                  |
 
-The room provides the matching **Linux x86_64** native core. SameBoy and mGBA need these patched builds. RetroArch itself requires no modification; qualification used RetroArch 1.22.2. Windows and Android cores are not provided or qualified. SNES currently accepts standard NTSC LoROM/HiROM up to 4 MiB, including a single-ROM ZIP or a 512-byte copier header. PAL and extended/interleaved images are rejected.
+The room provides matching native cores for Linux x86_64; Windows x64, x86 and ARM64; and Android arm64-v8a, armeabi-v7a, x86_64 and x86. SameBoy and mGBA need these patched builds. RetroArch itself requires no modification; Linux qualification used RetroArch 1.22.2. Android builds target API 24 or later and use 16 KiB ELF alignment.
+
+Windows x64 and x86 passed DLL loading and version checks for all three cores. mGBA and Snes9x also passed rollback/replay and produced identical 120-frame states from a Linux snapshot. Android and Windows ARM64 passed binary architecture, exported API and dependency checks; device gameplay is not qualified. SNES currently accepts standard NTSC LoROM/HiROM up to 4 MiB, including a single-ROM ZIP or a 512-byte copier header. PAL and extended/interleaved images are rejected.
 
 ## Install the source and image
 
@@ -34,6 +36,8 @@ gh workflow run publish-custom.yml --repo ysteen/romm-image-builds \
 ```
 
 After that workflow succeeds, use its `sha-<12-character-commit>` app tag or digest in `ROMM_IMAGE`. See [private image installation](PRIVATE_GHCR.md) for registry login, the workflow's validation and matching worker versions. Pushing source does not publish an image automatically. The bridge currently builds from its source checkout with Compose.
+
+The standard branch is `custom/retroarch-dosbox-5.4.1`; multiplayer development stays on `custom/netplay-retroarch-bridge`. Shared DOSBox fixes are backported without the bridge. The same existing image packages use separate mutable tags: `5.4.1` for the standard branch and `5.4.1-netplay` for a checkout containing `compose.netplay.yml`. Immutable commit tags remain available for both. Use the matching channel for the RomForge worker as well.
 
 For an existing installation using this repository's Compose files, retain its existing `deploy/.env`, data directory and project name. Add the settings below to that env file. For a fresh installation, follow [the installation guide](PRIVATE_GHCR.md) first to create the database/auth settings and mount directories.
 
@@ -114,7 +118,7 @@ Check bridge startup with `curl -fsS http://127.0.0.1:8082/health`. While signed
 
 1. Sign in to RomM with game access and emulation permission. Use the **v2 UI** and open a supported game's player page.
 2. Select **Relay server** (the label is translated). Allow the popup. The ordinary SNES player's in-game **Netplay** button also opens this flow when configured.
-3. Select the player count. Enable **Allow desktop RetroArch clients** if a native player will join. A room password is optional; leave it blank for a passwordless room. Select **Create room**.
+3. Select the player count. Enable **Allow RetroArch clients** if a native player will join. A room password is optional; leave it blank for a passwordless room. Select **Create room**.
 4. Copy the room invitation and, if set, send the displayed room password separately. Keep the host window open.
 5. A web guest signs in to the same RomM server and opens the invitation, enters the room password if required and selects **Join room**. Alternatively, open that game's player page, select **Relay server**, and choose the room under **Open rooms**. Use a separate browser profile or device for a second account.
 6. Everyone enters the waiting room with **Not selected** as their player number, including the host. Each guest can choose or clear their own number. The host can change anyone's number, including native guests. A number already selected by another participant is unavailable; clear it first to exchange numbers.
@@ -123,12 +127,13 @@ Check bridge startup with `curl -fsS http://127.0.0.1:8082/health`. While signed
 
 The invitation contains the ROM/room identifiers, not the room password or service token. An invitation does not bypass the guest's RomM game permissions, even in a passwordless room. When set, the password is shared by the room, including native guests; per-player native passwords and native RomM login are not implemented.
 
-## Connect desktop RetroArch
+## Connect RetroArch on Windows, Android or Linux
 
-1. Have a browser host create a room with native clients allowed. Ask for the displayed hostname, room port, room password and matching core download.
-2. Install the provided `.so` using RetroArch's **Load Core → Install or Restore a Core**, or select the downloaded core with `-L`. Use the same unmodified ROM bytes and the room's core options. A stock core with the same general name is insufficient.
-3. For SameBoy/mGBA, load the same cartridge into every linked console slot through the core's subsystem content loader. SNES loads one cartridge. Set SameBoy audio output to **48000 Hz**.
-4. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. Do not start another native host or rely on the public RetroArch lobby. The browser host assigns your player number in the waiting room and selects **Start game** once everyone is ready. The native client waits until then.
+1. Have a browser host create a room with native clients allowed. Ask for the displayed hostname, room port and room password. Open its invitation while signed in to RomM.
+2. Under **Play in RetroArch**, download the suggested core. This section is available before joining as a web player. Browser OS/CPU information selects a suggested platform; choose the architecture of your installed RetroArch app if it differs, such as a 32-bit app on a 64-bit phone. Unsupported or unknown platforms require a manual selection. Downloading does not reserve a player slot.
+3. Install the provided `.dll` (Windows) or `.so` (Android/Linux) using RetroArch's **Load Core → Install or Restore a Core**, or select the downloaded core with `-L`. Use the same unmodified ROM bytes and the room's core options. A stock core with the same general name is insufficient.
+4. For SameBoy/mGBA, load the same cartridge into every linked console slot through the core's subsystem content loader. SNES loads one cartridge. Set SameBoy audio output to **48000 Hz**.
+5. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. Do not start another native host or rely on the public RetroArch lobby. The browser host assigns your player number in the waiting room and selects **Start game** once everyone is ready. The native client waits until then.
 
 For two-player rooms, these commands use the subsystem identifiers exercised by the Linux qualification harness. Replace paths, host and port with the room details. Enter its password through RetroArch's prompt.
 
@@ -170,6 +175,6 @@ For qualification details, see [rollback room behavior and browser verification]
 
 ## Maintain the adapter
 
-Qualified WASM packages, Linux cores, licenses, source revisions and hashes are in `custom-emulatorjs/data/cores/compat/rollback/`. The custom image copies those packages and the `bridge-*.js` client modules; `bridge-cores.json` selects the matching profile.
+WASM packages, native cores, licenses, source revisions and hashes are in `custom-emulatorjs/data/cores/compat/rollback/`. Windows/Android builds have per-target manifests in each core's `native/` directory. The custom image copies those packages and the `bridge-*.js` client modules; `bridge-cores.json` selects the matching profile and native downloads. Cross-platform build instructions are in the standalone project's `docs/native-builds.md`.
 
 Reusable browser modules are owned by the standalone repository. From its checkout, run `node scripts/sync-romm-client.mjs ../romm`, then run `node scripts/check-netplay-client.mjs` in RomM. RomM-specific profiles, UI and API remain here. Adapter CI checks vendored hashes and tests; the standalone CI builds/tests the bridge container and does not publish an image.

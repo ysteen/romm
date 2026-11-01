@@ -10,6 +10,7 @@ import {
   BridgeConnection,
   crc32,
 } from "../data/src/bridge-session.js?v=lobby-20261101";
+import { installNativeDownloads } from "./native-downloads.js?v=20261101";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
 
 const $ = (id) => document.getElementById(id);
@@ -104,6 +105,16 @@ async function initialize({ romId, theme }) {
       option.disabled = Number(option.value) > profile.maxPlayers;
     $("native").disabled = !coreCatalog[profile.core]?.native;
     $("native").checked = false;
+    if (coreCatalog[profile.core]?.native) {
+      $("native-details").hidden = false;
+      await installNativeDownloads({
+        catalog: coreCatalog[profile.core],
+        select: $("native-platform"),
+        download: $("core-download"),
+        hint: $("native-platform-hint"),
+        instructions: $("core-build"),
+      });
+    }
     const nested =
       rom.has_nested_single_file && rom.files?.length === 1
         ? rom.files[0].file_name
@@ -385,14 +396,9 @@ async function launch(joinId) {
     invite.searchParams.set("room", room.id);
     $("room-link").href = invite.href;
     $("room-link").textContent = "Open room invitation";
-    $("native-details").hidden = !nativeAllowed;
     $("core-info").textContent = nativeAllowed
       ? `${build.coreName} ${build.coreVersion}. ${profile.standardGame ? "Load the game once" : `Load the same cartridge in all ${players} link slots`}, then connect through RetroArch Netplay.${profile.core === "sameboy" ? " Use 48000 Hz audio." : ""}`
       : "Share this invitation with the other players.";
-    $("core-download").href = new URL(build.nativeDownload, location.href).href;
-    $("core-download").textContent =
-      `Download matching core (${build.nativePlatform})`;
-    $("core-build").href = new URL(build.buildInstructions, location.href).href;
     let next = performance.now();
     ticker = setInterval(() => {
       const now = performance.now();

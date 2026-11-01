@@ -10,6 +10,9 @@ State patch: mgba-rollback-state.patch
 
 The local `retroarch-netplay-bridge` project provides `scripts/build-retroarch-rollback-mgba.sh`. Run it in a fresh `COMPAT_WORK` directory with the prepared Emscripten and RetroArch frontend dependencies; use `COMPAT_BUILD_WEB=1` for the matching web package. `manifest.json` records the tested artifact hashes.
 
-The exact library version is `0.1.0-f1d5975-rollback1`. Both participants need matching core options and cartridges. Windows binaries are not included in this package. See the upstream libretro build instructions for other platforms; these qualification results cover Linux and WebAssembly.
+The exact library version is `0.1.0-f1d5975-rollback1`. Both participants need matching core options and cartridges. Windows x64, x86 and ARM64 DLLs and Android arm64-v8a, armeabi-v7a, x86_64 and x86 shared libraries are in native/. Android builds require API 24 or later and use 16 KiB ELF alignment. Select the architecture of the installed RetroArch app; browser detection is only a suggestion. Each target has its own manifest.json. Windows x64/x86 library loading is checked; Android and Windows ARM64 device gameplay is not qualified.
 
 The source license is provided in `license.txt`.
+
+Cross-platform build recipe: https://github.com/ysteen/retroarch-netplay-bridge/blob/main/docs/native-builds.md
+Windows/Android build patch: mgba-native-platforms.patch (excludes the unused Windows directory backend from the minimal core).

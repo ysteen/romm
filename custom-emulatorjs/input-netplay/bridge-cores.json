@@ -25,6 +25,47 @@
       "manifest": "../data/cores/compat/rollback/sameboy-sbr2/manifest.json",
       "buildInstructions": "../data/cores/compat/rollback/sameboy-sbr2/BUILD.txt",
       "nativePlatform": "Linux x86_64"
+    },
+    "downloads": {
+      "linux-x86_64": {
+        "label": "Linux x86_64",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so"
+      },
+      "windows-x86_64": {
+        "label": "Windows x64 (64-bit)",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/windows-x86_64/sameboy_libretro.dll",
+        "sha256": "2bc658b1e950a4586102491db1879d09127201b5af6b23f7123251a404ecb464"
+      },
+      "windows-x86": {
+        "label": "Windows x86 (32-bit)",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/windows-x86/sameboy_libretro.dll",
+        "sha256": "77c33ed6818c980936826a86a8a0a0cc59b9220125467c293cea02398662280f"
+      },
+      "windows-arm64": {
+        "label": "Windows ARM64",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/windows-arm64/sameboy_libretro.dll",
+        "sha256": "f1c99d9a24deeadacb76e0f22d0bba6a5599602c5cb2bd2ee4cd8b597cad216d"
+      },
+      "android-arm64-v8a": {
+        "label": "Android ARM64 (arm64-v8a)",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-arm64-v8a/sameboy_libretro.so",
+        "sha256": "e6062f9fc8587771f635f532c491182e3064f76c328ab4e3bd4bfca18e55aa27"
+      },
+      "android-armeabi-v7a": {
+        "label": "Android ARM32 (armeabi-v7a)",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-armeabi-v7a/sameboy_libretro.so",
+        "sha256": "1421be7ecb91bff29a66b323bc92b172404d24a1b76a77759e93017117c4c5aa"
+      },
+      "android-x86_64": {
+        "label": "Android x86_64",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-x86_64/sameboy_libretro.so",
+        "sha256": "d2809852e05587942331d3e17e52800ffa29bcd8b26e5041d58caf2ebde02395"
+      },
+      "android-x86": {
+        "label": "Android x86 (32-bit)",
+        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-x86/sameboy_libretro.so",
+        "sha256": "72bc853a78e93504a3f56dc75feda14b581c68553114aac28669f4df0dcd3e03"
+      }
     }
   },
   "mgba_splitscreen": {
@@ -61,6 +102,47 @@
       "options": {
         "splitscreen_layout": "auto"
       }
+    },
+    "downloads": {
+      "linux-x86_64": {
+        "label": "Linux x86_64",
+        "path": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so"
+      },
+      "windows-x86_64": {
+        "label": "Windows x64 (64-bit)",
+        "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-x86_64/mgba_splitscreen_libretro.dll",
+        "sha256": "701d24e5987d49848321e0835fd7b4a10f7270acbb96d3bfbaf1677785f35fde"
+      },
+      "windows-x86": {
+        "label": "Windows x86 (32-bit)",
+        "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-x86/mgba_splitscreen_libretro.dll",
+        "sha256": "000df90fd4db581fd9f985c8062bbaf37b96063055bcf622085a1c8da06957c9"
+      },
+      "windows-arm64": {
+        "label": "Windows ARM64",
+        "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-arm64/mgba_splitscreen_libretro.dll",
+        "sha256": "28ae24810d1ca79143141967bb3e88d3debbc40d74d38af4c7e7cee56d1bac50"
+      },
+      "android-arm64-v8a": {
+        "label": "Android ARM64 (arm64-v8a)",
+        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-arm64-v8a/mgba_splitscreen_libretro.so",
+        "sha256": "69f75b7e2cd0a5e1838ba44ffa89108282e1030d1ac1bfb4dfc01eb40bf8972e"
+      },
+      "android-armeabi-v7a": {
+        "label": "Android ARM32 (armeabi-v7a)",
+        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-armeabi-v7a/mgba_splitscreen_libretro.so",
+        "sha256": "394a3d8873e847904e9ff30fe9ef89f9baea332256b34ef218037a83f882b9cc"
+      },
+      "android-x86_64": {
+        "label": "Android x86_64",
+        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-x86_64/mgba_splitscreen_libretro.so",
+        "sha256": "e19ebba01d728f72a51136439523ee60ee3b20f92a6a2ca42a9bc2ca9bd9228b"
+      },
+      "android-x86": {
+        "label": "Android x86 (32-bit)",
+        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-x86/mgba_splitscreen_libretro.so",
+        "sha256": "7b15ae14709425d144a69470d193c2228706f70f74ed97c187ed940785683c21"
+      }
     }
   },
   "snes9x": {
@@ -89,6 +171,47 @@
       "manifest": "../data/cores/compat/rollback/snes9x-2d4cce69/manifest.json",
       "buildInstructions": "../data/cores/compat/rollback/snes9x-2d4cce69/BUILD.txt",
       "nativePlatform": "Linux x86_64"
+    },
+    "downloads": {
+      "linux-x86_64": {
+        "label": "Linux x86_64",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/snes9x_libretro.so"
+      },
+      "windows-x86_64": {
+        "label": "Windows x64 (64-bit)",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/windows-x86_64/snes9x_libretro.dll",
+        "sha256": "10ee1201fbee0aa7e96f9be7ddef35713174ac8882d79fab68bbbc1530662f49"
+      },
+      "windows-x86": {
+        "label": "Windows x86 (32-bit)",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/windows-x86/snes9x_libretro.dll",
+        "sha256": "333ebeecfba47fbc7375897f9f76e76801913fa2631f12f2f1069fef3de22143"
+      },
+      "windows-arm64": {
+        "label": "Windows ARM64",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/windows-arm64/snes9x_libretro.dll",
+        "sha256": "7cb65e04e2bc70567d099775b4ef63aad5724df627f3e09ebe8802561107e817"
+      },
+      "android-arm64-v8a": {
+        "label": "Android ARM64 (arm64-v8a)",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/android-arm64-v8a/snes9x_libretro.so",
+        "sha256": "6ef3da876a3897577eaa07a003ab31be612fb1879c8b8c20a0b281cc91e8070c"
+      },
+      "android-armeabi-v7a": {
+        "label": "Android ARM32 (armeabi-v7a)",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/android-armeabi-v7a/snes9x_libretro.so",
+        "sha256": "6685d30fd7f66f2b46a3a1f5b5db8eda1b1873365b7fc7116af81c65b398e2aa"
+      },
+      "android-x86_64": {
+        "label": "Android x86_64",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/android-x86_64/snes9x_libretro.so",
+        "sha256": "8f708c29afab7fcdd5c73e50ab15bb8c4d741340407a3731477e37108f387089"
+      },
+      "android-x86": {
+        "label": "Android x86 (32-bit)",
+        "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/android-x86/snes9x_libretro.so",
+        "sha256": "c493844f6602f70695327f07054e0ba1b17e309e2c7cdcd4ffa394df78d97967"
+      }
     }
   }
 }

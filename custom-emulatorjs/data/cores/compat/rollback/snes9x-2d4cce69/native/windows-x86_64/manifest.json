@@ -1,0 +1,11 @@
+{
+  "core": "Snes9x",
+  "version": "1.632d4cce69",
+  "sourceRevision": "2d4cce69f4fe1c53a2c1423cdc06f2dea8b870a1",
+  "target": "windows-x86_64",
+  "compiler": "clang version 23.1.0 (https://github.com/llvm/llvm-project.git ea7d852a70e8bdfaf601d6626a760f9771b2c4b4)",
+  "sha256": {
+    "snes9x_libretro.dll": "10ee1201fbee0aa7e96f9be7ddef35713174ac8882d79fab68bbbc1530662f49"
+  },
+  "zlib": "1.3.2 (static)"
+}

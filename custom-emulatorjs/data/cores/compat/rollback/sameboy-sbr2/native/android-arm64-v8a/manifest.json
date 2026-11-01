@@ -1,0 +1,15 @@
+{
+  "core": "SameBoy",
+  "version": "1.0.4c87d256-rollback2",
+  "sourceRevision": "c87d256",
+  "target": "android-arm64-v8a",
+  "compiler": "Android (16134705, +pgo, +bolt, +lto, +mlgo, based on r574158c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 9f872551d3c681d06fd303b36f16ed5c274735eb)",
+  "sha256": {
+    "sameboy_libretro.so": "e6062f9fc8587771f635f532c491182e3064f76c328ab4e3bd4bfca18e55aa27"
+  },
+  "androidApi": 24,
+  "androidAbi": "arm64-v8a",
+  "pageAlignment": 16384,
+  "stateProfile": "SBR2",
+  "patchSha256": "7a63a0571b7abd6c9ebe07be0a197f9ae8e88c14338fc3ae846d5fde2e00eded"
+}

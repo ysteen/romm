@@ -10,7 +10,7 @@ const constants = runInNewContext(
 );
 const Emulator = runInNewContext(
   read("emulator.js")
-    .replace(/^import .*;$/gm, "")
+    .replace(/^import\s[^;]+;/gm, "")
     .replace(/^export .*;$/gm, "") + "\nEmulatorJS",
   { CONSTS: constants },
 );

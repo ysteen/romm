@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RomM multiplayer room</title>
-    <link rel="stylesheet" href="bridge.css?v=lobby-20261101" />
+    <link rel="stylesheet" href="bridge.css?v=native-platforms-20261101" />
   </head>
   <body>
     <main>
@@ -24,7 +24,7 @@
             </select></label
           >
           <label
-            ><input type="checkbox" id="native" /> Allow desktop RetroArch
+            ><input type="checkbox" id="native" /> Allow RetroArch
             clients</label
           >
           <label
@@ -79,8 +79,24 @@
           <button id="copy-room">Copy room link</button>
         </p>
         <p id="core-info"></p>
-        <p id="native-details">
-          <a id="core-download" download>Download matching core</a> ·
+      </section>
+      <section id="native-details" hidden aria-label="RetroArch core download">
+        <h2>Play in RetroArch</h2>
+        <p>
+          Install the matching core, then connect using the server address and
+          room password supplied by the host. The host must allow RetroArch
+          clients.
+        </p>
+        <label
+          >RetroArch platform
+          <select
+            id="native-platform"
+            aria-describedby="native-platform-hint"
+          ></select
+        ></label>
+        <p id="native-platform-hint" class="hint"></p>
+        <p><a id="core-download" download hidden>Download matching core</a></p>
+        <p>
           <a id="core-build" target="_blank" rel="noopener"
             >Source and build instructions</a
           >
@@ -108,6 +124,6 @@
       <p id="play-hint" class="hint"></p>
       <p id="save-hint" class="hint"></p>
     </main>
-    <script type="module" src="bridge.js?v=lobby-20261101"></script>
+    <script type="module" src="bridge.js?v=native-platforms-20261101"></script>
   </body>
 </html>

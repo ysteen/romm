@@ -66,6 +66,9 @@ jobs:
           tag="${VERIFY_IMAGE_TAG:-sha-${revision:0:12}}"
           [[ "$tag" =~ ^sha-[a-f0-9]{12}$ ]]
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ -f compose.netplay.yml ]]; then
+            version="$version-netplay"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx

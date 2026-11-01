@@ -45,7 +45,8 @@ fieldset label {
 #lobby {
   display: block;
 }
-#lobby h2 {
+#lobby h2,
+#native-details h2 {
   font-size: 1.2rem;
   margin-bottom: 0;
 }
@@ -100,12 +101,16 @@ button:disabled {
   min-height: 280px;
   border: 0;
 }
-#connection {
+#connection,
+#native-details {
   display: block;
   padding: 12px;
   border: 1px solid #78879a;
   border-radius: 6px;
   overflow-wrap: anywhere;
+}
+#native-details label {
+  flex-wrap: wrap;
 }
 #connection p {
   margin: 4px;

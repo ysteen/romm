@@ -1,0 +1,12 @@
+{
+  "core": "SameBoy",
+  "version": "1.0.4c87d256-rollback2",
+  "sourceRevision": "c87d256",
+  "target": "windows-arm64",
+  "compiler": "clang version 23.1.0 (https://github.com/llvm/llvm-project.git ea7d852a70e8bdfaf601d6626a760f9771b2c4b4)",
+  "sha256": {
+    "sameboy_libretro.dll": "f1c99d9a24deeadacb76e0f22d0bba6a5599602c5cb2bd2ee4cd8b597cad216d"
+  },
+  "stateProfile": "SBR2",
+  "patchSha256": "7a63a0571b7abd6c9ebe07be0a197f9ae8e88c14338fc3ae846d5fde2e00eded"
+}
