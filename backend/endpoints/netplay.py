@@ -211,7 +211,13 @@ async def create_bridge_room(
             status_code=422, detail="Core does not match the selected ROM"
         )
     payload = body.model_dump(exclude={"rom_id"}, exclude_none=True)
-    payload.update(romId=body.rom_id, owner=str(request.user.id))
+    payload.update(
+        romId=body.rom_id,
+        owner=str(request.user.id),
+        nickname=body.nickname or request.user.username,
+        password=body.password or "",
+        manualStart=True,
+    )
     return bridge_connection(await bridge_request("POST", "", payload))
 
 
@@ -228,7 +234,7 @@ async def join_bridge_room(
         f"/{room_id}/join",
         {
             "owner": str(request.user.id),
-            "nickname": body.nickname,
+            "nickname": body.nickname or request.user.username,
             "password": body.password,
         },
     )

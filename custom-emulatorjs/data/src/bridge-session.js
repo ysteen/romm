@@ -18,6 +18,26 @@ function frameNumber(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff;
 }
 
+function playerSeats(seats, players, allowUnassigned = false) {
+  const result =
+    seats ?? Array.from({ length: players }, (_, player) => player);
+  const assigned = Array.isArray(result)
+    ? result.filter((seat) => seat !== null)
+    : [];
+  if (
+    !Array.isArray(result) ||
+    result.length !== players ||
+    new Set(assigned).size !== assigned.length ||
+    result.some(
+      (seat) =>
+        !(allowUnassigned && seat === null) &&
+        (!Number.isInteger(seat) || seat < 0 || seat >= players),
+    )
+  )
+    throw new Error("Invalid player assignments");
+  return result.slice();
+}
+
 function base64(bytes) {
   let text = "";
   for (let at = 0; at < bytes.length; at += 8192)
@@ -28,7 +48,7 @@ function base64(bytes) {
 export class BridgeSession {
   constructor(
     adapter,
-    { player, players, send, inputDelay = 2, maxPrediction = 0 },
+    { player, players, send, inputDelay = 2, maxPrediction = 0, seats },
   ) {
     if (
       !Number.isInteger(players) ||
@@ -54,6 +74,7 @@ export class BridgeSession {
       maxPrediction,
     });
     this.frame = 0;
+    this.seats = playerSeats(seats, players);
     this.confirmed = 0;
     this.nextInput = 0;
     this.inputs = Array.from({ length: players }, () => new Map());
@@ -131,9 +152,12 @@ export class BridgeSession {
       (inputs, player) => inputs.get(this.frame) ?? previous[player],
     );
     this.used.set(this.frame, values);
+    const controls = Array(this.players);
+    for (let player = 0; player < this.players; player++)
+      controls[this.seats[player]] = values[player];
     if (this.players === 2 && this.adapter.step)
-      this.adapter.step(values[0], values[1], present);
-    else this.adapter.stepPlayers(values, present);
+      this.adapter.step(controls[0], controls[1], present);
+    else this.adapter.stepPlayers(controls, present);
     this.frame++;
     this.snapshots.set(this.frame, this.saveState());
   }
@@ -229,6 +253,9 @@ export class BridgeConnection {
       maxPrediction = 0,
       onStatus = () => {},
       onError = () => {},
+      onLobby = () => {},
+      onSeats = () => {},
+      onActionError = () => {},
     },
   ) {
     Object.assign(this, {
@@ -241,12 +268,18 @@ export class BridgeConnection {
       maxPrediction,
       onStatus,
       onError,
+      onLobby,
+      onSeats,
+      onActionError,
     });
     this.session = null;
     this.transfer = null;
     this.stateRequests = new Set();
     this.closed = false;
     this.started = false;
+    this.seats = playerSeats(undefined, players);
+    this.manualStart = false;
+    this.preparing = false;
     this.calibration = null;
     this.calibrating = false;
     socket.binaryType = "arraybuffer";
@@ -319,7 +352,7 @@ export class BridgeConnection {
           importBattery(
             this.adapter,
             this.adapter.profile,
-            transfer.player,
+            this.seats[transfer.player],
             bytes,
           );
         this.sendState(0, this.adapter.save(), transfer.player);
@@ -336,13 +369,45 @@ export class BridgeConnection {
       case "joined":
         if (packet.player !== this.player || packet.players !== this.players)
           throw new Error("Relay assigned an unexpected player slot");
+        this.manualStart = packet.manualStart === true;
+        if (this.manualStart && this.player === 0)
+          this.initialState = this.adapter.save().slice();
         if (this.player === 0) {
           if (this.battery.length)
             importBattery(this.adapter, this.adapter.profile, 0, this.battery);
           this.sendState(0);
-        } else
+        } else if (!this.manualStart)
           this.send({ t: "battery", size: this.battery.length }, this.battery);
         this.onStatus("waiting");
+        break;
+      case "lobby":
+        if (!this.manualStart || this.started) break;
+        this.seats = playerSeats(packet.seats, this.players, true);
+        if (this.seats[this.player] !== null)
+          this.onSeats(this.seats[this.player]);
+        this.onLobby(packet);
+        break;
+      case "prepare":
+        if (!this.manualStart || this.started || this.preparing)
+          throw new Error("Unexpected lobby start");
+        this.preparing = true;
+        this.seats = playerSeats(packet.seats, this.players);
+        this.onSeats(this.seats[this.player]);
+        if (this.player === 0) {
+          this.adapter.load(this.initialState);
+          if (this.battery.length)
+            importBattery(
+              this.adapter,
+              this.adapter.profile,
+              this.adapter.profile.sharedSave ? 0 : this.seats[0],
+              this.battery,
+            );
+          this.sendState(0);
+        } else
+          this.send({ t: "battery", size: this.battery.length }, this.battery);
+        break;
+      case "action-error":
+        this.onActionError(String(packet.message ?? "Lobby action failed"));
         break;
       case "state-ready":
         if (this.player !== 0 || !frameNumber(packet.revision))
@@ -401,6 +466,7 @@ export class BridgeConnection {
           player: this.player,
           players: this.players,
           maxPrediction: this.maxPrediction,
+          seats: this.seats,
           send: (packet) => this.send(packet),
         });
         this.session.start();
@@ -473,6 +539,14 @@ export class BridgeConnection {
 
   pause(paused) {
     if (this.session) this.send({ t: "pause", paused });
+  }
+
+  assignPlayer(player, seat) {
+    this.send({ t: "assign", player, seat });
+  }
+
+  startGame() {
+    this.send({ t: "start-request" });
   }
 
   stop() {

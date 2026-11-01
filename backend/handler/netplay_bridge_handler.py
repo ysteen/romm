@@ -67,9 +67,27 @@ async def bridge_request(
             allow_redirects=False,
         ) as response:
             if response.status in (403, 404, 409, 429):
+                detail = {
+                    403: "Incorrect room password. Enter the room password shown by the host.",
+                    404: "The room has closed. Refresh the room list and join a new room.",
+                    409: "The room is full or has already started. Refresh the room list.",
+                    429: "Too many room requests. Please try again shortly.",
+                }[response.status]
+                if response.status == 409:
+                    try:
+                        error = json.loads(await response.content.read(4096)).get(
+                            "error"
+                        )
+                    except (ValueError, TypeError, AttributeError):
+                        error = None
+                    detail = {
+                        "Owner already hosts a room": "You already host a room. Leave or close that room first.",
+                        "No native ports available": "No RetroArch room ports are available. Try a web-only room.",
+                        "Room capacity reached": "The relay has no free rooms. Please try again later.",
+                    }.get(error if isinstance(error, str) else "", detail)
                 raise HTTPException(
                     status_code=response.status,
-                    detail="Netplay room is unavailable",
+                    detail=detail,
                 )
             if response.status < 200 or response.status >= 300:
                 raise HTTPException(

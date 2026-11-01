@@ -28,6 +28,45 @@ section {
 [hidden] {
   display: none !important;
 }
+fieldset {
+  flex: 1 1 300px;
+  min-width: 0;
+  border: 1px solid #78879a;
+  border-radius: 8px;
+  padding: 16px;
+}
+fieldset label,
+fieldset button {
+  margin: 8px 0;
+}
+fieldset label {
+  flex-wrap: wrap;
+}
+#lobby {
+  display: block;
+}
+#lobby h2 {
+  font-size: 1.2rem;
+  margin-bottom: 0;
+}
+#participants {
+  list-style: none;
+  padding: 0;
+}
+#participants li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #78879a;
+  border-radius: 6px;
+  margin: 8px 0;
+}
+#participants .member-name {
+  flex: 1 1 180px;
+  overflow-wrap: anywhere;
+}
 label {
   display: flex;
   align-items: center;

@@ -6,7 +6,10 @@ import {
   bridgeSeed,
   bridgeSaveSelection,
 } from "../data/src/bridge-profile.js";
-import { BridgeConnection, crc32 } from "../data/src/bridge-session.js";
+import {
+  BridgeConnection,
+  crc32,
+} from "../data/src/bridge-session.js?v=lobby-20261101";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
 
 const $ = (id) => document.getElementById(id);
@@ -62,6 +65,13 @@ function fail(error) {
   clearInterval(ticker);
   clearInterval(autosave);
   connection?.stop();
+  room = null;
+  $("lobby").hidden =
+    $("connection").hidden =
+    $("screen").hidden =
+    $("controls").hidden =
+    $("disconnect").hidden =
+      true;
   status(error.message, true);
   $("setup").hidden = false;
   $("create").disabled = $("refresh").disabled = false;
@@ -93,7 +103,7 @@ async function initialize({ romId, theme }) {
     for (const option of $("players").options)
       option.disabled = Number(option.value) > profile.maxPlayers;
     $("native").disabled = !coreCatalog[profile.core]?.native;
-    $("native").checked = !$("native").disabled;
+    $("native").checked = false;
     const nested =
       rom.has_nested_single_file && rom.files?.length === 1
         ? rom.files[0].file_name
@@ -121,27 +131,90 @@ async function initialize({ romId, theme }) {
 }
 
 async function refreshRooms() {
+  if (room && !connection?.closed) return;
   try {
+    const previous = $("rooms").value;
     const listed = await api(`/netplay/bridge/rooms?rom_id=${rom.id}`);
     rooms.clear();
     $("rooms").replaceChildren(new Option("Choose a room", ""));
     for (const item of listed) {
       rooms.set(item.id, item);
-      $("rooms").append(
-        new Option(
-          `${item.nickname || item.id} · ${item.players} players`,
-          item.id,
-        ),
+      const option = new Option(
+        `Room ${item.id.slice(0, 6)} · ${item.current}/${item.players} · ${item.started ? "Playing" : item.has_password ? "Password required" : "No password"}`,
+        item.id,
       );
+      option.disabled = item.started || item.current >= item.players;
+      $("rooms").append(option);
     }
     const invited = new URLSearchParams(location.search).get("room");
-    if (invited && rooms.has(invited)) {
-      $("rooms").value = invited;
-      status("Room selected. Enter its password and join.");
-    }
-    $("join").disabled = rooms.size === 0;
+    const selected = rooms.has(previous) ? previous : invited;
+    if (selected && rooms.has(selected)) $("rooms").value = selected;
+    updateJoin();
   } catch (error) {
     fail(error);
+  }
+}
+
+function updateJoin() {
+  const selected = rooms.get($("rooms").value);
+  $("join").disabled =
+    !selected || selected.started || selected.current >= selected.players;
+  $("join-password-label").hidden = !selected?.has_password;
+  $("join-help").textContent = !selected
+    ? "Choose an open room."
+    : selected.has_password
+      ? "Enter this room's password, not your RomM account password."
+      : "No room password is required. Select Join room.";
+  if (!selected?.has_password) $("join-password").value = "";
+}
+
+function renderLobby(value) {
+  $("lobby").hidden = false;
+  $("screen").hidden = $("controls").hidden = true;
+  const host = connection.player === 0;
+  $("start").hidden = !host;
+  $("start").disabled = !value.canStart;
+  $("lobby-status").textContent = value.starting
+    ? "Preparing the game…"
+    : value.canStart
+      ? host
+        ? "Everyone has a number. Start when you are ready."
+        : "Waiting for the host to start."
+      : `${value.members.length}/${value.players} connected. Every player must choose a number.`;
+  status(value.starting ? "Preparing the game…" : "Waiting room");
+  const activePlayer = document.activeElement?.dataset.player;
+  $("participants").replaceChildren();
+  for (const member of value.members) {
+    const row = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "member-name";
+    name.textContent = `${member.nickname || (member.kind === "native" ? "RetroArch" : "Player")}${member.player === 0 ? " · Host" : ""}${member.player === connection.player ? " · You" : ""}`;
+    const select = document.createElement("select");
+    select.dataset.player = String(member.player);
+    select.setAttribute("aria-label", `Player number for ${name.textContent}`);
+    select.append(new Option("Not selected", ""));
+    for (let seat = 0; seat < value.players; seat++) {
+      const option = new Option(`P${seat + 1}`, String(seat));
+      option.disabled =
+        value.seats.includes(seat) && value.seats[member.player] !== seat;
+      select.append(option);
+    }
+    select.value =
+      value.seats[member.player] === null
+        ? ""
+        : String(value.seats[member.player]);
+    select.disabled =
+      value.starting || (!host && member.player !== connection.player);
+    select.onchange = () =>
+      connection.assignPlayer(
+        member.player,
+        select.value === "" ? null : Number(select.value),
+      );
+    const readiness = document.createElement("span");
+    readiness.textContent = member.ready ? "Ready" : "Connecting…";
+    row.append(name, select, readiness);
+    $("participants").append(row);
+    if (activePlayer === String(member.player)) select.focus();
   }
 }
 
@@ -236,6 +309,7 @@ async function launch(joinId) {
           stateSize: adapter.size,
           players,
           nativeAllowed,
+          password: $("create-password").value,
           maxPrediction: build.maxPrediction ?? 0,
           ...(build.nativeCalibration
             ? { nativeCalibration: build.nativeCalibration }
@@ -266,9 +340,13 @@ async function launch(joinId) {
       calibrate:
         build.nativeCalibration === "sameboy-v1" ? calibrateSameBoy : null,
       onStatus(value) {
+        if (value === "connected") {
+          $("lobby").hidden = true;
+          $("screen").hidden = $("controls").hidden = false;
+        }
         status(
           value === "connected"
-            ? `Connected · player ${player + 1}`
+            ? `Connected · P${connection.seats[player] + 1}`
             : value === "waiting"
               ? "Waiting for all players…"
               : value,
@@ -279,11 +357,22 @@ async function launch(joinId) {
           clearInterval(autosave);
         }
       },
+      onLobby: renderLobby,
+      onSeats(seat) {
+        screen.select(profile.sharedSave ? 0 : seat);
+        if (profile.audioOption)
+          frame.contentWindow.EJS_emulator.gameManager.setVariable(
+            profile.audioOption,
+            profile.audio[seat],
+          );
+      },
+      onActionError: (message) => status(message, true),
       onError: fail,
     });
     window.bridgeConnection = connection;
     $("setup").hidden = true;
-    $("controls").hidden = false;
+    $("controls").hidden = true;
+    $("disconnect").hidden = false;
     $("connection").hidden = false;
     $("address").textContent = room.native_port
       ? `RetroArch: ${room.native_host}:${room.native_port}`
@@ -299,7 +388,7 @@ async function launch(joinId) {
     $("native-details").hidden = !nativeAllowed;
     $("core-info").textContent = nativeAllowed
       ? `${build.coreName} ${build.coreVersion}. ${profile.standardGame ? "Load the game once" : `Load the same cartridge in all ${players} link slots`}, then connect through RetroArch Netplay.${profile.core === "sameboy" ? " Use 48000 Hz audio." : ""}`
-      : "Invite another web player to begin.";
+      : "Share this invitation with the other players.";
     $("core-download").href = new URL(build.nativeDownload, location.href).href;
     $("core-download").textContent =
       `Download matching core (${build.nativePlatform})`;
@@ -326,7 +415,7 @@ async function launch(joinId) {
       frame.contentWindow.audioOutput.setActive(false),
     );
     frame.contentWindow.audioOutput.setActive(true);
-    frame.contentWindow.focus();
+    $("disconnect").focus();
   } catch (error) {
     fail(error);
   }
@@ -334,7 +423,7 @@ async function launch(joinId) {
 
 function ownBattery() {
   if (!connection?.started) return null;
-  const id = bridgeBatteryId(profile, connection.player);
+  const id = bridgeBatteryId(profile, connection.seats[connection.player]);
   return connection.session?.maxPrediction
     ? connection.session.confirmedMemory(id)
     : adapter.memory(id);
@@ -385,6 +474,8 @@ async function save() {
 $("create").onclick = () => launch();
 $("join").onclick = () => launch($("rooms").value);
 $("refresh").onclick = refreshRooms;
+$("rooms").onchange = updateJoin;
+$("start").onclick = () => connection?.startGame();
 $("join-password").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !$("join").disabled) {
     event.preventDefault();
@@ -407,6 +498,13 @@ $("disconnect").onclick = async () => {
   $("disconnect").disabled = true;
   await save().catch(saveError);
   connection?.stop();
+  room = null;
+  $("lobby").hidden =
+    $("connection").hidden =
+    $("screen").hidden =
+    $("controls").hidden =
+    $("disconnect").hidden =
+      true;
   $("setup").hidden = false;
   $("create").disabled = $("refresh").disabled = false;
   $("disconnect").disabled = false;

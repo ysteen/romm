@@ -120,7 +120,9 @@ def test_bridge_creation_preserves_admin_secret(client, viewer_user, rom, relay)
     assert payload["owner"] == str(viewer_user.id)
     assert payload["romId"] == rom.id
     assert "rom_id" not in payload
-    assert "password" not in payload
+    assert payload["password"] == ""
+    assert payload["manualStart"] is True
+    assert payload["nickname"] == viewer_user.username
     assert payload["maxPrediction"] == 0
 
 
@@ -134,6 +136,21 @@ def test_rollback_profile_is_forwarded(client, viewer_user, rom, relay):
     )
     assert response.status_code == 200
     assert relay.call_args.args[2]["maxPrediction"] == 12
+
+
+@pytest.mark.parametrize("password", ["", "friends-only"])
+def test_room_password_is_explicit_and_lobby_waits_for_host(
+    client, viewer_user, rom, relay, password
+):
+    relay.return_value = connection()
+    response = client.post(
+        "/api/netplay/bridge/rooms",
+        json=create_body(rom.id) | {"password": password},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 200
+    assert relay.call_args.args[2]["password"] == password
+    assert relay.call_args.args[2]["manualStart"] is True
 
 
 @pytest.mark.parametrize(
@@ -225,7 +242,7 @@ def test_snes_listing_and_password_join_use_the_existing_romm_identity(
     assert joined.json()["player"] == 1
     assert snes_relay.call_args.args[2] == {
         "owner": str(viewer_user.id),
-        "nickname": "",
+        "nickname": viewer_user.username,
         "password": "snes-room-password",
     }
 
@@ -455,6 +472,35 @@ async def test_gateway_request_does_not_follow_redirects(mocker):
             await bridge.bridge_request("POST", "", {"players": 2})
         assert error.value.status_code == 502
         assert session.request.call_args.kwargs["allow_redirects"] is False
+    finally:
+        ctx_aiohttp_session.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "message"),
+    [
+        (403, b'{"error":"Incorrect room password"}', "Incorrect room password"),
+        (404, b"{}", "room has closed"),
+        (409, b'{"error":"Owner already hosts a room"}', "already host a room"),
+        (409, b'{"error":"Room is full"}', "room is full"),
+        (409, b'{"error":{"secret":"must-not-leak"}}', "room is full"),
+        (429, b"{}", "Too many room requests"),
+    ],
+)
+async def test_gateway_errors_explain_join_failures(mocker, status, body, message):
+    mocker.patch.object(bridge, "bridge_enabled", return_value=True)
+    response = Mock(status=status)
+    response.content.read = AsyncMock(return_value=body)
+    context = AsyncMock()
+    context.__aenter__.return_value = response
+    token = ctx_aiohttp_session.set(Mock(request=Mock(return_value=context)))
+    try:
+        with pytest.raises(HTTPException) as error:
+            await bridge.bridge_request("POST", "/room-1/join", {"password": ""})
+        assert error.value.status_code == status
+        assert message in error.value.detail
+        assert "must-not-leak" not in error.value.detail
     finally:
         ctx_aiohttp_session.reset(token)
 

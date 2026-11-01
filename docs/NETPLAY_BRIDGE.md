@@ -114,19 +114,21 @@ Check bridge startup with `curl -fsS http://127.0.0.1:8082/health`. While signed
 
 1. Sign in to RomM with game access and emulation permission. Use the **v2 UI** and open a supported game's player page.
 2. Select **Relay server** (the label is translated). Allow the popup. The ordinary SNES player's in-game **Netplay** button also opens this flow when configured.
-3. Select the player count. Enable **Allow desktop RetroArch clients** if a native player will join. Select **Create room**.
-4. Copy the room invitation and send its displayed room password separately. Keep the host window open. The game waits for all selected player slots to connect.
-5. A web guest signs in to the same RomM server and opens the invitation, enters the password and selects **Join room**. Alternatively, open that game's player page, select **Relay server**, and choose the room under **Open rooms**. Use a separate browser profile or device for a second account.
-6. Each player uses their own keyboard, touch controls or gamepad. Use **Save progress** or **Save and close** to save to the signed-in account. Automatic room saves run every 15 seconds. **Download save** provides a local battery-save copy.
+3. Select the player count. Enable **Allow desktop RetroArch clients** if a native player will join. A room password is optional; leave it blank for a passwordless room. Select **Create room**.
+4. Copy the room invitation and, if set, send the displayed room password separately. Keep the host window open.
+5. A web guest signs in to the same RomM server and opens the invitation, enters the room password if required and selects **Join room**. Alternatively, open that game's player page, select **Relay server**, and choose the room under **Open rooms**. Use a separate browser profile or device for a second account.
+6. Everyone enters the waiting room with **Not selected** as their player number, including the host. Each guest can choose or clear their own number. The host can change anyone's number, including native guests. A number already selected by another participant is unavailable; clear it first to exchange numbers.
+7. Once all selected player slots are connected, ready and assigned a number, the host selects **Start game**. Joining alone does not start play. Numbers are fixed after starting.
+8. Each player uses their own keyboard, touch controls or gamepad. Use **Save progress** or **Save and close** to save to the signed-in account. Automatic room saves run every 15 seconds. **Download save** provides a local battery-save copy.
 
-The invitation contains the ROM/room identifiers, not the room password or service token. An invitation does not bypass the guest's RomM game permissions. The current password is shared by the room, including native guests; per-player native passwords and native RomM login are not implemented.
+The invitation contains the ROM/room identifiers, not the room password or service token. An invitation does not bypass the guest's RomM game permissions, even in a passwordless room. When set, the password is shared by the room, including native guests; per-player native passwords and native RomM login are not implemented.
 
 ## Connect desktop RetroArch
 
 1. Have a browser host create a room with native clients allowed. Ask for the displayed hostname, room port, room password and matching core download.
 2. Install the provided `.so` using RetroArch's **Load Core → Install or Restore a Core**, or select the downloaded core with `-L`. Use the same unmodified ROM bytes and the room's core options. A stock core with the same general name is insufficient.
 3. For SameBoy/mGBA, load the same cartridge into every linked console slot through the core's subsystem content loader. SNES loads one cartridge. Set SameBoy audio output to **48000 Hz**.
-4. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. Do not start another native host or rely on the public RetroArch lobby. The bridge waits for all room slots before play starts.
+4. Connect as a Netplay client to the displayed address and exact room port, then enter the room password when prompted. Do not start another native host or rely on the public RetroArch lobby. The browser host assigns your player number in the waiting room and selects **Start game** once everyone is ready. The native client waits until then.
 
 For two-player rooms, these commands use the subsystem identifiers exercised by the Linux qualification harness. Replace paths, host and port with the room details. Enter its password through RetroArch's prompt.
 
@@ -155,13 +157,14 @@ Web GB/GBC and GBA participants import their own account's battery save into the
 | No multiplayer button                   | v2 UI, GB/GBC/GBA/SNES platform slug, updated image, four backend variables, `/api/netplay/bridge/config` |
 | Room window does not open               | Browser popup permission and page error message                                                           |
 | Room creation fails                     | Bridge health, shared network, identical service tokens, RomM permissions                                 |
+| Incorrect room password                 | Enter the password set by the host, not your RomM login password; passwordless rooms need no password     |
 | WebSocket fails                         | TLS, upgrade headers, exact allowed RomM origin, browser-reachable public URL                             |
 | Native connection times out             | Native-enabled room, correct allocated port, DNS-only hostname, TCP bindings/NAT/firewall                 |
-| Waiting for players                     | All chosen slots must join; an extra slot cannot remain empty                                             |
+| Waiting for players                     | All chosen slots must join and have a unique player number, then the host selects Start game              |
 | Core/cartridge mismatch                 | Room-provided core, identical ROM bytes, player count and options                                         |
 | SNES is rejected                        | NTSC LoROM/HiROM restriction; supported single-ROM archive/header layout                                  |
 | Expected personal native save is absent | Native guests inherit host state; separate native guest SRAM import is unsupported                        |
-| Disconnect or host closes               | Create a new room; late joining/reconnection and host migration are unsupported                           |
+| Disconnect or host closes               | Guests can rejoin before starting; a host departure or any departure during play requires a new room      |
 
 For qualification details, see [rollback room behavior and browser verification](ROLLBACK_ROOMS.md) and the [standalone core qualification report](https://github.com/ysteen/retroarch-netplay-bridge/blob/main/docs/core-qualification.md). The checks use original diagnostic games; they do not establish compatibility for every commercial title. SameBoy's attempted long soak is not recorded as a pass.
 

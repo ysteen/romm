@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RomM multiplayer room</title>
-    <link rel="stylesheet" href="bridge.css" />
+    <link rel="stylesheet" href="bridge.css?v=lobby-20261101" />
   </head>
   <body>
     <main>
@@ -13,31 +13,61 @@
         <p id="status" role="status" aria-live="polite">Opening game…</p>
       </header>
       <section id="setup" aria-label="Multiplayer room">
-        <label
-          >Players
-          <select id="players">
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4</option>
-          </select></label
-        >
-        <label
-          ><input type="checkbox" id="native" /> Allow desktop RetroArch
-          clients</label
-        >
-        <button id="create" disabled>Create room</button>
-        <button id="refresh" disabled>Refresh rooms</button>
-        <label
-          >Open rooms
-          <select id="rooms">
-            <option value="">Choose a room</option>
-          </select></label
-        >
-        <label
-          >Room password
-          <input id="join-password" type="password" autocomplete="off"
-        /></label>
-        <button id="join" disabled>Join room</button>
+        <fieldset>
+          <legend>Create a room</legend>
+          <label
+            >Players
+            <select id="players">
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select></label
+          >
+          <label
+            ><input type="checkbox" id="native" /> Allow desktop RetroArch
+            clients</label
+          >
+          <label
+            >Room password (optional)
+            <input
+              id="create-password"
+              type="password"
+              maxlength="120"
+              autocomplete="new-password"
+              aria-describedby="password-help"
+            />
+          </label>
+          <p id="password-help" class="hint">
+            Leave blank to let signed-in players join without a room password.
+          </p>
+          <button id="create" disabled>Create room</button>
+        </fieldset>
+        <fieldset>
+          <legend>Join a room</legend>
+          <button id="refresh" disabled>Refresh rooms</button>
+          <label
+            >Open rooms
+            <select id="rooms">
+              <option value="">Choose a room</option>
+            </select></label
+          >
+          <label id="join-password-label"
+            >Room password
+            <input id="join-password" type="password" autocomplete="off"
+          /></label>
+          <p id="join-help" class="hint"></p>
+          <button id="join" disabled>Join room</button>
+        </fieldset>
+      </section>
+      <section id="lobby" hidden aria-label="Waiting room">
+        <h2>Waiting room</h2>
+        <p id="lobby-status" role="status"></p>
+        <ul id="participants" aria-label="Players"></ul>
+        <p class="hint">
+          Choose your own player number. The host can change everyone's number
+          and start the game once all players are ready.
+        </p>
+        <button id="start" disabled>Start game</button>
       </section>
       <section id="connection" hidden aria-label="Connection details">
         <p id="address"></p>
@@ -56,7 +86,7 @@
           >
         </p>
       </section>
-      <div id="screen"></div>
+      <div id="screen" hidden></div>
       <section id="controls" hidden aria-label="Player controls">
         <label
           >Volume
@@ -70,14 +100,14 @@
         /></label>
         <button id="pause">Pause</button
         ><button id="save">Save progress</button>
-        <button id="download">Download save</button
-        ><button id="disconnect">Disconnect</button>
+        <button id="download">Download save</button>
         <button id="quit">Save and close</button>
       </section>
+      <button id="disconnect" hidden>Leave room</button>
       <p id="save-status" role="status"></p>
       <p id="play-hint" class="hint"></p>
       <p id="save-hint" class="hint"></p>
     </main>
-    <script type="module" src="bridge.js"></script>
+    <script type="module" src="bridge.js?v=lobby-20261101"></script>
   </body>
 </html>

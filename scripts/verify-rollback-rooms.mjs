@@ -211,6 +211,7 @@ try {
                 romId: rom_id,
                 owner: String(actor + 1),
                 nickname: "Browser host",
+                manualStart: true,
               };
               apiCalls.push({ create: { ...manifest } });
             }
@@ -267,6 +268,7 @@ try {
           await host.waitForFunction(
             () => !document.querySelector("#create").disabled,
           );
+          await host.locator("#native").check();
           await host.locator("#create").focus();
           await host.keyboard.press("Enter");
           await Promise.race([
@@ -287,7 +289,8 @@ try {
           const room = [...broker.rooms.values()].at(-1);
           const invite = await host.locator("#room-link").getAttribute("href");
           assert.equal(new URL(invite).searchParams.get("room"), room.id);
-          assert(!invite.includes(room.password));
+          assert.equal(room.password, "");
+          assert(!new URL(invite).searchParams.has("password"));
           assert(
             (await host.locator("#core-download").textContent()).includes(
               "Linux x86_64",
@@ -304,8 +307,44 @@ try {
           await guest.waitForFunction(
             () => document.querySelector("#rooms").value.length > 0,
           );
-          await guest.locator("#join-password").fill(room.password);
-          await guest.locator("#join-password").press("Enter");
+          assert(await guest.locator("#join-password-label").isHidden());
+          await guest.locator("#join").tap();
+          await guest
+            .locator('#participants select[data-player="1"]')
+            .waitFor();
+          assert.equal(
+            await host
+              .locator('#participants select[data-player="0"]')
+              .inputValue(),
+            "",
+          );
+          assert.equal(
+            await guest
+              .locator('#participants select[data-player="1"]')
+              .inputValue(),
+            "",
+          );
+          assert(
+            await guest
+              .locator('#participants select[data-player="0"]')
+              .isDisabled(),
+          );
+          assert(await guest.locator("#start").isHidden());
+          await guest
+            .locator('#participants select[data-player="1"]')
+            .selectOption("0");
+          await host
+            .locator('#participants select[data-player="0"]')
+            .selectOption("1");
+          await host.waitForFunction(
+            () => !document.querySelector("#start").disabled,
+          );
+          assert.equal(
+            await host.evaluate(() => window.bridgeConnection.started),
+            false,
+          );
+          await host.locator("#start").focus();
+          await host.keyboard.press("Enter");
           await Promise.all(
             pages.map((page) =>
               page.waitForFunction(
