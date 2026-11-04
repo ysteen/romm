@@ -52,7 +52,11 @@ def bridge_enabled() -> bool:
 
 
 async def bridge_request(
-    method: str, path: str, payload: dict[str, Any] | None = None
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    response_limit: int = 256 * 1024,
 ) -> Any:
     if not bridge_enabled():
         raise HTTPException(status_code=404, detail="Netplay relay is not configured")
@@ -73,18 +77,31 @@ async def bridge_request(
                     409: "The room is full or has already started. Refresh the room list.",
                     429: "Too many room requests. Please try again shortly.",
                 }[response.status]
-                if response.status == 409:
+                if response.status in (404, 409):
                     try:
                         error = json.loads(await response.content.read(4096)).get(
                             "error"
                         )
                     except (ValueError, TypeError, AttributeError):
                         error = None
-                    detail = {
-                        "Owner already hosts a room": "You already host a room. Leave or close that room first.",
-                        "No native ports available": "No RetroArch room ports are available. Try a web-only room.",
-                        "Room capacity reached": "The relay has no free rooms. Please try again later.",
-                    }.get(error if isinstance(error, str) else "", detail)
+                    messages = (
+                        {
+                            "Owner already hosts a room": "You already host a room. Leave or close that room first.",
+                            "Removed from this room by the host": "The host removed you from this room.",
+                            "No native ports available": "No RetroArch room ports are available. Try a web-only room.",
+                            "Room capacity reached": "The relay has no free rooms. Please try again later.",
+                            "Another browser host must remain connected": "Another browser player must remain connected to host the room before you switch to RetroArch.",
+                            "Account already joined this room": "You are already preparing or connected to this room in RetroArch.",
+                            "Create a room with native preparation enabled": "Create a new room with RetroArch clients enabled to use the Windows launcher.",
+                        }
+                        if response.status == 409
+                        else {
+                            "Native preparation expired": "This Windows session preparation is no longer available. Prepare a new Windows session in RomM.",
+                        }
+                    )
+                    detail = messages.get(
+                        error if isinstance(error, str) else "", detail
+                    )
                 raise HTTPException(
                     status_code=response.status,
                     detail=detail,
@@ -98,7 +115,7 @@ async def bridge_request(
             body = bytearray()
             async for chunk in response.content.iter_chunked(64 * 1024):
                 body.extend(chunk)
-                if len(body) > 256 * 1024:
+                if len(body) > response_limit:
                     raise ValueError("Oversized relay response")
             return json.loads(body)
     except (TimeoutError, aiohttp.ClientError, ValueError) as error:

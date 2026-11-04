@@ -48,7 +48,16 @@ function base64(bytes) {
 export class BridgeSession {
   constructor(
     adapter,
-    { player, players, send, inputDelay = 2, maxPrediction = 0, seats },
+    {
+      player,
+      players,
+      send,
+      inputDelay = 2,
+      maxPrediction = 0,
+      seats,
+      startFrame = 0,
+      inputs = [],
+    },
   ) {
     if (
       !Number.isInteger(players) ||
@@ -62,7 +71,10 @@ export class BridgeSession {
       inputDelay > 8 ||
       !Number.isInteger(maxPrediction) ||
       maxPrediction < 0 ||
-      maxPrediction > 30
+      maxPrediction > 30 ||
+      !frameNumber(startFrame) ||
+      !Array.isArray(inputs) ||
+      inputs.length > players * 600
     )
       throw new Error("Invalid relay session settings");
     Object.assign(this, {
@@ -73,15 +85,15 @@ export class BridgeSession {
       inputDelay,
       maxPrediction,
     });
-    this.frame = 0;
+    this.frame = startFrame;
     this.seats = playerSeats(seats, players);
-    this.confirmed = 0;
-    this.nextInput = 0;
+    this.confirmed = startFrame;
+    this.nextInput = startFrame;
     this.inputs = Array.from({ length: players }, () => new Map());
-    this.nextReceived = Array(players).fill(0);
+    this.nextReceived = Array(players).fill(startFrame);
     this.used = new Map();
-    this.snapshots = new Map([[0, this.saveState()]]);
-    this.lastCheckpoint = 0;
+    this.snapshots = new Map([[startFrame, this.saveState()]]);
+    this.lastCheckpoint = Math.floor(startFrame / 60) * 60;
     this.stats = {
       frames: 0,
       stalls: 0,
@@ -91,6 +103,22 @@ export class BridgeSession {
     };
     this.stopped = false;
     this.paused = false;
+    this.initializing = true;
+    for (const packet of inputs) {
+      if (packet.player !== this.player) this.receive(packet);
+      else {
+        if (
+          packet.f !== this.nextInput ||
+          packet.f >= startFrame + 600 ||
+          !Number.isInteger(packet.b) ||
+          packet.b < 0 ||
+          packet.b > 65535
+        )
+          throw new Error("Invalid resumed local input");
+        this.inputs[this.player].set(this.nextInput++, packet.b);
+      }
+    }
+    this.initializing = false;
   }
 
   saveState() {
@@ -119,7 +147,8 @@ export class BridgeSession {
   }
 
   start() {
-    if (this.nextInput !== 0) throw new Error("Relay session already started");
+    if (this.hasStarted) throw new Error("Relay session already started");
+    this.hasStarted = true;
     for (let f = 0; f < this.inputDelay; f++) this.submit(0);
   }
 
@@ -177,6 +206,7 @@ export class BridgeSession {
   }
 
   publishProgress(advanced = false) {
+    if (this.initializing) return;
     const confirmed = Math.min(
       this.frame,
       this.nextInput,
@@ -201,7 +231,7 @@ export class BridgeSession {
       for (const f of map.keys()) if (f < oldest - 1) map.delete(f);
   }
 
-  tick(buttons) {
+  tick(buttons, present = true) {
     if (this.stopped || this.paused) return false;
     if (!Number.isInteger(buttons) || buttons < 0 || buttons > 65535)
       throw new Error("Invalid controller input");
@@ -214,7 +244,7 @@ export class BridgeSession {
       this.stats.stalls++;
       return false;
     }
-    this.advance(true);
+    this.advance(present);
     this.stats.frames++;
     this.publishProgress(true);
     this.prune();
@@ -251,6 +281,8 @@ export class BridgeConnection {
       battery = new Uint8Array(),
       calibrate = null,
       maxPrediction = 0,
+      autoResume = false,
+      manualJoin = false,
       onStatus = () => {},
       onError = () => {},
       onLobby = () => {},
@@ -258,6 +290,8 @@ export class BridgeConnection {
       onActionError = () => {},
       onLatency = () => {},
       onRestart = () => {},
+      onHandoff = () => {},
+      onContent = null,
     },
   ) {
     Object.assign(this, {
@@ -268,6 +302,8 @@ export class BridgeConnection {
       battery,
       calibrate,
       maxPrediction,
+      autoResume,
+      manualJoin,
       onStatus,
       onError,
       onLobby,
@@ -275,18 +311,26 @@ export class BridgeConnection {
       onActionError,
       onLatency,
       onRestart,
+      onHandoff,
+      onContent,
     });
     this.session = null;
     this.transfer = null;
     this.stateRequests = new Set();
+    this.contentEpoch = 0;
+    this.gameClosed = false;
     this.closed = false;
     this.started = false;
     this.host = 0;
     this.generation = 0;
-    this.initialState = this.adapter.save().slice();
+    this.initialState = this.adapter?.save().slice() ?? null;
+    this.initialMemories = (this.adapter?.profile?.memoryIds ?? []).map((id) =>
+      this.adapter.memory(id).slice(),
+    );
     this.seats = playerSeats(undefined, players);
     this.manualStart = false;
     this.preparing = false;
+    this.joinRequested = !manualJoin;
     this.calibration = null;
     this.calibrating = false;
     socket.binaryType = "arraybuffer";
@@ -328,7 +372,7 @@ export class BridgeConnection {
   receive(data) {
     if (this.closed) return;
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-      const bytes =
+      let bytes =
         data instanceof ArrayBuffer
           ? new Uint8Array(data)
           : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -336,7 +380,26 @@ export class BridgeConnection {
       this.transfer = null;
       if (!transfer || bytes.length !== transfer.size)
         throw new Error("Invalid relay binary transfer");
-      if (transfer.t === "restart-source") {
+      if (transfer.discard || this.gameClosed) return;
+      if (transfer.t === "resume") {
+        this.hostFrame = null;
+        this.adapter.load(bytes);
+        this.seats = playerSeats(transfer.seats, this.players);
+        this.onSeats(this.seats[this.player]);
+        this.session = new BridgeSession(this.adapter, {
+          player: this.player,
+          players: this.players,
+          seats: this.seats,
+          maxPrediction: this.maxPrediction,
+          startFrame: transfer.f,
+          inputs: transfer.inputs,
+          send: (packet) => this.send(packet),
+        });
+        this.started = true;
+        this.preparing = false;
+        this.session.start();
+        this.onStatus("connected");
+      } else if (transfer.t === "restart-source") {
         this.restartSource = bytes.slice();
       } else if (transfer.t === "native-calibration") {
         if (transfer.stage === 0) {
@@ -361,16 +424,15 @@ export class BridgeConnection {
             .catch((error) => this.fail(error));
         }
       } else if (transfer.t === "battery") {
+        const seat = this.seats[transfer.player];
+        if (!bytes.length && !this.adapter.profile.sharedSave)
+          bytes = this.initialMemories[seat] ?? bytes;
         if (bytes.length)
-          importBattery(
-            this.adapter,
-            this.adapter.profile,
-            this.seats[transfer.player],
-            bytes,
-          );
+          importBattery(this.adapter, this.adapter.profile, seat, bytes);
         this.sendState(0, this.adapter.save(), transfer.player);
       } else {
         this.adapter.load(bytes);
+        this.relayState = false;
         this.send({ t: "ready", revision: transfer.revision });
       }
       return;
@@ -378,39 +440,137 @@ export class BridgeConnection {
     if (typeof data !== "string" || data.length > 512 * 1024 || this.transfer)
       throw new Error("Invalid relay message");
     const packet = JSON.parse(data);
+    if (
+      this.gameClosed &&
+      ![
+        "lobby",
+        "latency",
+        "ping",
+        "handoff",
+        "returned",
+        "game-reset",
+        "disconnect",
+        "action-error",
+        "peer-left",
+        "peer-error",
+      ].includes(packet.t)
+    ) {
+      if (Number.isInteger(packet.size))
+        this.transfer = { ...packet, discard: true };
+      return;
+    }
     if (packet.t === "input" && (packet.generation ?? 0) < this.generation)
       return;
     switch (packet.t) {
+      case "game-reset":
+        if (!frameNumber(packet.generation))
+          throw new Error("Invalid room generation");
+        this.closeGame(false);
+        this.generation = packet.generation;
+        this.roomRunning = false;
+        if (this.nativeAuthority)
+          this.send({ t: "seed-battery", battery: base64(this.battery) });
+        this.onStatus("game-reset");
+        break;
+      case "handoff":
+        if (packet.retainRoom) {
+          this.nativeMode = true;
+          this.closeGame(false);
+        } else this.stop();
+        this.onHandoff(!!packet.retainRoom);
+        break;
+      case "returned":
+        if (!this.nativeMode || !frameNumber(packet.generation))
+          throw new Error("Unexpected return to the room");
+        this.nativeMode = false;
+        this.generation = packet.generation;
+        this.onStatus("game-closed");
+        break;
       case "ping":
         this.send({ t: "pong", nonce: packet.nonce });
         break;
       case "latency":
         this.onLatency(packet.members);
         break;
+      case "clock":
+        if (
+          this.started &&
+          this.host !== this.player &&
+          packet.generation === this.generation &&
+          packet.host === this.host &&
+          frameNumber(packet.f)
+        )
+          this.hostFrame = packet.f;
+        break;
       case "joined":
         if (packet.player !== this.player || packet.players !== this.players)
           throw new Error("Relay assigned an unexpected player slot");
         this.manualStart = packet.manualStart === true;
+        this.nativeAuthority = packet.nativeAuthority === true;
         this.host = packet.host ?? 0;
         this.generation = packet.generation ?? 0;
-        if (this.player === this.host && !packet.running) {
+        this.roomRunning = !!packet.running;
+        if (packet.nativeAuthority)
+          this.send({ t: "seed-battery", battery: base64(this.battery) });
+        if (this.adapter && this.player === this.host && !packet.running) {
           if (this.battery.length)
             importBattery(this.adapter, this.adapter.profile, 0, this.battery);
           this.sendState(0);
         } else if (!this.manualStart)
           this.send({ t: "battery", size: this.battery.length }, this.battery);
         this.onStatus("waiting");
+        if (this.autoResume && this.adapter) this.openGame();
         break;
-      case "lobby":
+      case "content": {
+        if (this.manualJoin && !this.joinRequested) break;
+        if (
+          this.adapter ||
+          this.loadingContent ||
+          typeof this.onContent !== "function"
+        )
+          throw new Error("Unexpected cartridge preparation");
+        this.loadingContent = true;
+        const epoch = ++this.contentEpoch;
+        this.onStatus("Preparing the room's cartridges…");
+        Promise.resolve(this.onContent(packet))
+          .then((adapter) => {
+            if (this.closed || epoch !== this.contentEpoch) return;
+            this.adapter = adapter;
+            this.initialState = adapter.save().slice();
+            this.initialMemories = adapter.profile.memoryIds.map((id) =>
+              adapter.memory(id).slice(),
+            );
+            this.loadingContent = false;
+            this.send({
+              t: "content-ready",
+              size: adapter.size,
+              contentCrc: packet.contentCrc,
+              resume:
+                this.autoResume || (this.manualJoin && this.joinRequested),
+            });
+            if (this.player === this.host && !this.roomRunning)
+              this.sendState(0);
+          })
+          .catch((error) => {
+            if (!this.closed && epoch === this.contentEpoch) this.fail(error);
+          });
+        break;
+      }
+      case "lobby": {
         if (!this.manualStart) break;
+        if (this.gameClosed && frameNumber(packet.generation))
+          this.generation = packet.generation;
         const previousHost = this.host;
         this.host = packet.host ?? null;
+        if (previousHost !== this.host) this.hostFrame = null;
+        this.roomRunning = !!packet.running;
         this.seats = playerSeats(packet.seats, this.players, true);
         if (!this.started && this.seats[this.player] !== null)
           this.onSeats(this.seats[this.player]);
         this.onLobby(packet);
         if (
           previousHost !== this.host &&
+          this.adapter &&
           this.host === this.player &&
           !packet.running &&
           !packet.starting
@@ -420,12 +580,13 @@ export class BridgeConnection {
           this.sendState(0);
         }
         break;
+      }
       case "restart-source":
         if (this.player !== this.host || packet.size !== this.adapter.size)
           throw new Error("Invalid restart source");
         this.transfer = packet;
         break;
-      case "prepare":
+      case "prepare": {
         if (
           !this.manualStart ||
           !frameNumber(packet.generation) ||
@@ -443,6 +604,7 @@ export class BridgeConnection {
           this.session.stopped = true;
         }
         this.session = null;
+        this.hostFrame = null;
         this.stateRequests.clear();
         this.started = false;
         this.host = packet.host ?? 0;
@@ -452,6 +614,8 @@ export class BridgeConnection {
         this.onStatus("preparing");
         this.seats = playerSeats(packet.seats, this.players);
         this.onSeats(this.seats[this.player]);
+        this.relayState = packet.nativeState === true;
+        if (this.relayState) break;
         if (this.player === this.host) {
           if (this.restartSource) {
             this.adapter.load(this.restartSource);
@@ -482,6 +646,7 @@ export class BridgeConnection {
           this.send({ t: "battery", size: battery.length }, battery);
         }
         break;
+      }
       case "action-error":
         this.onActionError(String(packet.message ?? "Lobby action failed"));
         break;
@@ -498,7 +663,7 @@ export class BridgeConnection {
           packet.size < 0 ||
           packet.size > 16 * 1024 * 1024 ||
           (packet.t === "state" &&
-            (this.player === this.host ||
+            ((this.player === this.host && !this.relayState) ||
               packet.size !== this.adapter.size ||
               packet.f !== 0 ||
               !frameNumber(packet.revision))) ||
@@ -555,6 +720,33 @@ export class BridgeConnection {
         this.session.receive(packet);
         this.flushStateRequests();
         break;
+      case "resume-source": {
+        if (
+          !this.session ||
+          !this.started ||
+          typeof packet.id !== "string" ||
+          packet.id.length > 64
+        )
+          throw new Error("Invalid resume state request");
+        const f = this.session.confirmed;
+        const bytes = this.session.stateAt(f);
+        this.send(
+          { t: "resume-state", id: packet.id, f, size: bytes.length },
+          bytes,
+        );
+        break;
+      }
+      case "resume":
+        if (
+          this.started ||
+          !this.adapter ||
+          !frameNumber(packet.f) ||
+          packet.size !== this.adapter.size ||
+          !Array.isArray(packet.inputs)
+        )
+          throw new Error("Invalid resumed game state");
+        this.transfer = packet;
+        break;
       case "state-request":
         if (
           this.player !== this.host ||
@@ -569,8 +761,10 @@ export class BridgeConnection {
         else this.stateRequests.add(packet.f);
         break;
       case "pause":
-        if (!this.session || typeof packet.paused !== "boolean")
+        if (typeof packet.paused !== "boolean")
           throw new Error("Invalid relay pause command");
+        if (!this.session && this.manualStart && this.preparing) break;
+        if (!this.session) throw new Error("Invalid relay pause command");
         this.session.paused = packet.paused;
         this.onStatus(packet.paused ? "paused" : "connected");
         break;
@@ -602,6 +796,8 @@ export class BridgeConnection {
 
   tick(buttons) {
     try {
+      if (this.session && this.hostFrame > this.session.frame + 3)
+        this.session.tick(buttons, false);
       const advanced = this.session?.tick(buttons) ?? false;
       this.flushStateRequests();
       return advanced;
@@ -621,6 +817,44 @@ export class BridgeConnection {
 
   startGame() {
     this.send({ t: "start-request" });
+  }
+
+  closeGame(notify = true) {
+    if (this.closed || this.gameClosed) return;
+    if (this.session) {
+      const seat = this.adapter.profile.sharedSave
+        ? 0
+        : this.seats[this.player];
+      const id = this.adapter.profile.memoryIds[seat];
+      try {
+        this.battery = this.session.confirmedMemory(id).slice();
+      } catch {
+        /* A closing player may already have released its core. */
+      }
+      this.session.stopped = true;
+    }
+    this.gameClosed = true;
+    this.joinRequested = false;
+    this.contentEpoch++;
+    this.loadingContent = this.started = this.preparing = false;
+    this.session = this.adapter = this.initialState = null;
+    this.hostFrame = null;
+    this.initialMemories = [];
+    this.stateRequests.clear();
+    if (this.transfer) this.transfer.discard = true;
+    if (notify) this.send({ t: "game-close" });
+    this.onStatus("game-closed");
+  }
+
+  openGame() {
+    if (this.closed || this.started) return;
+    this.joinRequested = true;
+    this.gameClosed = false;
+    this.send({ t: "game-open" });
+  }
+
+  removePlayer(player) {
+    this.send({ t: "kick", player });
   }
 
   stop() {

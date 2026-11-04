@@ -2,7 +2,14 @@ import { installPlayerExit } from "./menu.js?v=20261102";
 
 export function installBridgeMenu(
   emulator,
-  { panel, showRoom, pause, save, leave, exitLabel = "Save and close" },
+  {
+    panel,
+    showRoom,
+    pause,
+    save,
+    closeGame,
+    exitLabel = "Save and return to room",
+  },
 ) {
   const bar = emulator.elements.bottomBar;
   emulator.elements.parent.append(panel);
@@ -55,12 +62,20 @@ export function installBridgeMenu(
     },
     true,
   );
-  installPlayerExit(emulator, exitLabel, leave);
-  return (paused, started) => {
+  installPlayerExit(emulator, exitLabel, closeGame);
+  return (paused, started, roomOpen, ready = started) => {
+    emulator.elements.parent.classList.toggle(
+      "romm-room-open",
+      !started || roomOpen,
+    );
+    emulator.elements.menu.hidden = !started || roomOpen;
+    if (emulator.elements.menu.hidden)
+      emulator.elements.menu.style.setProperty("display", "none", "important");
+    else emulator.elements.menu.style.removeProperty("display");
     emulator.paused = paused;
     bar.playPause[0].style.display = paused ? "none" : "";
     bar.playPause[1].style.display = paused ? "" : "none";
     for (const button of [...bar.playPause, saveButton])
-      button.disabled = !started;
+      button.disabled = !ready;
   };
 }

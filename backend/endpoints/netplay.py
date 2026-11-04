@@ -1,19 +1,29 @@
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
-from fastapi import HTTPException, Query, Request, Response
+from fastapi import Header, HTTPException, Query, Request, Response
+from starlette.responses import FileResponse
 
 from decorators.auth import protected_route
 from endpoints.responses.netplay_bridge import (
     BridgeConfigResponse,
     BridgeConnectionResponse,
+    BridgeControlRequest,
     BridgeJoinRequest,
+    BridgeNativeRequest,
+    BridgeNativeResponse,
+    BridgeNativeSaveRequest,
+    BridgeNativeSeatRequest,
+    BridgeNativeTicketResponse,
+    BridgeNativeTicketStatus,
     BridgeRoomRequest,
     BridgeRoomResponse,
 )
 from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
+from handler import netplay_launch_handler as native_launch
 from handler.auth.constants import Scope
 from handler.auth.dependencies import assert_rom_visible, can_access, get_permissions
-from handler.database import db_rom_handler
+from handler.auth.permissions import resolve_permissions
+from handler.database import db_rom_handler, db_user_handler
 from handler.netplay_bridge_handler import (
     bridge_connection,
     bridge_enabled,
@@ -162,6 +172,65 @@ def _assert_bridge_rom(request: Request, rom_id: int) -> str:
     return system
 
 
+def _room_roms(room: dict[str, Any]) -> list[int]:
+    return list(
+        {
+            room["romId"],
+            *[rom["romId"] for rom in room.get("cartridges") or []],
+            *[
+                member["romId"]
+                for member in room.get("members", [])
+                if member.get("romId")
+            ],
+        }
+    )
+
+
+def _assert_room_access(request: Request, room: dict[str, Any], rom_id: int) -> None:
+    collecting = room.get("collectCartridges")
+    if (collecting and _assert_bridge_rom(request, rom_id) != room["system"]) or (
+        not collecting and rom_id not in _room_roms(room)
+    ):
+        raise HTTPException(status_code=404, detail="Netplay room not found")
+    for member_rom in set(_room_roms(room)):
+        _assert_bridge_rom(request, member_rom)
+
+
+def _assert_selected_cartridge(
+    request: Request, room: dict[str, Any], body: BridgeJoinRequest
+) -> None:
+    if not room.get("collectCartridges"):
+        return
+    if body.cartridge is None:
+        raise HTTPException(
+            status_code=422, detail="The selected cartridge is required"
+        )
+    selected = db_rom_handler.get_rom_visibility(body.rom_id)
+    owners = {
+        room.get("owner"),
+        *[member.get("owner") for member in room.get("members", [])],
+    }
+    for owner in owners - {None, "", str(request.user.id)}:
+        user = db_user_handler.get_user(int(owner))
+        if (
+            not user
+            or not selected
+            or not resolve_permissions(user).can_see_rom(selected)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This cartridge is not available to everyone in the room",
+            )
+
+
+def _room_visible(request: Request, room: dict[str, Any], rom_id: int) -> bool:
+    try:
+        _assert_room_access(request, room, rom_id)
+    except (HTTPException, RomNotFoundInDatabaseException):
+        return False
+    return True
+
+
 @protected_route(router.get, "/bridge/config", [Scope.ROMS_READ])
 async def get_bridge_config(request: Request) -> BridgeConfigResponse:
     return BridgeConfigResponse(
@@ -191,9 +260,22 @@ async def get_bridge_rooms(
                 has_password=room["hasPassword"],
                 native_calibration=room.get("nativeCalibration"),
                 max_prediction=room.get("maxPrediction", 0),
+                cartridges=room.get("cartridges"),
+                native_auth=room.get("nativeAuth", False),
+                collect_cartridges=room.get("collectCartridges", False),
+                content_prepared=room.get("contentPrepared", True),
+                members=room.get("members", []),
+                seats=room.get("seats", []),
+                generation=room.get("generation", 0),
+                host=room.get("host", 0),
+                running=room.get("running", False),
+                starting=room.get("starting", False),
+                can_start=room.get("canStart", False),
+                native_authority=room.get("nativeAuthority", False),
+                save_host=room.get("saveHost"),
             )
             for room in await bridge_rooms()
-            if room.get("romId") == rom_id
+            if _room_visible(request, room, rom_id)
         ]
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(
@@ -210,6 +292,11 @@ async def create_bridge_room(
         raise HTTPException(
             status_code=422, detail="Core does not match the selected ROM"
         )
+    for cartridge in body.cartridges or []:
+        if _assert_bridge_rom(request, cartridge.romId) != system:
+            raise HTTPException(
+                status_code=422, detail="All cartridges must use the room's system"
+            )
     payload = body.model_dump(exclude={"rom_id"}, exclude_none=True)
     payload.update(
         romId=body.rom_id,
@@ -217,6 +304,10 @@ async def create_bridge_room(
         nickname=body.nickname or request.user.username,
         password=body.password or "",
         manualStart=True,
+        nativeAuth=body.nativeAllowed and body.cartridges is not None,
+        nativeAuthority=body.nativeAllowed
+        and body.cartridges is not None
+        and body.maxPrediction > 0,
     )
     return bridge_connection(await bridge_request("POST", "", payload))
 
@@ -227,8 +318,8 @@ async def join_bridge_room(
 ) -> BridgeConnectionResponse:
     _assert_bridge_rom(request, body.rom_id)
     room = await bridge_room(room_id)
-    if room.get("romId") != body.rom_id:
-        raise HTTPException(status_code=404, detail="Netplay room not found")
+    _assert_room_access(request, room, body.rom_id)
+    _assert_selected_cartridge(request, room, body)
     value = await bridge_request(
         "POST",
         f"/{room_id}/join",
@@ -236,9 +327,252 @@ async def join_bridge_room(
             "owner": str(request.user.id),
             "nickname": body.nickname or request.user.username,
             "password": body.password,
+            "romId": body.rom_id,
+            **({"cartridge": body.cartridge.model_dump()} if body.cartridge else {}),
         },
     )
     return bridge_connection(value)
+
+
+@protected_route(
+    router.post, "/bridge/rooms/{room_id}/native", [Scope.ROMS_READ, Scope.ASSETS_WRITE]
+)
+async def prepare_native_room(
+    request: Request, room_id: str, body: BridgeNativeRequest
+) -> BridgeNativeResponse:
+    room = await bridge_room(room_id)
+    _assert_room_access(request, room, body.rom_id)
+    _assert_selected_cartridge(request, room, body)
+    return await native_launch.prepare(request, room, body)
+
+
+@protected_route(router.delete, "/bridge/rooms/{room_id}/membership", [Scope.ROMS_READ])
+async def leave_bridge_room(request: Request, room_id: str) -> Response:
+    try:
+        await bridge_room(room_id)
+        await bridge_request(
+            "POST", f"/{room_id}/leave", {"owner": str(request.user.id)}
+        )
+    except HTTPException as error:
+        if error.status_code != 404:
+            raise
+    return Response(status_code=204)
+
+
+@protected_route(router.get, "/bridge/native/launcher", [Scope.ROMS_READ])
+async def download_native_launcher(request: Request) -> Response:
+    if not bridge_enabled():
+        raise HTTPException(status_code=404, detail="Netplay relay is not configured")
+    return Response(
+        native_launch.launcher_package(request),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="RomM-Windows-launcher.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@protected_route(
+    router.post,
+    "/bridge/rooms/{room_id}/native/ticket",
+    [Scope.ROMS_READ, Scope.ASSETS_WRITE],
+)
+async def create_native_ticket(
+    request: Request, response: Response, room_id: str, body: BridgeNativeRequest
+) -> BridgeNativeTicketResponse:
+    room = await bridge_room(room_id)
+    _assert_room_access(request, room, body.rom_id)
+    _assert_selected_cartridge(request, room, body)
+    response.headers["Cache-Control"] = "no-store"
+    return native_launch.create_ticket(request, room, body)
+
+
+@protected_route(router.get, "/bridge/rooms/{room_id}/native/ticket", [Scope.ROMS_READ])
+async def get_native_ticket(
+    request: Request,
+    response: Response,
+    room_id: str,
+    x_netplay_launch: str = Header(default=""),
+) -> BridgeNativeTicketStatus:
+    response.headers["Cache-Control"] = "no-store"
+    return native_launch.ticket_status(request, room_id, x_netplay_launch)
+
+
+@router.post("/bridge/rooms/{room_id}/native/claim")
+async def claim_native_ticket(
+    request: Request,
+    response: Response,
+    room_id: str,
+    x_netplay_launch: str = Header(default=""),
+) -> dict[str, Any]:
+    metadata = native_launch.claim_ticket(room_id, x_netplay_launch)
+    try:
+        user = db_user_handler.get_user(metadata["owner"])
+        if (
+            not user
+            or not user.enabled
+            or not {Scope.ROMS_READ, Scope.ASSETS_WRITE}.issubset(user.oauth_scopes)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="This account can no longer prepare a Windows session",
+            )
+        owner_request = Request({**request.scope, "user": user, "state": {}})
+        body = BridgeNativeRequest.model_validate(metadata["body"])
+        room = await bridge_room(room_id)
+        _assert_room_access(owner_request, room, body.rom_id)
+        _assert_selected_cartridge(owner_request, room, body)
+        if not any(
+            member["player"] == metadata["player"]
+            and member.get("owner") == str(user.id)
+            and member["kind"] == "web"
+            for member in room.get("members", [])
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Your browser has left this room. Join it again before opening RetroArch.",
+            )
+        session = await native_launch.prepare(owner_request, room, body)
+    except Exception as error:
+        native_launch.finish_ticket(
+            x_netplay_launch,
+            metadata,
+            error=(
+                str(error.detail)
+                if isinstance(error, HTTPException)
+                else "Could not prepare Windows RetroArch. Try opening it again from the room."
+            ),
+        )
+        raise
+    native_launch.finish_ticket(x_netplay_launch, metadata, session=session)
+    response.headers["Cache-Control"] = "no-store"
+    return await native_launch.session_manifest(request, room_id, session.credential)
+
+
+@router.get("/bridge/rooms/{room_id}/native/package")
+async def native_room_package(
+    request: Request, room_id: str, x_netplay_launch: str = Header(default="")
+) -> Response:
+    content = await native_launch.package(request, room_id, x_netplay_launch)
+    return Response(
+        content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="RomM-Windows-room.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/bridge/rooms/{room_id}/native/content/{slot}")
+async def native_room_content(
+    room_id: str, slot: int, x_netplay_launch: str = Header(default="")
+) -> FileResponse:
+    path = await native_launch.content_path(room_id, x_netplay_launch, slot)
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/bridge/rooms/{room_id}/native/manifest")
+async def native_room_manifest(
+    request: Request,
+    response: Response,
+    room_id: str,
+    x_netplay_launch: str = Header(default=""),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    return await native_launch.session_manifest(request, room_id, x_netplay_launch)
+
+
+@protected_route(router.post, "/bridge/rooms/{room_id}/control", [Scope.ROMS_READ])
+async def control_bridge_room(
+    request: Request, room_id: str, body: BridgeControlRequest
+) -> dict[str, Any]:
+    room = await bridge_room(room_id)
+    member = next(
+        (
+            item
+            for item in room.get("members", [])
+            if item.get("owner") == str(request.user.id)
+        ),
+        None,
+    )
+    if not member:
+        raise HTTPException(
+            status_code=403, detail="Join the room before controlling it"
+        )
+    _assert_room_access(request, room, member.get("romId") or room["romId"])
+    return dict(
+        await bridge_request(
+            "POST",
+            f"/{room_id}/control",
+            {
+                "owner": str(request.user.id),
+                "t": "start-request" if body.action == "start" else body.action,
+                "player": body.player,
+                "seat": body.seat,
+            },
+        )
+    )
+
+
+@protected_route(router.patch, "/bridge/rooms/{room_id}/native/seat", [Scope.ROMS_READ])
+async def assign_native_seat(
+    request: Request,
+    room_id: str,
+    body: BridgeNativeSeatRequest,
+    x_netplay_launch: str = Header(default=""),
+) -> dict[str, Any]:
+    reservation = await native_launch.reservation(room_id, x_netplay_launch)
+    if reservation["owner"] != str(request.user.id):
+        raise HTTPException(
+            status_code=403, detail="You can only change your own player number"
+        )
+    return dict(
+        await bridge_request(
+            "PATCH", f"/{room_id}/native/{x_netplay_launch}", {"seat": body.seat}
+        )
+    )
+
+
+@protected_route(router.delete, "/bridge/rooms/{room_id}/native", [Scope.ROMS_READ])
+async def cancel_native_preparation(
+    request: Request, room_id: str, x_netplay_launch: str = Header(default="")
+) -> Response:
+    reservation = await native_launch.reservation(room_id, x_netplay_launch)
+    if reservation["owner"] != str(request.user.id):
+        raise HTTPException(
+            status_code=403, detail="This preparation belongs to another account"
+        )
+    await bridge_request("DELETE", f"/{room_id}/native/{x_netplay_launch}")
+    return Response(status_code=204)
+
+
+@protected_route(
+    router.post, "/bridge/rooms/{room_id}/native/saves", [Scope.ASSETS_WRITE]
+)
+async def sync_native_save(
+    request: Request, room_id: str, body: BridgeNativeSaveRequest
+) -> dict[str, Any]:
+    room = await bridge_room(room_id)
+    save_owner = next(
+        (
+            member.get("owner")
+            for member in room.get("members", [])
+            if member["player"] == room.get("saveHost")
+        ),
+        room.get("owner"),
+    )
+    if save_owner != str(request.user.id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the room's web save source can synchronize native saves",
+        )
+    return await native_launch.save_progress(room, body)
 
 
 @protected_route(router.delete, "/bridge/rooms/{room_id}", [Scope.ROMS_READ])

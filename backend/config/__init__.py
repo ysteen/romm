@@ -40,6 +40,7 @@ NETPLAY_BRIDGE_URL: Final[str] = _get_env("NETPLAY_BRIDGE_URL", "")
 NETPLAY_BRIDGE_TOKEN: Final[str] = _get_env("NETPLAY_BRIDGE_TOKEN", "")
 NETPLAY_BRIDGE_PUBLIC_URL: Final[str] = _get_env("NETPLAY_BRIDGE_PUBLIC_URL", "")
 NETPLAY_BRIDGE_PUBLIC_HOST: Final[str] = _get_env("NETPLAY_BRIDGE_PUBLIC_HOST", "")
+NETPLAY_BRIDGE_CA_CERT_PATH: Final[str] = _get_env("NETPLAY_BRIDGE_CA_CERT_PATH", "")
 
 # GUNICORN
 DEV_MODE: Final[bool] = safe_str_to_bool(_get_env("DEV_MODE"))

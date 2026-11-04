@@ -50,6 +50,13 @@ map $args $resources_cache_control {
     "~(^|&)(ts|v)=" "public, max-age=31536000, immutable";
 }
 
+# Room entry pages and bridge modules retain their URLs across deployments.
+map $uri $assets_cache_control {
+    default "public, max-age=3600, must-revalidate";
+    ~^/assets/emulatorjs/input-netplay/ "no-cache";
+    ~^/assets/emulatorjs/data/src/(bridge-|link-core\.js) "no-cache";
+}
+
 server {
     root /var/www/html;
     listen ${ROMM_PORT};
@@ -102,7 +109,7 @@ server {
 
     # Everything else under /assets keeps a stable URL across image upgrades
     location /assets {
-        add_header Cache-Control "public, max-age=3600, must-revalidate";
+        add_header Cache-Control $assets_cache_control;
         add_header Cross-Origin-Embedder-Policy $coep_header;
         add_header Cross-Origin-Opener-Policy $coop_header;
         gzip_static on;

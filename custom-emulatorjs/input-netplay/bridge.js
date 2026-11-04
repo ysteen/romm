@@ -9,9 +9,16 @@ import {
 import {
   BridgeConnection,
   crc32,
-} from "../data/src/bridge-session.js?v=lifecycle-20261102";
-import { installBridgeMenu } from "./bridge-menu.js?v=20261102";
+} from "../data/src/bridge-session.js?v=automatic-join-20261104";
+import { installBridgeMenu } from "./bridge-menu.js?v=room-lifetime-20261104";
+import { unpackRoomCartridge } from "./cartridge.js";
 import { installNativeDownloads } from "./native-downloads.js?v=native-startup-20261102";
+import {
+  describeCartridge,
+  assertCartridges,
+  participantClient,
+  encodeBattery,
+} from "./room-content.js?v=native-host-20261103";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
 
 const elements = new Map(
@@ -23,28 +30,47 @@ const elements = new Map(
 const $ = (id) => elements.get(id);
 let integration = {},
   updateMenu = () => {},
-  screenView;
+  gameVisible = false,
+  screenView,
+  cancelPlayerLoad;
 function showRoom(open) {
+  const playing = gameVisible && !!frame;
   const panel = $("room-panel");
-  panel.hidden = !open;
-  $("close-room").hidden = !connection?.started;
+  panel.hidden = playing && !open;
+  $("close-room").hidden = !playing;
+  $("close-game").hidden = !playing;
+  $("close-game").disabled = !connection?.started;
   if (frame?.contentWindow) frame.contentWindow.localButtons = 0;
-  if (open) (connection?.started ? $("close-room") : $("create")).focus();
-  else
-    frame?.contentWindow.EJS_emulator.elements.parent.focus({
+  updateMenu(
+    !!frame?.contentWindow.EJS_emulator?.paused,
+    playing,
+    !panel.hidden,
+    !!connection?.started,
+  );
+  if (open && playing) $("close-room").focus({ preventScroll: true });
+  else if (panel.hidden)
+    frame.contentWindow.EJS_emulator?.elements.parent.focus({
       preventScroll: true,
     });
 }
-function releasePlayer() {
-  clearInterval(ticker);
+function selectPlayerSeat(seat) {
+  screenView?.select(profile.sharedSave ? 0 : seat);
+  if (adapter && frame && profile.audioOption)
+    frame.contentWindow.EJS_emulator.gameManager.setVariable(
+      profile.audioOption,
+      profile.audio[seat],
+    );
+}
+function releaseEmulator() {
+  gameVisible = false;
+  cancelPlayerLoad?.();
+  cancelPlayerLoad = null;
+  tickerWindow?.clearInterval(ticker);
   clearInterval(autosave);
-  room = null;
-  connection?.stop();
-  connection = null;
-  window.bridgeConnection = null;
   window.bridgeAdapter = null;
   screenView?.destroy();
-  frame?.contentWindow.audioOutput?.destroy();
+  screenView = null;
+  frame?.contentWindow?.audioOutput?.destroy();
   document.body.append($("room-panel"));
   frame?.remove();
   frame = null;
@@ -52,11 +78,26 @@ function releasePlayer() {
   updateMenu = () => {};
   $("screen").hidden = true;
 }
+function releasePlayer() {
+  room = null;
+  lastLobby = null;
+  connection?.stop();
+  connection = null;
+  window.bridgeConnection = null;
+  releaseEmulator();
+}
 let rom, profile, coreCatalog, frame, adapter, connection, room;
-let cartridge, initialBattery, targetSave, lastSave, saving;
+let initialBattery, targetSave, lastSave, saving, pendingSave;
+let nativeSession, nativePoll, lastLobby, nativeSaving;
+let membership;
+let nativeTicket, nativeTicketPoll;
+let activeNativeAllowed = false;
+const cartridgeCache = new Map();
+const cartridgeNames = new Map();
+const nativeSaved = new Map();
 let ticker,
+  tickerWindow,
   autosave,
-  closed = false,
   initialized = false;
 const rooms = new Map();
 
@@ -124,8 +165,6 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
   if (theme === "light" || theme === "dark")
     document.documentElement.style.colorScheme = theme;
   if (integration.labels?.back) $("back").textContent = integration.labels.back;
-  if (integration.labels?.resume)
-    $("close-room").textContent = integration.labels.resume;
   try {
     rom = await api(`/roms/${romId}`);
     profile = bridgeCore(bridgeCoreFor(rom.platform_slug));
@@ -135,7 +174,6 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
     const response = await fetch("bridge-cores.json", { cache: "no-store" });
     if (!response.ok) throw new Error("Relay core catalog is unavailable");
     coreCatalog = await response.json();
-    $("title").textContent = rom.name ?? rom.fs_name;
     for (const option of $("players").options)
       option.disabled = Number(option.value) > profile.maxPlayers;
     $("native").disabled = !coreCatalog[profile.core]?.native;
@@ -153,13 +191,6 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
       });
       $("native-game-load").hidden = profile.core !== "mgba_splitscreen";
     }
-    const nested =
-      rom.has_nested_single_file && rom.files?.length === 1
-        ? rom.files[0].file_name
-        : rom.fs_name;
-    cartridge = await bytes(
-      `/api/roms/${rom.id}/content/${encodeURIComponent(nested)}?purpose=play`,
-    );
     if (resume?.stateId && !resume?.battery)
       throw new Error(
         "Save states cannot start this multiplayer core. Select an in-game save, or load the state in single-player first.",
@@ -175,6 +206,9 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
       : selected
         ? await bytes(selected.download_path)
         : new Uint8Array();
+    cartridgeNames.set(rom.id, Promise.resolve(rom.name ?? rom.fs_name));
+    $("selected-cartridge").textContent =
+      `Your cartridge: ${rom.name ?? rom.fs_name}`;
     $("save-status").textContent = resume?.battery
       ? "Continuing current progress."
       : selected
@@ -192,6 +226,70 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
   } catch (error) {
     fail(error);
   }
+}
+
+async function loadCartridges(ids, expected) {
+  const contents = [],
+    manifest = [];
+  for (const id of ids) {
+    let cached = cartridgeCache.get(id);
+    if (!cached) {
+      const item = id === rom.id ? rom : await api(`/roms/${id}`);
+      const name =
+        item.has_nested_single_file && item.files?.length === 1
+          ? item.files[0].file_name
+          : item.fs_name;
+      const raw = await bytes(
+        `/api/roms/${id}/content/${encodeURIComponent(name)}?purpose=play`,
+      );
+      const data = await unpackRoomCartridge(raw, profile);
+      cached = { data, description: await describeCartridge(id, data) };
+      cartridgeCache.set(id, cached);
+    }
+    contents.push(cached.data);
+    manifest.push(cached.description);
+  }
+  if (expected) assertCartridges(expected, manifest);
+  return { contents, manifest };
+}
+
+function updatePlayChoice() {
+  const selected = room ?? rooms.get($("rooms").value);
+  const allowed = room
+    ? activeNativeAllowed
+    : selected?.native_allowed && selected?.native_auth;
+  const connected = !!room && !!connection && !connection.closed;
+  const seat = lastLobby?.seats[connection?.player];
+  const client = $("play-client").value;
+  const needsWindowsPlatform =
+    client === "windows" && !$("native-platform").value.startsWith("windows-");
+  const joinedWeb = !!connection?.joinRequested;
+  $("play-choice").hidden = !!nativeSession;
+  $("play-client").querySelector('[value="windows"]').disabled = !allowed;
+  $("play-client").disabled =
+    !connected || !!nativeTicket || !!connection?.preparing;
+  $("join-game").disabled =
+    !connected ||
+    !!connection?.preparing ||
+    !Number.isInteger(seat) ||
+    !client ||
+    (client === "web" && joinedWeb) ||
+    (client === "windows" && !allowed) ||
+    needsWindowsPlatform;
+  $("join-game").textContent = nativeTicket
+    ? "Open launcher again"
+    : client === "web" && joinedWeb
+      ? "Joined in Web"
+      : "Join game";
+  $("join-game-help").textContent = nativeTicket
+    ? "Waiting for the Windows launcher to connect…"
+    : client === "web" && joinedWeb
+      ? connection?.started
+        ? "Playing in this browser."
+        : "Joined in Web. Waiting for the host or current game state."
+      : needsWindowsPlatform
+        ? "Choose a Windows platform under Windows launcher & core setup below."
+        : "Choose your player number and how to play, then select Join game.";
 }
 
 async function refreshRooms() {
@@ -231,7 +329,8 @@ function updateJoin() {
   if (!selected?.has_password) $("join-password").value = "";
   if (selected?.started)
     $("join-help").textContent +=
-      " The current game continues until the host restarts for you.";
+      " Choose a player number and Web or Windows, then select Join game.";
+  updatePlayChoice();
 }
 
 function renderLatency(members) {
@@ -248,25 +347,45 @@ function renderLatency(members) {
 }
 
 function renderLobby(value) {
+  lastLobby = value;
   $("lobby").hidden = false;
-  if (!connection.started) showRoom(true);
-  const host = connection.player === value.host;
-  $("start").hidden = !host;
+  if (!gameVisible) showRoom(true);
+  const ownPlayer = connection?.player ?? nativeSession?.player;
+  const host = Number.isInteger(ownPlayer) && ownPlayer === value.host;
+  const differentCartridges =
+    value.collectCartridges &&
+    value.contentPrepared &&
+    value.members.some((member) => {
+      const seat = value.seats[member.player];
+      return (
+        Number.isInteger(seat) &&
+        value.cartridges?.[seat]?.romId !== member.romId
+      );
+    });
+  $("start").hidden = !host || (value.running && !differentCartridges);
   $("start").disabled = !value.canStart;
-  $("start").textContent = value.running
-    ? "Restart game for waiting players"
+  $("start").textContent = differentCartridges
+    ? "Prepare new game"
     : "Start game";
   $("lobby-status").textContent = value.starting
     ? "Preparing the game…"
     : value.running
-      ? "The game continues. The host can restart once waiting players choose their numbers."
+      ? differentCartridges
+        ? "A different cartridge is waiting for the next game. The host can prepare a new game or remove that player."
+        : "Game in progress. Select Join game to continue from the current state."
       : value.canStart
         ? host
-          ? "Everyone has a number. Start when you are ready."
+          ? "Everyone is ready. You can start the game."
           : "Waiting for the host to start."
-        : `${value.members.length}/${value.players} connected. Every player must choose a number.`;
-  if (!connection.started)
-    status(value.starting ? "Preparing the game…" : "Waiting room");
+        : `${value.members.length}/${value.players} players in the room.`;
+  if (!connection?.started)
+    status(
+      value.starting
+        ? "Preparing the game…"
+        : value.running
+          ? "Game in progress."
+          : "Waiting room",
+    );
   const activePlayer =
     $("participants").ownerDocument.activeElement?.dataset.player;
   $("participants").replaceChildren();
@@ -274,14 +393,35 @@ function renderLobby(value) {
     const row = document.createElement("li");
     const name = document.createElement("span");
     name.className = "member-name";
-    name.textContent = `${member.nickname || (member.kind === "native" ? "RetroArch" : "Player")}${member.player === value.host ? " · Host" : ""}${member.player === connection.player ? " · You" : ""}`;
+    name.textContent = `${member.nickname || (member.kind === "native" ? "RetroArch" : "Player")}${member.player === value.host ? " · Host" : ""}${member.player === ownPlayer ? " · You" : ""}`;
+    const client = document.createElement("span");
+    client.className = "member-client";
+    client.textContent = participantClient(member);
+    name.append(" ", client);
     const ping = document.createElement("span");
     ping.className = "member-ping";
     ping.dataset.pingPlayer = String(member.player);
     name.append(" ", ping);
+    const game = document.createElement("span");
+    game.className = "member-game";
+    game.textContent = "Loading cartridge name…";
+    if (!cartridgeNames.has(member.romId))
+      cartridgeNames.set(
+        member.romId,
+        api(`/roms/${member.romId}`)
+          .then((item) => item.name ?? item.fs_name)
+          .catch(() => "Unavailable cartridge"),
+      );
+    void cartridgeNames.get(member.romId).then((title) => {
+      game.textContent = `Cartridge: ${title}`;
+    });
+    name.append(game);
     const select = document.createElement("select");
     select.dataset.player = String(member.player);
-    select.setAttribute("aria-label", `Player number for ${name.textContent}`);
+    select.setAttribute(
+      "aria-label",
+      `Player number for ${member.nickname || "player"}`,
+    );
     select.append(new Option("Not selected", ""));
     for (let seat = 0; seat < value.players; seat++) {
       const option = new Option(`P${seat + 1}`, String(seat));
@@ -296,45 +436,71 @@ function renderLobby(value) {
     select.disabled =
       value.starting ||
       (value.running && member.playing) ||
-      (!host && member.player !== connection.player);
-    select.onchange = () =>
-      connection.assignPlayer(
-        member.player,
-        select.value === "" ? null : Number(select.value),
-      );
+      (!host && member.player !== ownPlayer);
+    select.onchange = () => {
+      const seat = select.value === "" ? null : Number(select.value);
+      if (connection && !nativeSession)
+        connection.assignPlayer(member.player, seat);
+      else void nativeControl("assign", { player: member.player, seat });
+    };
     const readiness = document.createElement("span");
+    readiness.className = "member-state";
     readiness.textContent = member.playing
       ? "Playing"
       : member.ready
         ? "Ready"
-        : "Connecting…";
+        : member.kind === "preparing"
+          ? "Preparing…"
+          : member.kind === "web"
+            ? "Waiting for game"
+            : "Connecting…";
     row.append(name, select, readiness);
+    if (host && member.player !== ownPlayer) {
+      const remove = document.createElement("button");
+      remove.textContent = "Remove";
+      remove.setAttribute(
+        "aria-label",
+        `Remove ${member.nickname || "player"} from room`,
+      );
+      remove.onclick = () =>
+        connection && !nativeSession
+          ? connection.removePlayer(member.player)
+          : void nativeControl("kick", { player: member.player });
+      row.append(remove);
+    }
     $("participants").append(row);
     if (activePlayer === String(member.player)) select.focus();
   }
   renderLatency(value.members);
+  updatePlayChoice();
 }
 
-async function boot(players, nativeAllowed) {
-  releasePlayer();
+async function boot(players, nativeAllowed, contents, keepRoom = false) {
+  if (keepRoom) releaseEmulator();
+  else releasePlayer();
   profile = bridgeCore(profile.core, players);
   const build = coreCatalog[profile.core]?.[nativeAllowed ? "native" : "web"];
   if (!build)
     throw new Error(
       "This core build is unavailable for the selected connection",
     );
-  frame = document.createElement("iframe");
-  frame.title = profile.standardGame
-    ? "Multiplayer game"
-    : "Linked game consoles";
-  frame.allow = "autoplay; gamepad; fullscreen";
-  const loaded = new Promise((resolve, reject) => {
-    frame.onload = resolve;
-    frame.onerror = () => reject(new Error("Could not open player"));
+  status("Loading the game…");
+  const playerFrame = document.createElement("iframe");
+  playerFrame.title = rom.name ?? rom.fs_name;
+  playerFrame.allow = "autoplay; gamepad; fullscreen";
+  const cancelled = new Promise((_, reject) => {
+    cancelPlayerLoad = () => reject(new Error("The game was closed"));
   });
-  frame.src = "player.html?v=player-20261102";
-  $("screen").replaceChildren(frame);
-  await loaded;
+  cancelled.catch(() => {});
+  const loaded = new Promise((resolve, reject) => {
+    playerFrame.onload = resolve;
+    playerFrame.onerror = () => reject(new Error("Could not load the player"));
+  });
+  playerFrame.src = "player.html?v=native-host-20261103";
+  frame = playerFrame;
+  $("screen").replaceChildren(playerFrame);
+  await Promise.race([loaded, cancelled]);
+  if (frame !== playerFrame) throw new Error("The room has closed");
   // A background tab may deny a wake lock. Emulation can continue without it.
   const wakeLock = frame.contentWindow.navigator.wakeLock;
   if (wakeLock) {
@@ -353,39 +519,46 @@ async function boot(players, nativeAllowed) {
         ]),
       )
     : undefined;
-  adapter = await frame.contentWindow.boot(
-    Array(profile.standardGame ? 1 : players).fill(cartridge),
-    {
-      ...profile.options,
-      ...build.options,
-    },
-    {
-      core: profile.core,
-      profile,
-      paths,
-      waitForCoreInitialization: !!build.waitForCoreInitialization,
-      onNetplay: () => showRoom(true),
-      bufferAudio: true,
-      language: integration.language,
-      buttons: {
-        saveState: false,
-        loadState: false,
-        loadSavFiles: false,
-        restart: false,
-        exitEmulation: true,
-        saveSavFiles: { displayName: integration.labels?.save ?? "Sync save" },
-        pause: { displayName: integration.labels?.pause ?? "Pause" },
-        play: { displayName: integration.labels?.resume ?? "Resume" },
-        netplay: { displayName: integration.labels?.netplay ?? "Netplay" },
+  const loadedAdapter = await Promise.race([
+    cancelled,
+    frame.contentWindow.boot(
+      contents,
+      {
+        ...profile.options,
+        ...build.options,
       },
-    },
-  );
+      {
+        core: profile.core,
+        profile,
+        paths,
+        waitForCoreInitialization: !!build.waitForCoreInitialization,
+        onNetplay: () => showRoom(true),
+        bufferAudio: true,
+        language: integration.language,
+        buttons: {
+          saveState: false,
+          loadState: false,
+          loadSavFiles: false,
+          restart: false,
+          exitEmulation: true,
+          saveSavFiles: {
+            displayName: integration.labels?.save ?? "Sync save",
+          },
+          pause: { displayName: integration.labels?.pause ?? "Pause" },
+          play: { displayName: integration.labels?.resume ?? "Resume" },
+          netplay: { displayName: integration.labels?.netplay ?? "Netplay" },
+        },
+      },
+    ),
+  ]);
+  if (frame !== playerFrame) throw new Error("The room has closed");
+  adapter = loadedAdapter;
   window.bridgeAdapter = adapter;
   const emulator = frame.contentWindow.EJS_emulator;
   frame.contentDocument.body.classList.add("romm-player");
   const style = frame.contentDocument.createElement("link");
   style.rel = "stylesheet";
-  style.href = new URL("bridge.css?v=lifecycle-20261102", location.href).href;
+  style.href = new URL("bridge.css?v=room-ui-20261104", location.href).href;
   frame.contentDocument.head.append(style);
   frame.contentDocument.documentElement.style.colorScheme =
     document.documentElement.style.colorScheme;
@@ -396,10 +569,9 @@ async function boot(players, nativeAllowed) {
       if (connection?.started) connection.pause(paused);
     },
     save: () => save().catch(saveError),
-    leave,
-    exitLabel: integration.labels?.exit,
+    closeGame,
   });
-  updateMenu(false, false);
+  updateMenu(false, false, true);
   $("screen").hidden = false;
   const screen = (screenView = installPlayerScreen(emulator, profile));
   const actualRom = emulator.gameManager.FS.readFile("/" + emulator.fileName);
@@ -415,28 +587,54 @@ async function launch(joinId) {
     const players = selected?.players ?? Number($("players").value);
     const nativeAllowed = selected?.native_allowed ?? $("native").checked;
     status("Loading game…");
-    const { build, screen, contentCrc } = await boot(players, nativeAllowed);
-    if (
-      selected &&
-      (selected.state_size !== adapter.size ||
-        selected.core_version !== build.coreVersion ||
-        (selected.max_prediction ?? 0) !== (build.maxPrediction ?? 0) ||
-        selected.content_crc !== contentCrc)
-    )
-      throw new Error("The room uses a different core build or cartridge");
+    const collectCartridges =
+      selected?.collect_cartridges ??
+      ["sameboy", "mgba_splitscreen"].includes(profile.core);
+    const own = (await loadCartridges([rom.id])).manifest[0];
+    let build = coreCatalog[profile.core]?.[nativeAllowed ? "native" : "web"];
+    let loaded;
+    let contentCrc = own.crc32;
+    activeNativeAllowed = nativeAllowed;
+    if (collectCartridges) {
+      profile = bridgeCore(profile.core, players);
+    } else {
+      const ids =
+        selected?.cartridges?.map((item) => item.romId) ??
+        Array(profile.standardGame ? 1 : players).fill(rom.id);
+      loaded = await loadCartridges(ids, selected?.cartridges);
+      ({ build, contentCrc } = await boot(
+        players,
+        nativeAllowed,
+        loaded.contents,
+      ));
+      if (contentCrc !== loaded.manifest[0].crc32)
+        throw new Error("The loaded cartridge differs from the room manifest");
+      if (
+        selected &&
+        (selected.state_size !== adapter.size ||
+          selected.core_version !== build.coreVersion ||
+          (selected.max_prediction ?? 0) !== (build.maxPrediction ?? 0) ||
+          selected.content_crc !== contentCrc)
+      )
+        throw new Error("The room uses a different core build or cartridge");
+    }
     const body = joinId
-      ? { rom_id: rom.id, password: $("join-password").value }
+      ? { rom_id: rom.id, password: $("join-password").value, cartridge: own }
       : {
           rom_id: rom.id,
           system: profile.system,
           coreName: build.coreName,
           coreVersion: build.coreVersion,
           contentCrc,
-          stateSize: adapter.size,
+          stateSize: adapter?.size ?? 1,
           players,
           nativeAllowed,
           password: $("create-password").value,
           maxPrediction: build.maxPrediction ?? 0,
+          collectCartridges,
+          cartridges: collectCartridges
+            ? Array(players).fill(own)
+            : loaded.manifest,
           ...(build.nativeCalibration
             ? { nativeCalibration: build.nativeCalibration }
             : {}),
@@ -450,26 +648,44 @@ async function launch(joinId) {
         body: JSON.stringify(body),
       },
     );
+    membership = room.id;
     const player = room.player ?? 0;
-    screen.select(profile.sharedSave ? 0 : player);
-    if (profile.audioOption)
-      frame.contentWindow.EJS_emulator.gameManager.setVariable(
-        profile.audioOption,
-        profile.audio[player],
-      );
-    const socket = new WebSocket(room.websocket_url);
+    selectPlayerSeat(player);
+    const socketUrl = new URL(room.websocket_url, location.href);
+    socketUrl.searchParams.set("manualJoin", "1");
+    socketUrl.searchParams.set("retainRoom", "1");
+    const socket = new WebSocket(socketUrl.href);
     connection = new BridgeConnection(adapter, socket, {
       player,
       players,
       battery: bridgeSeed(profile, player, initialBattery),
       maxPrediction: build.maxPrediction ?? 0,
+      manualJoin: true,
       calibrate:
         build.nativeCalibration === "sameboy-v1" ? calibrateSameBoy : null,
       onStatus(value) {
+        if (value === "game-reset") {
+          clearNativeSession();
+          initialBattery = connection.battery?.slice() ?? initialBattery;
+          updatePlayChoice();
+          status(
+            "The host is preparing a new game. Choose how to play and select Join game.",
+          );
+          return;
+        }
+        if (value === "game-closed") {
+          releaseEmulator();
+          if (!connection.nativeMode) clearNativeSession();
+          showRoom(true);
+          updatePlayChoice();
+          status("Game closed. You are still in the room.");
+          return;
+        }
         if (value === "connected") {
           $("lobby").hidden = false;
-          $("screen").hidden = false;
-          showRoom(false);
+          const firstStart = !gameVisible;
+          gameVisible = true;
+          if (firstStart) showRoom(false);
         }
         status(
           value === "connected"
@@ -478,34 +694,67 @@ async function launch(joinId) {
               ? "Waiting for all players…"
               : value,
         );
-        updateMenu(value === "paused", !!connection?.started);
+        updateMenu(
+          value === "paused",
+          gameVisible,
+          !$("room-panel").hidden,
+          !!connection?.started,
+        );
         if (value === "paused") {
-          frame?.contentWindow.audioOutput.flush();
-          frame?.contentWindow.EJS_emulator.displayMessage("Paused");
+          frame?.contentWindow.audioOutput?.flush();
+          frame?.contentWindow.EJS_emulator?.displayMessage("Paused");
         }
         if (value === "stopped") {
-          clearInterval(ticker);
+          gameVisible = false;
+          tickerWindow?.clearInterval(ticker);
           clearInterval(autosave);
-          frame?.contentWindow.audioOutput.flush();
+          frame?.contentWindow.audioOutput?.flush();
           showRoom(true);
         }
+      },
+      onContent: async (packet) => {
+        const current = connection;
+        const prepared = await loadCartridges(
+          packet.cartridges.map((item) => item.romId),
+          packet.cartridges,
+        );
+        if (current?.closed || current !== connection)
+          throw new Error("The room has closed");
+        const result = await boot(
+          players,
+          nativeAllowed,
+          prepared.contents,
+          true,
+        );
+        if (current.closed || current !== connection)
+          throw new Error("The room has closed");
+        if (
+          result.build.coreVersion !== packet.coreVersion ||
+          result.contentCrc !== packet.contentCrc
+        )
+          throw new Error(
+            "The prepared core or cartridge differs from the room",
+          );
+        selectPlayerSeat(connection.seats[player]);
+        startPlayerLoop();
+        showRoom(true);
+        return adapter;
       },
       onLobby: renderLobby,
       onLatency: renderLatency,
       onRestart() {
         frame?.contentWindow.audioOutput.flush();
-        frame.contentWindow.localButtons = 0;
+        if (frame) frame.contentWindow.localButtons = 0;
       },
-      onSeats(seat) {
-        screen.select(profile.sharedSave ? 0 : seat);
-        if (profile.audioOption)
-          frame.contentWindow.EJS_emulator.gameManager.setVariable(
-            profile.audioOption,
-            profile.audio[seat],
-          );
-      },
+      onSeats: selectPlayerSeat,
       onActionError: (message) => status(message, true),
       onError: fail,
+      onHandoff: (retained) => {
+        if (retained) releaseEmulator();
+        else releasePlayer();
+        showRoom(true);
+        status("Continuing in Windows RetroArch…");
+      },
     });
     window.bridgeConnection = connection;
     $("setup").hidden = true;
@@ -520,53 +769,59 @@ async function launch(joinId) {
     const invite = new URL("bridge.html", location.href);
     invite.searchParams.set("romId", String(rom.id));
     invite.searchParams.set("room", room.id);
-    invite.searchParams.set("v", "lifecycle-20261102");
+    invite.searchParams.set("v", "native-host-20261103");
     $("room-link").href = invite.href;
     $("room-link").textContent = "Open room invitation";
     $("core-info").textContent = nativeAllowed
-      ? `${build.coreName} ${build.coreVersion}. ${profile.standardGame ? "Load the game once" : `Load the same cartridge in all ${players} link slots`}, then connect through RetroArch Netplay.${profile.core === "sameboy" ? " Use 48000 Hz audio." : ""}`
+      ? `${build.coreName} ${build.coreVersion}. Choose Windows RetroArch and Join game to load the room's cartridges in order and connect.`
       : "Share this invitation with the other players.";
-    let next = performance.now();
-    ticker = setInterval(() => {
-      if (!connection || !frame) return;
-      const now = performance.now();
-      if (now - next > 200) next = now;
-      try {
-        for (let steps = 0; steps < 3 && performance.now() >= next; steps++) {
-          if (
-            !connection.tick(
-              $("room-panel").hidden
-                ? frame.contentWindow.localButtons || 0
-                : 0,
-            )
-          ) {
-            next = performance.now();
-            break;
-          }
-          next += 1000 / profile.frameRate;
-          if (performance.now() - now >= 8) break;
-        }
-      } catch (error) {
-        fail(error);
-      }
-    }, 4);
-    autosave = setInterval(() => {
-      if (connection?.started) void save().catch(saveError);
-    }, 15000);
-    frame.contentWindow.selectPlayer = () =>
-      frame.contentWindow.audioOutput.setActive(true);
-    frame.contentWindow.addEventListener(
-      "focus",
-      frame.contentWindow.selectPlayer,
-    );
-    frame.contentWindow.addEventListener("blur", () =>
-      frame.contentWindow.audioOutput.setActive(false),
-    );
-    frame.contentWindow.audioOutput.setActive(true);
+    if (frame) startPlayerLoop();
     showRoom(true);
+    updatePlayChoice();
   } catch (error) {
     fail(error);
   }
+}
+
+function startPlayerLoop() {
+  let next = performance.now();
+  tickerWindow = frame.contentWindow;
+  ticker = tickerWindow.setInterval(() => {
+    if (!connection || !frame) return;
+    const now = performance.now();
+    if (now - next > 200) next = now;
+    try {
+      for (let steps = 0; steps < 3 && performance.now() >= next; steps++) {
+        if (
+          !connection.tick(
+            $("room-panel").hidden ? frame.contentWindow.localButtons || 0 : 0,
+          )
+        ) {
+          next = performance.now();
+          break;
+        }
+        next += 1000 / profile.frameRate;
+        if (performance.now() - now >= 8) break;
+      }
+    } catch (error) {
+      fail(error);
+    }
+  }, 4);
+  autosave = setInterval(() => {
+    if (connection?.started) void save().catch(saveError);
+  }, 15000);
+  frame.contentWindow.selectPlayer = () =>
+    frame.contentWindow.audioOutput.setActive(true);
+  frame.contentWindow.addEventListener(
+    "focus",
+    frame.contentWindow.selectPlayer,
+  );
+  frame.contentWindow.addEventListener("blur", () => {
+    if (!frame) return;
+    frame.contentWindow.localButtons = 0;
+    frame.contentWindow.audioOutput.setActive(false);
+  });
+  frame.contentWindow.audioOutput.setActive(true);
 }
 
 function ownBattery() {
@@ -578,14 +833,21 @@ function ownBattery() {
 }
 
 function saveError(error) {
-  showRoom(true);
   $("save-status").textContent = `Could not save: ${error.message}`;
   $("save-status").classList.add("error");
+  if (gameVisible)
+    frame?.contentWindow.EJS_emulator?.displayMessage(
+      "Could not sync save. Open Netplay for details.",
+    );
+  else showRoom(true);
 }
 
 async function save() {
+  const latest = ownBattery();
+  if (latest?.length) pendingSave = latest.slice();
   if (saving) return saving.then(() => save());
-  const data = ownBattery();
+  await saveNativeProgress();
+  const data = pendingSave;
   if (
     !data?.length ||
     (lastSave?.length === data.length &&
@@ -611,9 +873,10 @@ async function save() {
       targetSave = uploaded;
       lastSave = data;
       initialBattery = data.slice();
+      if (pendingSave === data) pendingSave = null;
       $("save-status").textContent = "Progress saved.";
       $("save-status").classList.remove("error");
-      frame?.contentWindow.EJS_emulator.displayMessage("Progress saved.");
+      frame?.contentWindow?.EJS_emulator?.displayMessage("Progress saved.");
     })
     .finally(() => {
       saving = null;
@@ -621,11 +884,249 @@ async function save() {
   return saving;
 }
 
+async function saveNativeProgress() {
+  if (nativeSaving) return nativeSaving;
+  if (
+    !connection?.started ||
+    connection.player !== (lastLobby?.saveHost ?? connection.host) ||
+    !lastLobby ||
+    !room
+  )
+    return;
+  const currentRoom = room.id;
+  const generation = connection.generation;
+  const confirmed = connection.session?.confirmed ?? 0;
+  const snapshots = [];
+  for (const member of lastLobby.members) {
+    if (member.kind !== "native" || !member.playing || !member.owner) continue;
+    const id = bridgeBatteryId(profile, connection.seats[member.player]);
+    const data = connection.session?.maxPrediction
+      ? connection.session.confirmedMemory(id)
+      : adapter.memory(id).slice();
+    if (!data?.length) continue;
+    const encoded = encodeBattery(data);
+    const key = `${currentRoom}:${generation}:${member.player}:${member.owner}`;
+    if (nativeSaved.get(key) === encoded) continue;
+    snapshots.push({
+      key,
+      encoded,
+      player: member.player,
+      owner: member.owner,
+    });
+  }
+  nativeSaving = (async () => {
+    for (const item of snapshots) {
+      await api(`/netplay/bridge/rooms/${currentRoom}/native/saves`, {
+        method: "POST",
+        body: JSON.stringify({
+          player: item.player,
+          owner: item.owner,
+          generation,
+          frame: confirmed,
+          battery: item.encoded,
+        }),
+      });
+      nativeSaved.set(item.key, item.encoded);
+    }
+  })().finally(() => {
+    nativeSaving = null;
+  });
+  return nativeSaving;
+}
+
+async function pollNativeRoom() {
+  clearTimeout(nativePoll);
+  if (!nativeSession) return;
+  const session = nativeSession;
+  try {
+    const listed = await api(`/netplay/bridge/rooms?rom_id=${rom.id}`);
+    if (nativeSession !== session) return;
+    const current = listed.find((item) => item.id === session.id);
+    const member = current?.members.find(
+      (item) => item.player === session.player,
+    );
+    if (!member) {
+      clearTimeout(nativePoll);
+      nativeSession = null;
+      $("native-session").hidden = $("lobby").hidden = true;
+      $("setup").hidden = false;
+      $("native-status").textContent =
+        "The Windows session ended or preparation expired. You can prepare again.";
+      await refreshRooms();
+      return;
+    }
+    if (member.kind === "web" && connection && !connection.nativeMode) {
+      clearNativeSession();
+      renderLobby({
+        ...current,
+        contentPrepared: current.content_prepared,
+        collectCartridges: current.collect_cartridges,
+        canStart: current.can_start,
+      });
+      showRoom(true);
+      status("Windows game closed. You are still in the room.");
+      return;
+    }
+    $("native-cancel").hidden = member.kind === "native";
+    $("native-status").textContent = member.playing
+      ? "Playing in Windows RetroArch. Keep this room open to stay connected."
+      : current.running
+        ? "Waiting for the current game state. A different cartridge stays in the room until the host prepares a new game."
+        : current.host === session.player
+          ? "You are the host. Start when everyone has joined and chosen a player number."
+          : member.ready
+            ? "Windows RetroArch is connected. Choose a number and wait for the host to start."
+            : "The Windows launcher is preparing RetroArch. Choose your player number; the host starts the game.";
+    if (
+      member.playing &&
+      current.native_authority &&
+      current.save_host === null
+    )
+      $("native-status").textContent +=
+        " Automatic RomM save uploads require a playing web participant.";
+    renderLobby({
+      ...current,
+      contentPrepared: current.content_prepared,
+      collectCartridges: current.collect_cartridges,
+      running: current.running,
+      starting: current.starting,
+      canStart: current.can_start,
+      saveHost: current.save_host,
+    });
+  } catch (error) {
+    $("native-status").textContent = error.message;
+  }
+  if (nativeSession === session) {
+    clearTimeout(nativePoll);
+    nativePoll = setTimeout(pollNativeRoom, 2000);
+  }
+}
+
+async function nativeControl(action, fields = {}) {
+  if (!nativeSession) return;
+  try {
+    await api(`/netplay/bridge/rooms/${nativeSession.id}/control`, {
+      method: "POST",
+      body: JSON.stringify({ action, ...fields }),
+    });
+    await pollNativeRoom();
+  } catch (error) {
+    status(error.message, true);
+  }
+}
+
+async function pollNativeTicket() {
+  const pending = nativeTicket;
+  if (!pending) return;
+  try {
+    const result = await api(
+      `/netplay/bridge/rooms/${pending.id}/native/ticket`,
+      {
+        headers: { "X-Netplay-Launch": pending.ticket },
+      },
+    );
+    if (nativeTicket !== pending) return;
+    if (result.session) {
+      nativeSession = result.session;
+      nativeTicket = null;
+      if (connection && !connection.closed) releaseEmulator();
+      else releasePlayer();
+      $("setup").hidden = true;
+      $("native-session").hidden = false;
+      $("disconnect").hidden = false;
+      $("native-credentials").textContent =
+        `Manual connection: ${nativeSession.native_host}|${nativeSession.native_port} · Personal connection password: ${nativeSession.native_password}`;
+      updatePlayChoice();
+      await pollNativeRoom();
+      return;
+    }
+  } catch (error) {
+    if (nativeTicket !== pending) return;
+    nativeTicket = null;
+    $("native-status").textContent = error.message;
+    updatePlayChoice();
+    return;
+  }
+  if (nativeTicket === pending)
+    nativeTicketPoll = setTimeout(pollNativeTicket, 1000);
+}
+
+function openNativeLauncher(url) {
+  const link = document.createElement("a");
+  link.href = url;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function prepareNative() {
+  const target = room;
+  if (!target || !connection || connection.closed) return;
+  if (nativeTicket) {
+    openNativeLauncher(nativeTicket.launch_url);
+    return;
+  }
+  $("join-game").disabled = true;
+  try {
+    await save();
+    const own = (await loadCartridges([rom.id])).manifest[0];
+    const battery = ownBattery() ?? initialBattery;
+    const current = await api(
+      `/netplay/bridge/rooms/${target.id}/native/ticket`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          rom_id: rom.id,
+          cartridge: own,
+          platform: $("native-platform").value,
+          password: room?.password ?? $("join-password").value,
+          battery: encodeBattery(battery),
+        }),
+      },
+    );
+    clearTimeout(nativeTicketPoll);
+    nativeTicket = { ...current, id: target.id };
+    $("native-status").textContent =
+      "Opening the Windows launcher. If nothing opens, download and register the launcher once, then select Join game again.";
+    openNativeLauncher(current.launch_url);
+    void pollNativeTicket();
+  } catch (error) {
+    status(error.message, true);
+  } finally {
+    updatePlayChoice();
+  }
+}
+
 $("create").onclick = () => launch();
 $("join").onclick = () => launch($("rooms").value);
 $("refresh").onclick = refreshRooms;
 $("rooms").onchange = updateJoin;
-$("start").onclick = () => connection?.startGame();
+$("join-game").onclick = () => {
+  if ($("join-game").disabled) return;
+  if ($("play-client").value === "windows") void prepareNative();
+  else {
+    connection?.openGame();
+    updatePlayChoice();
+  }
+};
+$("play-client").addEventListener("change", updatePlayChoice);
+$("native-platform").addEventListener("change", updatePlayChoice);
+$("native-cancel").onclick = async () => {
+  try {
+    await api(`/netplay/bridge/rooms/${nativeSession.id}/native`, {
+      method: "DELETE",
+      headers: { "X-Netplay-Launch": nativeSession.credential },
+    });
+    clearTimeout(nativePoll);
+    await pollNativeRoom();
+  } catch (error) {
+    status(error.message, true);
+  }
+};
+$("start").onclick = () => {
+  if (connection && !nativeSession) connection.startGame();
+  else void nativeControl("start");
+};
 $("join-password").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !$("join").disabled) {
     event.preventDefault();
@@ -644,6 +1145,7 @@ $("disconnect").onclick = async () => {
   $("disconnect").disabled = true;
   try {
     await save();
+    await leaveMembership();
     releasePlayer();
     $("lobby").hidden = $("connection").hidden = $("disconnect").hidden = true;
     $("setup").hidden = false;
@@ -659,7 +1161,9 @@ $("disconnect").onclick = async () => {
 async function leave() {
   try {
     await save();
-    closed = true;
+    await leaveMembership();
+    nativeTicket = null;
+    clearTimeout(nativeTicketPoll);
     releasePlayer();
     if (integration.onExit) integration.onExit();
     else location.assign(`/rom/${rom.id}/ejs`);
@@ -667,33 +1171,55 @@ async function leave() {
     saveError(error);
   }
 }
+function clearNativeSession() {
+  clearTimeout(nativePoll);
+  clearTimeout(nativeTicketPoll);
+  nativeSession = nativeTicket = null;
+  $("native-session").hidden = true;
+  $("native-credentials").textContent = "";
+  $("native-status").textContent = "";
+}
+
+async function closeGame() {
+  try {
+    await save();
+    connection?.closeGame();
+    initialBattery = connection?.battery?.slice() ?? initialBattery;
+  } catch (error) {
+    saveError(error);
+  }
+}
 $("back").onclick = leave;
+$("close-game").onclick = closeGame;
 $("close-room").onclick = () => showRoom(false);
 $("room-panel").addEventListener("keydown", (event) => {
   event.stopPropagation();
-  if (event.key === "Escape" && connection?.started) {
+  if (event.key === "Escape" && gameVisible) {
     event.preventDefault();
     event.stopPropagation();
     showRoom(false);
   }
 });
 $("room-panel").addEventListener("keyup", (event) => event.stopPropagation());
-window.addEventListener("beforeunload", (event) => {
-  if (
-    !integration.onExit &&
-    !closed &&
-    connection?.started &&
-    ownBattery()?.length
-  ) {
-    event.preventDefault();
-    event.returnValue = "";
-  }
-});
-window.addEventListener("pagehide", () => {
-  clearInterval(ticker);
-  clearInterval(autosave);
-  connection?.stop();
-});
+async function leaveMembership() {
+  const id = membership ?? nativeSession?.id;
+  const session = nativeSession;
+  nativeTicket = null;
+  clearTimeout(nativePoll);
+  clearTimeout(nativeTicketPoll);
+  if (id)
+    await api(`/netplay/bridge/rooms/${id}/membership`, {
+      method: "DELETE",
+      keepalive: true,
+    });
+  if (membership === id) membership = null;
+  if (nativeSession === session) nativeSession = null;
+}
+function destroy() {
+  void leaveMembership().catch(() => {});
+  releasePlayer();
+}
+window.addEventListener("pagehide", destroy);
 window.addEventListener("message", (event) => {
   if (
     event.origin !== location.origin ||
@@ -703,7 +1229,7 @@ window.addEventListener("message", (event) => {
     return;
   void initialize(event.data);
 });
-window.bridgePlayer = { initialize, save, destroy: releasePlayer };
+window.bridgePlayer = { initialize, save, destroy };
 window.opener?.postMessage({ type: "romm-bridge-ready" }, location.origin);
 const romId = Number(new URLSearchParams(location.search).get("romId"));
 if (romId > 0) void initialize({ romId });

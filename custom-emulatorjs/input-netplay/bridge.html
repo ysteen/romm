@@ -4,18 +4,23 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RomM multiplayer room</title>
-    <link rel="stylesheet" href="bridge.css?v=lifecycle-20261102" />
+    <link rel="stylesheet" href="bridge.css?v=room-ui-20261104" />
   </head>
   <body>
     <div id="screen" hidden></div>
     <main id="room-panel" class="romm-room-panel" aria-label="Multiplayer room">
       <div class="room-actions">
-        <button id="back">Back</button
-        ><button id="close-room" hidden>Return to game</button>
+        <button id="back">Back</button>
+        <button id="close-room" class="primary" hidden>Return to game</button>
+        <button id="close-game" hidden>Save and return to room</button>
       </div>
       <header>
         <h1 id="title">Multiplayer room</h1>
         <p id="status" role="status" aria-live="polite">Opening game…</p>
+        <div class="game-summary">
+          <p id="selected-cartridge"></p>
+          <p id="save-status" role="status"></p>
+        </div>
       </header>
       <section id="setup" aria-label="Multiplayer room">
         <fieldset>
@@ -28,7 +33,7 @@
               <option value="4">4</option>
             </select></label
           >
-          <label
+          <label class="checkbox-label"
             ><input type="checkbox" id="native" /> Allow RetroArch
             clients</label
           >
@@ -43,13 +48,14 @@
             />
           </label>
           <p id="password-help" class="hint">
-            Leave blank to let signed-in players join without a room password.
+            Leave blank for no room password.
           </p>
-          <button id="create" disabled>Create room</button>
+          <div class="form-actions">
+            <button id="create" class="primary" disabled>Create room</button>
+          </div>
         </fieldset>
         <fieldset>
           <legend>Join a room</legend>
-          <button id="refresh" disabled>Refresh rooms</button>
           <label
             >Open rooms
             <select id="rooms">
@@ -61,36 +67,81 @@
             <input id="join-password" type="password" autocomplete="off"
           /></label>
           <p id="join-help" class="hint"></p>
-          <button id="join" disabled>Join room</button>
+          <div class="form-actions">
+            <button id="join" class="primary" disabled>Join room</button>
+            <button id="refresh" disabled>Refresh rooms</button>
+          </div>
         </fieldset>
       </section>
       <section id="lobby" hidden aria-label="Waiting room">
-        <h2>Waiting room</h2>
+        <h2>Players</h2>
         <p id="lobby-status" role="status"></p>
         <ul id="participants" aria-label="Players"></ul>
         <p class="hint">
-          Choose your own player number. The host can change everyone's number
-          and start the game once all players are ready.
+          Choose your number. The host can assign players and start the game.
         </p>
-        <button id="start" disabled>Start game</button>
+        <fieldset id="play-choice">
+          <legend>Play on this device</legend>
+          <div class="play-actions">
+            <label
+              >Play with
+              <select id="play-client" aria-describedby="join-game-help">
+                <option value="">Choose how to play</option>
+                <option value="web">Web browser</option>
+                <option value="windows">Windows RetroArch</option>
+              </select>
+            </label>
+            <button id="join-game" class="primary" disabled>Join game</button>
+          </div>
+          <p id="join-game-help" class="hint" role="status"></p>
+        </fieldset>
+        <div class="form-actions">
+          <button id="start" class="primary" disabled>Start game</button>
+        </div>
       </section>
+      <p id="native-status" class="notice" role="status"></p>
+      <div id="native-session" hidden>
+        <button id="native-cancel">Cancel preparation</button>
+        <details>
+          <summary>Personal connection details</summary>
+          <p id="native-credentials"></p>
+        </details>
+      </div>
       <section id="connection" hidden aria-label="Connection details">
-        <p id="address"></p>
-        <p id="password"></p>
-        <p>
+        <div class="invite-actions">
+          <button id="copy-room">Copy room link</button>
           <a id="room-link" target="_blank" rel="noopener"
             >Open room invitation</a
           >
-          <button id="copy-room">Copy room link</button>
-        </p>
-        <p id="core-info"></p>
+        </div>
+        <button id="disconnect" class="danger" hidden>Leave room</button>
+        <details>
+          <summary>Manual connection</summary>
+          <p id="address"></p>
+          <p id="password"></p>
+          <p id="core-info"></p>
+        </details>
       </section>
-      <section id="native-details" hidden aria-label="RetroArch core download">
-        <h2>Play in RetroArch</h2>
+      <details id="native-details" hidden>
+        <summary>Windows launcher &amp; core setup</summary>
         <p>
-          Install the matching core, then connect using the server address and
-          room password supplied by the host. The host must allow RetroArch
-          clients.
+          Download once and run Register Launcher.cmd. Then choose Windows
+          RetroArch and Join game in the room. Keep this page open while
+          playing.
+        </p>
+        <p>
+          <a
+            id="native-launcher"
+            href="/api/netplay/bridge/native/launcher"
+            download
+          >
+            Download Windows launcher (first setup)
+          </a>
+        </p>
+        <p class="hint">
+          No administrator access is needed. The launcher uses a matching
+          RetroArch installation or downloads a portable copy. It sets up the
+          core, cartridges and your selected save automatically.
         </p>
         <label
           >RetroArch platform
@@ -114,21 +165,27 @@
           Content.
         </p>
         <p id="native-game-load" class="hint" hidden>
-          mGBA: load one GBA file under Load Content. The core boots two linked
-          players automatically. For three or four players, set Players per ROM
-          in Core Options and reload the game before connecting.
+          mGBA: the Windows session prepares every cartridge in the room's
+          order. For manual loading, use the GBA Link subsystem with that same
+          order. Loading one GBA file repeats it in every slot.
         </p>
         <p>
           <a id="core-build" target="_blank" rel="noopener"
             >Source and build instructions</a
           >
         </p>
-      </section>
-      <button id="disconnect" hidden>Leave room</button>
-      <p id="save-status" role="status"></p>
-      <p id="play-hint" class="hint"></p>
-      <p id="save-hint" class="hint"></p>
+      </details>
+      <details class="room-help">
+        <summary>Playing and saving</summary>
+        <p class="hint">
+          Open Netplay during web play to see this room. Return to game keeps
+          playing; Save and return to room closes your game and keeps your
+          place. Ping beside each name is the round-trip time to the server.
+        </p>
+        <p id="play-hint" class="hint"></p>
+        <p id="save-hint" class="hint"></p>
+      </details>
     </main>
-    <script type="module" src="bridge.js?v=native-startup-20261102"></script>
+    <script type="module" src="bridge.js?v=automatic-join-20261104"></script>
   </body>
 </html>

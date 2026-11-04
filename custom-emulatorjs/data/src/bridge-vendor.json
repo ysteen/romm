@@ -2,7 +2,7 @@
   "project": "retroarch-netplay-bridge",
   "protocol": 1,
   "sha256": {
-    "bridge-session.js": "81250e206432c2b13c1a5236f103b976727f8507012919c29a7a6834603c9b5c",
+    "bridge-session.js": "2d75b5fdccf2b222585e2601b9b32f35dd3008706a460565ae55cc090ece1de6",
     "bridge-calibration.js": "914adcf06962605908d3ccd3e960e0c097cf3b4c4e90e2c226135da3f86902a6",
     "link-core.js": "4e0b46b611964f823b96ede36f9ef04f1c5333352947018c0b434768e88428c7"
   }

@@ -17,13 +17,19 @@ body {
 [hidden] {
   display: none !important;
 }
+.romm-room-open .ejs_virtualGamepad_parent {
+  display: none !important;
+}
 .romm-room-panel {
+  --room-border: light-dark(#d1d9e3, #3b4658);
+  --room-surface: light-dark(#fff, #1a2230);
+  --room-muted: light-dark(#45566c, #b3bfd0);
   position: absolute;
   inset: 0;
   z-index: 20;
   overflow: auto;
   box-sizing: border-box;
-  padding: 20px;
+  padding: 24px;
   background: light-dark(#f4f5f7, #121722);
   color: light-dark(#17202c, #edf2f8);
   font:
@@ -33,7 +39,7 @@ body {
   user-select: text;
 }
 .romm-room-panel > * {
-  max-width: 1100px;
+  max-width: 960px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -43,55 +49,127 @@ body {
 }
 .romm-room-panel h2 {
   font-size: 1.2rem;
-  margin-bottom: 0;
+  margin: 0;
 }
-.romm-room-panel section {
+.romm-room-panel p {
+  margin: 8px 0;
+}
+.romm-room-panel > p {
+  margin: 12px auto;
+}
+.romm-room-panel p:empty {
+  display: none;
+}
+.romm-room-panel header {
+  margin-bottom: 24px;
+}
+.romm-room-panel .game-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  color: var(--room-muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.romm-room-panel .game-summary p {
+  margin: 0;
+}
+.romm-room-panel #setup {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+.romm-room-panel fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--room-border);
+  border-radius: 12px;
+  padding: 20px;
+  background: var(--room-surface);
+}
+.romm-room-panel #setup fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.romm-room-panel legend {
+  padding: 0 8px;
+  font-weight: 600;
+}
+.romm-room-panel #setup .hint {
+  margin: -8px 0 0;
+}
+.romm-room-panel .form-actions,
+.romm-room-panel .play-actions,
+.romm-room-panel .invite-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+.romm-room-panel .form-actions {
   margin-top: 16px;
-  margin-bottom: 16px;
 }
-.romm-room-panel fieldset {
-  flex: 1 1 300px;
-  min-width: 0;
-  border: 1px solid #78879a;
-  border-radius: 8px;
-  padding: 16px;
+.romm-room-panel #setup .form-actions {
+  margin-top: auto;
+  padding-top: 8px;
 }
-.romm-room-panel fieldset label,
-.romm-room-panel fieldset button {
-  margin: 8px 0;
+.romm-room-panel .play-actions {
+  align-items: end;
+}
+.romm-room-panel .play-actions label {
+  flex: 1 1 220px;
 }
 .romm-room-panel label {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+.romm-room-panel .checkbox-label {
+  flex-direction: row;
   align-items: center;
   gap: 8px;
-  max-width: 100%;
+  min-height: 44px;
 }
 .romm-room-panel button,
 .romm-room-panel select,
-.romm-room-panel input[type="password"] {
+.romm-room-panel input[type="password"],
+.romm-room-panel input[type="search"] {
   font: inherit;
   padding: 8px 12px;
-  border: 1px solid #78879a;
+  border: 1px solid var(--room-border);
   border-radius: 6px;
   color: inherit;
   background: light-dark(#fff, #222d3d);
   max-width: 100%;
-  box-sizing: border-box;
-}
-.romm-room-panel input[type="password"] {
   min-width: 0;
+  min-height: 44px;
+  box-sizing: border-box;
 }
 .romm-room-panel input[type="checkbox"] {
   appearance: auto;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  accent-color: #3568bf;
 }
 .romm-room-panel button {
   cursor: pointer;
-  min-height: 44px;
+}
+.romm-room-panel button:not(:disabled):hover {
+  filter: brightness(0.94);
+}
+.romm-room-panel button.primary {
+  color: #fff;
+  background: #3568bf;
+  border-color: #3568bf;
+}
+.romm-room-panel button.danger {
+  color: light-dark(#a31224, #ffabb5);
 }
 .romm-room-panel button:disabled {
   opacity: 0.5;
@@ -103,60 +181,131 @@ body {
 }
 .romm-room-panel #lobby {
   display: block;
+  margin: 24px auto;
 }
 .romm-room-panel #participants {
   list-style: none;
   padding: 0;
+  margin: 16px 0;
 }
 .romm-room-panel #participants li {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  padding: 12px;
-  border: 1px solid #78879a;
-  border-radius: 6px;
+  padding: 16px;
+  background: var(--room-surface);
+  border: 1px solid var(--room-border);
+  border-radius: 10px;
   margin: 8px 0;
 }
 .romm-room-panel .member-name {
-  flex: 1 1 180px;
+  flex: 1 1 240px;
+  min-width: 0;
   overflow-wrap: anywhere;
+}
+.romm-room-panel .member-game {
+  display: block;
+  margin-top: 4px;
+}
+.romm-room-panel .member-game,
+.romm-room-panel .member-state {
+  font-size: 0.875em;
+  color: var(--room-muted);
 }
 .romm-room-panel .member-ping {
   display: inline-block;
   margin-left: 8px;
   font-size: 0.85em;
   font-variant-numeric: tabular-nums;
-  color: light-dark(#45566c, #b3bfd0);
+  color: var(--room-muted);
 }
-.romm-room-panel #connection,
-.romm-room-panel #native-details {
-  display: block;
-  padding: 12px;
-  border: 1px solid #78879a;
+.romm-room-panel .member-client {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--room-border);
   border-radius: 6px;
+  font-size: 0.8em;
+}
+.romm-room-panel #play-choice {
+  margin-top: 20px;
+}
+.romm-room-panel #connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 0;
+  border-top: 1px solid var(--room-border);
+}
+.romm-room-panel .invite-actions {
+  flex: 1 1 auto;
+}
+.romm-room-panel #connection details {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.romm-room-panel details {
   overflow-wrap: anywhere;
 }
-.romm-room-panel #connection p {
-  margin: 4px;
+.romm-room-panel > details {
+  border-top: 1px solid var(--room-border);
+  padding: 8px 0;
+}
+.romm-room-panel summary {
+  padding: 10px 0;
+  cursor: pointer;
+  font-weight: 500;
+  min-height: 44px;
+  box-sizing: border-box;
+}
+.romm-room-panel #native-session {
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+.romm-room-panel #native-status {
+  padding: 16px;
+  box-sizing: border-box;
+  border: 1px solid var(--room-border);
+  border-radius: 10px;
+  background: var(--room-surface);
+}
+.romm-room-panel #native-details label {
+  max-width: 360px;
+  margin-top: 20px;
 }
 .romm-room-panel .hint {
-  color: light-dark(#45566c, #b3bfd0);
+  color: var(--room-muted);
+  font-size: 0.875rem;
 }
 .romm-room-panel .error {
   color: light-dark(#a31224, #ffabb5);
 }
 .romm-room-panel a {
   color: light-dark(#1259a8, #9dc8ff);
+  text-underline-offset: 3px;
 }
 .romm-room-panel .room-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
+}
+@media (max-width: 700px) {
+  .romm-room-panel #setup {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 @media (max-width: 480px) {
   .romm-room-panel {
     padding: 12px;
+  }
+  .romm-room-panel fieldset {
+    padding: 16px;
+  }
+  .romm-room-panel .play-actions button {
+    flex: 1 1 100%;
   }
 }

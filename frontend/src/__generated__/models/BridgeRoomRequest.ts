@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { BridgeCartridge } from './BridgeCartridge';
 export type BridgeRoomRequest = {
     nickname?: string;
     password?: (string | null);
@@ -15,5 +16,7 @@ export type BridgeRoomRequest = {
     nativeAllowed?: boolean;
     nativeCalibration?: (string | null);
     maxPrediction?: number;
+    cartridges?: (Array<BridgeCartridge> | null);
+    collectCartridges?: boolean;
 };
 

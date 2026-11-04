@@ -34,6 +34,15 @@ class BridgeIdentity(BaseModel):
         return value
 
 
+class BridgeCartridge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    romId: int = Field(gt=0, strict=True)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    size: int = Field(gt=0, le=32 * 1024 * 1024, strict=True)
+    crc32: int = Field(ge=0, le=0xFFFFFFFF, strict=True)
+
+
 class BridgeRoomRequest(BridgeIdentity):
     model_config = ConfigDict(extra="forbid")
 
@@ -47,6 +56,8 @@ class BridgeRoomRequest(BridgeIdentity):
     nativeAllowed: bool = False
     nativeCalibration: Literal["sameboy-v1"] | None = None
     maxPrediction: int = Field(default=0, ge=0, le=30, strict=True)
+    cartridges: list[BridgeCartridge] | None = Field(default=None, max_length=4)
+    collectCartridges: bool = False
 
     @field_validator("coreVersion")
     @classmethod
@@ -57,10 +68,28 @@ class BridgeRoomRequest(BridgeIdentity):
 
     @model_validator(mode="after")
     def validate_core_profile(self) -> Self:
+        if self.collectCartridges and (
+            self.system not in {"gb", "gba"} or not self.cartridges
+        ):
+            raise ValueError("Cartridge collection requires a GB/GBC or GBA cartridge")
         if self.coreName != BRIDGE_CORE_NAMES[self.system] or (
             self.system != "gba" and self.players != 2
         ):
             raise ValueError("Core or player count does not match the selected system")
+        if self.cartridges is not None:
+            expected = 1 if self.system == "snes" else self.players
+            if len(self.cartridges) != expected:
+                raise ValueError("Supply one cartridge per console")
+            if (
+                self.cartridges[0].romId != self.rom_id
+                or self.cartridges[0].crc32 != self.contentCrc
+            ):
+                raise ValueError("Primary cartridge does not match the room")
+            if (
+                self.system == "snes"
+                and len({rom.sha256 for rom in self.cartridges}) > 1
+            ):
+                raise ValueError("SNES players share one cartridge")
         if self.nativeCalibration is not None and not (
             self.nativeAllowed
             and self.system == "gb"
@@ -77,6 +106,13 @@ class BridgeJoinRequest(BridgeIdentity):
     model_config = ConfigDict(extra="forbid")
 
     rom_id: int = Field(gt=0, strict=True)
+    cartridge: BridgeCartridge | None = None
+
+    @model_validator(mode="after")
+    def validate_cartridge(self) -> Self:
+        if self.cartridge and self.cartridge.romId != self.rom_id:
+            raise ValueError("Cartridge must match the selected ROM")
+        return self
 
 
 class BridgeConnectionResponse(BaseModel):
@@ -87,6 +123,63 @@ class BridgeConnectionResponse(BaseModel):
     password: str
     players: int = Field(ge=2, le=4, strict=True)
     player: int = Field(ge=0, le=3, strict=True)
+
+
+class BridgeNativeRequest(BridgeJoinRequest):
+    platform: Literal["windows-x86_64", "windows-x86", "windows-arm64"]
+    battery: str = Field(default="", max_length=174764)
+
+
+class BridgeNativeResponse(BaseModel):
+    id: str
+    player: int
+    credential: str
+    native_password: str
+    native_host: str
+    native_port: int
+    expires_at: int
+    package_url: str
+
+
+class BridgeNativeTicketResponse(BaseModel):
+    ticket: str
+    launch_url: str
+    expires_at: int
+
+
+class BridgeNativeTicketStatus(BaseModel):
+    status: Literal["waiting", "preparing"]
+    session: BridgeNativeResponse | None = None
+
+
+class BridgeNativeSeatRequest(BaseModel):
+    seat: int | None = Field(ge=0, le=3, strict=True)
+
+
+class BridgeControlRequest(BaseModel):
+    action: Literal["start", "assign", "kick"]
+    player: int | None = Field(default=None, ge=0, le=3, strict=True)
+    seat: int | None = Field(default=None, ge=0, le=3, strict=True)
+
+
+class BridgeNativeSaveRequest(BaseModel):
+    player: int = Field(ge=0, le=3, strict=True)
+    owner: str = Field(max_length=128)
+    generation: int = Field(ge=0, strict=True)
+    frame: int = Field(ge=0, strict=True)
+    battery: str = Field(max_length=174764)
+
+
+class BridgeMember(BaseModel):
+    player: int
+    owner: str = ""
+    romId: int | None = None
+    clientPlatform: str | None = None
+    nickname: str
+    kind: Literal["web", "native", "preparing"]
+    ready: bool
+    playing: bool
+    ping: int | None = None
 
 
 class BridgeRoomResponse(BaseModel):
@@ -103,3 +196,16 @@ class BridgeRoomResponse(BaseModel):
     has_password: bool
     native_calibration: Literal["sameboy-v1"] | None = None
     max_prediction: int = Field(default=0, ge=0, le=30, strict=True)
+    cartridges: list[BridgeCartridge] | None = None
+    native_auth: bool = False
+    collect_cartridges: bool = False
+    content_prepared: bool = True
+    members: list[BridgeMember] = Field(default_factory=list)
+    seats: list[int | None] = Field(default_factory=list)
+    generation: int = 0
+    host: int | None = 0
+    running: bool = False
+    starting: bool = False
+    can_start: bool = False
+    native_authority: bool = False
+    save_host: int | None = None

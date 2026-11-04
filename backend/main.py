@@ -163,6 +163,9 @@ if not IS_PYTEST_RUN and not DISABLE_CSRF_PROTECTION:
             re.compile(r"^/api/client-tokens/pair/.+/status"),
             re.compile(r"^/api/auth/device/init/?$"),
             re.compile(r"^/api/auth/device/token/?$"),
+            re.compile(
+                r"^/api/netplay/bridge/rooms/[A-Za-z0-9_-]{1,64}/native/claim/?$"
+            ),
             re.compile(r"^/ws"),
             re.compile(r"^/netplay"),
         ],

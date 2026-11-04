@@ -6,7 +6,9 @@ from fastapi import HTTPException
 from tests.endpoints.test_netplay import _auth, _hide, _override_emulation_read
 from tests.factories import make_platform, make_rom
 
+from endpoints.responses.netplay_bridge import BridgeNativeResponse
 from handler import netplay_bridge_handler as bridge
+from handler import netplay_launch_handler as launch
 from handler.netplay_handler import get_link_cartridge
 from models.permission import PermEntity
 from utils.context import ctx_aiohttp_session
@@ -98,6 +100,39 @@ def test_bridge_routes_require_authentication(client):
     assert (
         client.post("/api/netplay/bridge/rooms", json=create_body(1)).status_code == 401
     )
+    assert (
+        client.delete("/api/netplay/bridge/rooms/room-1/membership").status_code == 401
+    )
+
+
+def test_bridge_leave_uses_only_the_authenticated_owner(client, viewer_user, mocker):
+    mocker.patch(
+        "endpoints.netplay.bridge_room", AsyncMock(return_value={"id": "room-1"})
+    )
+    gateway = mocker.patch("endpoints.netplay.bridge_request", new_callable=AsyncMock)
+    response = client.request(
+        "DELETE",
+        "/api/netplay/bridge/rooms/room-1/membership",
+        json={"owner": "another-account"},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 204
+    gateway.assert_awaited_once_with(
+        "POST", "/room-1/leave", {"owner": str(viewer_user.id)}
+    )
+
+
+def test_bridge_leave_is_idempotent_for_an_expired_room(client, viewer_user, mocker):
+    mocker.patch(
+        "endpoints.netplay.bridge_room",
+        AsyncMock(side_effect=HTTPException(status_code=404)),
+    )
+    gateway = mocker.patch("endpoints.netplay.bridge_request", new_callable=AsyncMock)
+    response = client.delete(
+        "/api/netplay/bridge/rooms/room-1/membership", headers=_auth(viewer_user)
+    )
+    assert response.status_code == 204
+    gateway.assert_not_awaited()
 
 
 def test_bridge_creation_preserves_admin_secret(client, viewer_user, rom, relay):
@@ -136,6 +171,28 @@ def test_rollback_profile_is_forwarded(client, viewer_user, rom, relay):
     )
     assert response.status_code == 200
     assert relay.call_args.args[2]["maxPrediction"] == 12
+
+
+def test_account_bound_rollback_rooms_enable_native_authority(
+    client, viewer_user, rom, relay
+):
+    relay.return_value = connection()
+    cartridge = {"romId": rom.id, "size": 32768, "sha256": "a" * 64, "crc32": 15}
+    response = client.post(
+        "/api/netplay/bridge/rooms",
+        json=create_body(rom.id)
+        | {
+            "coreVersion": "1.0.4c87d256-rollback2",
+            "maxPrediction": 12,
+            "cartridges": [cartridge, cartridge],
+        },
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 200
+    payload = relay.call_args.args[2]
+    assert payload["nativeAuthority"] is True
+    assert payload["nativeAuth"] is True
+    assert payload["manualStart"] is True
 
 
 @pytest.mark.parametrize("password", ["", "friends-only"])
@@ -244,6 +301,7 @@ def test_snes_listing_and_password_join_use_the_existing_romm_identity(
         "owner": str(viewer_user.id),
         "nickname": viewer_user.username,
         "password": "snes-room-password",
+        "romId": snes_rom.id,
     }
 
 
@@ -482,6 +540,12 @@ async def test_gateway_request_does_not_follow_redirects(mocker):
     [
         (403, b'{"error":"Incorrect room password"}', "Incorrect room password"),
         (404, b"{}", "room has closed"),
+        (
+            404,
+            b'{"error":"Native preparation expired"}',
+            "preparation is no longer available",
+        ),
+        (404, b'{"error":{"secret":"must-not-leak"}}', "room has closed"),
         (409, b'{"error":"Owner already hosts a room"}', "already host a room"),
         (409, b'{"error":"Room is full"}', "room is full"),
         (409, b'{"error":{"secret":"must-not-leak"}}', "room is full"),
@@ -543,3 +607,359 @@ async def test_gateway_response_reads_all_chunks_with_a_size_limit(mocker, overs
             assert await bridge.bridge_request("GET", "") == [{"id": "room-1"}]
     finally:
         ctx_aiohttp_session.reset(token)
+
+
+def test_native_launch_requires_account_and_rom_access(
+    client, viewer_user, rom, relay, mocker
+):
+    room = gateway_room(rom.id)
+    mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
+    prepare = mocker.patch(
+        "endpoints.netplay.native_launch.prepare", new_callable=AsyncMock
+    )
+    body = {"rom_id": rom.id, "platform": "windows-x86_64"}
+    assert (
+        client.post("/api/netplay/bridge/rooms/room-1/native", json=body).status_code
+        == 401
+    )
+    _hide(PermEntity.ROMS, rom.id, viewer_user.id)
+    assert client.post(
+        "/api/netplay/bridge/rooms/room-1/native", json=body, headers=_auth(viewer_user)
+    ).status_code in (403, 404)
+    prepare.assert_not_awaited()
+
+
+def test_native_seat_is_owned_by_the_authenticated_account(client, viewer_user, mocker):
+    mocker.patch(
+        "endpoints.netplay.native_launch.reservation",
+        AsyncMock(return_value={"owner": "someone-else"}),
+    )
+    gateway = mocker.patch("endpoints.netplay.bridge_request", new_callable=AsyncMock)
+    response = client.patch(
+        "/api/netplay/bridge/rooms/room-1/native/seat",
+        json={"seat": 1},
+        headers=_auth(viewer_user) | {"X-Netplay-Launch": "a" * 32},
+    )
+    assert response.status_code == 403
+    gateway.assert_not_awaited()
+
+
+def test_native_save_rejects_a_non_host(client, viewer_user, rom, mocker):
+    mocker.patch(
+        "endpoints.netplay.bridge_room",
+        AsyncMock(return_value=gateway_room(rom.id, "another-host")),
+    )
+    save = mocker.patch(
+        "endpoints.netplay.native_launch.save_progress", new_callable=AsyncMock
+    )
+    response = client.post(
+        "/api/netplay/bridge/rooms/room-1/native/saves",
+        json={
+            "player": 1,
+            "owner": "target",
+            "generation": 1,
+            "frame": 60,
+            "battery": "AQID",
+        },
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 403
+    save.assert_not_awaited()
+
+
+@pytest.mark.parametrize("action", ["start", "assign", "kick"])
+def test_native_room_controls_use_the_authenticated_member(
+    client, viewer_user, rom, relay, mocker, action
+):
+    room = gateway_room(rom.id) | {
+        "nativeAuthority": True,
+        "members": [
+            {
+                "player": 1,
+                "owner": str(viewer_user.id),
+                "kind": "native",
+                "romId": rom.id,
+            }
+        ],
+    }
+    mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
+    relay.return_value = {"host": 1}
+    path = "/api/netplay/bridge/rooms/room-1/control"
+    assert client.post(path, json={"action": action}).status_code == 401
+    response = client.post(
+        path,
+        json={"action": action, "player": 0, "seat": 1, "owner": "someone-else"},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 200
+    relay.assert_awaited_once_with(
+        "POST",
+        "/room-1/control",
+        {
+            "owner": str(viewer_user.id),
+            "t": "start-request" if action == "start" else action,
+            "player": 0,
+            "seat": 1,
+        },
+    )
+    room["members"] = []
+    response = client.post(path, json={"action": action}, headers=_auth(viewer_user))
+    assert response.status_code == 403
+    assert relay.await_count == 1
+
+
+def test_native_host_room_exposes_start_controls_and_web_save_source(
+    client, viewer_user, rom, relay, mocker
+):
+    mocker.patch(
+        "endpoints.netplay.bridge_rooms",
+        AsyncMock(
+            return_value=[
+                gateway_room(rom.id)
+                | {"nativeAuthority": True, "canStart": True, "host": 1, "saveHost": 0}
+            ]
+        ),
+    )
+    response = client.get(
+        "/api/netplay/bridge/rooms",
+        params={"rom_id": rom.id},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 200
+    assert response.json()[0]["can_start"] is True
+    assert response.json()[0]["native_authority"] is True
+    assert response.json()[0]["save_host"] == 0
+
+
+def test_web_witness_can_sync_saves_while_retroarch_hosts(
+    client, editor_user, rom, mocker
+):
+    room = gateway_room(rom.id, "native-owner") | {
+        "saveHost": 0,
+        "members": [{"player": 0, "owner": str(editor_user.id), "kind": "web"}],
+    }
+    mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
+    save = mocker.patch(
+        "endpoints.netplay.native_launch.save_progress",
+        AsyncMock(return_value={"saved": True}),
+    )
+    response = client.post(
+        "/api/netplay/bridge/rooms/room-1/native/saves",
+        json={
+            "player": 1,
+            "owner": "native-owner",
+            "generation": 1,
+            "frame": 60,
+            "battery": "AQID",
+        },
+        headers=_auth(editor_user),
+    )
+    assert response.status_code == 200
+    save.assert_awaited_once()
+
+
+def test_native_package_requires_a_scoped_credential(client, mocker):
+    gateway = mocker.patch(
+        "handler.netplay_launch_handler.bridge_request", new_callable=AsyncMock
+    )
+    response = client.get("/api/netplay/bridge/rooms/room-1/native/package")
+    assert response.status_code == 404
+    gateway.assert_not_awaited()
+
+
+def test_native_manifest_requires_capability_and_is_not_cached(client, mocker):
+    response = client.get("/api/netplay/bridge/rooms/room-1/native/manifest")
+    assert response.status_code == 404
+    manifest = mocker.patch(
+        "endpoints.netplay.native_launch.session_manifest",
+        AsyncMock(return_value={"pending": True}),
+    )
+    response = client.get(
+        "/api/netplay/bridge/rooms/room-1/native/manifest",
+        headers={"X-Netplay-Launch": "a" * 32},
+    )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert manifest.call_args.args[1:] == ("room-1", "a" * 32)
+
+
+@pytest.mark.parametrize("lost_access", [False, True])
+def test_launcher_switches_only_after_claim_and_rechecks_access(
+    client, editor_user, viewer_user, rom, relay, mocker, lost_access
+):
+    from fakeredis import FakeRedis
+
+    mocker.patch.object(launch, "redis_client", FakeRedis())
+    room = gateway_room(rom.id, str(viewer_user.id)) | {
+        "coreVersion": "1.0.4c87d256-rollback2",
+        "host": 0,
+        "members": [
+            {"player": 0, "owner": str(viewer_user.id), "kind": "web", "romId": rom.id},
+            {"player": 1, "owner": str(editor_user.id), "kind": "web", "romId": rom.id},
+        ],
+    }
+    mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
+    prepared = BridgeNativeResponse(
+        id=room["id"],
+        player=1,
+        credential="a" * 32,
+        native_password="b" * 32,
+        native_host="pc.example",
+        native_port=55435,
+        expires_at=9999999999999,
+        package_url="/unused",
+    )
+    prepare = mocker.patch.object(launch, "prepare", AsyncMock(return_value=prepared))
+    manifest = mocker.patch.object(
+        launch, "session_manifest", AsyncMock(return_value={"pending": True})
+    )
+    mocker.patch.object(launch, "NETPLAY_BRIDGE_CA_CERT_PATH", "")
+    downloaded = client.get(
+        "/api/netplay/bridge/native/launcher", headers=_auth(editor_user)
+    )
+    assert downloaded.status_code == 200
+    prepare.assert_not_awaited()
+    path = f"/api/netplay/bridge/rooms/{room['id']}/native"
+    issued = client.post(
+        path + "/ticket",
+        json={"rom_id": rom.id, "platform": "windows-x86_64"},
+        headers=_auth(editor_user),
+    )
+    assert issued.status_code == 200
+    assert issued.headers["cache-control"] == "no-store"
+    prepare.assert_not_awaited()
+    header = {"X-Netplay-Launch": issued.json()["ticket"]}
+    status = client.get(path + "/ticket", headers=header | _auth(editor_user))
+    assert status.json() == {"status": "waiting", "session": None}
+    assert (
+        client.get(path + "/ticket", headers=header | _auth(viewer_user)).status_code
+        == 410
+    )
+    if lost_access:
+        _hide(PermEntity.ROMS, rom.id, editor_user.id)
+    claimed = client.post(path + "/claim", headers=header)
+    if lost_access:
+        assert claimed.status_code == 404
+        prepare.assert_not_awaited()
+        manifest.assert_not_awaited()
+        return
+    assert claimed.status_code == 200
+    assert prepare.call_args.args[0].user.id == editor_user.id
+    assert prepare.call_args.args[2].rom_id == rom.id
+    assert claimed.headers["cache-control"] == "no-store"
+    assert client.post(path + "/claim", headers=header).status_code == 410
+    status = client.get(path + "/ticket", headers=header | _auth(editor_user))
+    assert status.json()["session"]["player"] == 1
+
+
+@pytest.mark.parametrize("system", ["gb", "gba"])
+@pytest.mark.parametrize("prepared", [False, True])
+def test_link_room_accepts_selected_game_and_preserves_descriptor(
+    client, viewer_user, editor_user, rom, second_rom, relay, mocker, system, prepared
+):
+    mocker.patch("endpoints.netplay.bridge_system", return_value=system)
+    room = gateway_room(rom.id, str(editor_user.id)) | {
+        "system": system,
+        "collectCartridges": True,
+        "contentPrepared": prepared,
+    }
+    mocker.patch("endpoints.netplay.bridge_rooms", AsyncMock(return_value=[room]))
+    mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
+    relay.return_value = {
+        "id": "room-1",
+        "peerPath": "/v1/rooms/room-1/peer?token=single-use",
+        "tcpPort": 55435,
+        "password": "",
+        "players": 2,
+        "player": 1,
+    }
+    cartridge = {"romId": second_rom.id, "sha256": "a" * 64, "size": 32768, "crc32": 2}
+    listing = client.get(
+        f"/api/netplay/bridge/rooms?rom_id={second_rom.id}", headers=_auth(viewer_user)
+    )
+    assert listing.status_code == 200
+    assert listing.json()[0]["collect_cartridges"] is True
+    response = client.post(
+        "/api/netplay/bridge/rooms/room-1/join",
+        json={"rom_id": second_rom.id, "cartridge": cartridge},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 200
+    assert relay.call_args.args[2]["cartridge"] == cartridge
+    _hide(PermEntity.ROMS, second_rom.id, editor_user.id)
+    response = client.post(
+        "/api/netplay/bridge/rooms/room-1/join",
+        json={"rom_id": second_rom.id, "cartridge": cartridge},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 409
+    assert "everyone" in response.json()["detail"]
+
+
+def test_prepared_link_room_requires_the_guests_selected_descriptor(
+    client, viewer_user, rom, second_rom, relay, mocker
+):
+    room = gateway_room(rom.id) | {
+        "system": "gb",
+        "collectCartridges": True,
+        "contentPrepared": True,
+    }
+    mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
+    response = client.post(
+        "/api/netplay/bridge/rooms/room-1/join",
+        json={"rom_id": second_rom.id},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 422
+    relay.assert_not_awaited()
+
+
+def test_sameboy_room_collects_distinct_gb_and_gbc_cartridges(
+    client, viewer_user, rom, second_rom, relay
+):
+    relay.return_value = connection()
+    cartridges = [
+        {"romId": item.id, "sha256": digest * 64, "size": 32768, "crc32": crc}
+        for item, digest, crc in [(rom, "a", 15), (second_rom, "b", 16)]
+    ]
+    response = client.post(
+        "/api/netplay/bridge/rooms",
+        json=create_body(rom.id)
+        | {"cartridges": cartridges, "collectCartridges": True, "maxPrediction": 12},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 200
+    payload = relay.call_args.args[2]
+    assert payload["collectCartridges"] is True
+    assert payload["cartridges"] == cartridges
+
+
+def test_native_preparation_binds_authenticated_account(
+    client, viewer_user, rom, relay, mocker
+):
+    room = gateway_room(rom.id) | {"coreVersion": "1.0.4c87d256-rollback2"}
+    mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
+    gateway = mocker.patch(
+        "handler.netplay_launch_handler.bridge_request",
+        AsyncMock(
+            return_value={
+                "player": 1,
+                "credential": "a" * 32,
+                "nativePassword": "b" * 32,
+                "tcpPort": 55435,
+                "expiresAt": 9999999999999,
+            }
+        ),
+    )
+    mocker.patch("handler.netplay_launch_handler.redis_client.set")
+    mocker.patch("handler.netplay_launch_handler.redis_client.get", return_value=None)
+    response = client.post(
+        "/api/netplay/bridge/rooms/room-1/native",
+        json={"rom_id": rom.id, "platform": "windows-x86_64", "battery": "AQID"},
+        headers=_auth(viewer_user),
+    )
+    assert response.status_code == 200
+    assert response.json()["player"] == 1
+    assert gateway.call_args.args[2]["owner"] == str(viewer_user.id)
+    assert gateway.call_args.args[2]["battery"] == "AQID"
+    assert gateway.call_args.args[2]["clientPlatform"] == "windows-x86_64"
