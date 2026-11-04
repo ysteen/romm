@@ -1,0 +1,32 @@
+{
+  "core": "mGBA Splitscreen",
+  "version": "0.1.0-f1d5975-rollback2",
+  "stateProfile": "SPST4",
+  "sourceRevision": "f1d5975d77285f77affbfe64b7050ebd5c4b6a77",
+  "patchSha256": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+  "sha256": {
+    "mgba_splitscreen-wasm.data": "2645980733aa6149fe6dde3aa579aeeab2c0089fd7453abe4acf49e50184fa1e",
+    "mgba_splitscreen_libretro.so": "59e239bad357e06166c6a90bdc174f258a501ad8c71d5abff50341e8cc6066cd",
+    "license.txt": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
+    "mgba_splitscreen_libretro.info": "4f0b38680fa58fa993d8fa0d240adcc08b7247df2e2eb7e2e547350fcf636aa3",
+    "build-retroarch-rollback-mgba.sh": "122ca6aa2d3b673f25e77134ef65be025db2906742e106faadfef59e6bf2dd73",
+    "mgba-rollback-state.patch": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+    "mgba-native-startup.patch": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede",
+    "mgba-native-platforms.patch": "6b6e55deed5410c4b59a8245452476dc707258998cc9d48f14e030b6d488c872",
+    "mgba-multi-rom.patch": "796d57519549374057bf6d9367a8df75d02f2a2c2165809ac4f0c8a1b9370085"
+  },
+  "platform": "linux-x86_64",
+  "nativeCore": "mgba_splitscreen_libretro.so",
+  "webBundle": "mgba_splitscreen-wasm.data",
+  "license": "license.txt",
+  "upstream": "https://github.com/Spuds0588/mgba-splitscreen/tree/f1d5975d77285f77affbfe64b7050ebd5c4b6a77",
+  "sourceArchive": "https://github.com/Spuds0588/mgba-splitscreen/archive/f1d5975d77285f77affbfe64b7050ebd5c4b6a77.tar.gz",
+  "buildInstructions": "BUILD.txt",
+  "buildScript": "build-retroarch-rollback-mgba.sh",
+  "patch": "mgba-rollback-state.patch",
+  "nativeStartup": "configured-players-v1",
+  "startupPatchSha256": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede",
+  "orderedCartridges": true,
+  "multiRomPatchSha256": "796d57519549374057bf6d9367a8df75d02f2a2c2165809ac4f0c8a1b9370085",
+  "qualification": "Windows x64: distinct-cartridge link and 120-frame rollback replay; RetroArch 1.22.2 plus WASM: 300 confirmed frames, five state checks, selected battery preserved. Windows x86/ARM64: ABI and artifact checks only."
+}

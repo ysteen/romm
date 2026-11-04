@@ -145,7 +145,12 @@ test("all catalog downloads exist and match their core versions and checksums", 
     const profile = catalog[core];
     assert.deepEqual(
       Object.keys(profile.downloads).sort(),
-      [...targets].sort(),
+      targets
+        .filter(
+          (target) =>
+            core !== "mgba_splitscreen" || !target.startsWith("android-"),
+        )
+        .sort(),
     );
     for (const [target, build] of Object.entries(profile.downloads)) {
       const url = new URL(build.path, base);

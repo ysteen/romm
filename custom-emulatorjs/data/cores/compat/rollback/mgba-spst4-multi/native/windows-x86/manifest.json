@@ -1,0 +1,21 @@
+{
+  "core": "mGBA Splitscreen",
+  "version": "0.1.0-f1d5975-rollback2",
+  "sourceRevision": "f1d5975d77285f77affbfe64b7050ebd5c4b6a77",
+  "target": "windows-x86",
+  "compiler": "clang version 23.1.0 (https://github.com/llvm/llvm-project.git ea7d852a70e8bdfaf601d6626a760f9771b2c4b4)",
+  "sha256": {
+    "mgba_splitscreen_libretro.dll": "6b8f2e2f42ea8c805b95cebe4c77152832755d30594a32c23faa5c21d8cf4692"
+  },
+  "stateProfile": "SPST4",
+  "patchSha256": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+  "multiRomPatchSha256": "796d57519549374057bf6d9367a8df75d02f2a2c2165809ac4f0c8a1b9370085",
+  "orderedCartridges": true,
+  "localPlayerView": "netplay-mode-file-v1",
+  "localPlayerViewPatchSha256": "04847ca9eedf57f4f72c0a48bfd98b7732451d482c1189b19a60154763db5c63",
+  "startupPatchSha256": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede",
+  "nativeStartup": "configured-players-v1",
+  "saveMemoryInitialization": "before-first-frame-v1",
+  "saveInitPatchSha256": "a225e2d46c559957b9f403ee869b38fbcacb3938411e3cc6575aab89efdec7d2",
+  "platformPatchSha256": "6b6e55deed5410c4b59a8245452476dc707258998cc9d48f14e030b6d488c872"
+}

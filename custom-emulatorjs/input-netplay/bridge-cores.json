@@ -67,20 +67,33 @@
         "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-x86/sameboy_libretro.so",
         "sha256": "72bc853a78e93504a3f56dc75feda14b581c68553114aac28669f4df0dcd3e03"
       }
+    },
+    "launch": {
+      "extension": "gb",
+      "subsystem": "gb_link_2p",
+      "options": {
+        "sameboy_link": "enabled",
+        "sameboy_rtc": "accurate",
+        "sameboy_model_1": "Auto",
+        "sameboy_model_2": "Auto",
+        "sameboy_screen_layout": "left-right",
+        "sameboy_audio_output": "Game Boy #1",
+        "video_rotation": "0"
+      }
     }
   },
   "mgba_splitscreen": {
     "web": {
       "coreName": "mGBA Splitscreen",
-      "coreVersion": "0.1.0-f1d5975-rollback1",
+      "coreVersion": "0.1.0-f1d5975-rollback2",
       "maxPrediction": 12,
       "paths": {
-        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen-wasm.data",
-        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen.json"
+        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen-wasm.data",
+        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen.json"
       },
-      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so",
-      "manifest": "../data/cores/compat/rollback/mgba-spst4/manifest.json",
-      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4/BUILD.txt",
+      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.so",
+      "manifest": "../data/cores/compat/rollback/mgba-spst4-multi/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4-multi/BUILD.txt",
       "nativePlatform": "Linux x86_64",
       "waitForCoreInitialization": true,
       "options": {
@@ -89,65 +102,60 @@
     },
     "native": {
       "coreName": "mGBA Splitscreen",
-      "coreVersion": "0.1.0-f1d5975-rollback1",
+      "coreVersion": "0.1.0-f1d5975-rollback2",
       "maxPrediction": 12,
       "paths": {
-        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen-wasm.data",
-        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen.json"
+        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen-wasm.data",
+        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen.json"
       },
-      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so",
-      "manifest": "../data/cores/compat/rollback/mgba-spst4/manifest.json",
-      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4/BUILD.txt",
+      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.so",
+      "manifest": "../data/cores/compat/rollback/mgba-spst4-multi/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4-multi/BUILD.txt",
       "nativePlatform": "Linux x86_64",
       "waitForCoreInitialization": true,
       "options": {
         "splitscreen_layout": "auto"
       },
       "coreInfo": {
-        "path": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.info",
-        "sha256": "6ae1f79afd9d7972389a4225999521cffa4792bc3673b816daffd461bf12c775"
+        "path": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.info",
+        "sha256": "4f0b38680fa58fa993d8fa0d240adcc08b7247df2e2eb7e2e547350fcf636aa3"
       }
     },
     "downloads": {
       "linux-x86_64": {
         "label": "Linux x86_64",
-        "path": "../data/cores/compat/rollback/mgba-spst4/mgba_splitscreen_libretro.so",
-        "sha256": "5138cf39770d10e4bd50c02a9b1889e27dfcf0145446fe0aa4a3e6a961678089"
+        "path": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.so",
+        "sha256": "59e239bad357e06166c6a90bdc174f258a501ad8c71d5abff50341e8cc6066cd"
       },
       "windows-x86_64": {
         "label": "Windows x64 (64-bit)",
-        "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-x86_64/mgba_splitscreen_libretro.dll",
-        "sha256": "9d41c8de697bf047dd8802dab1025e74e2613f3d84a2a7311cd60a7fb9a4969c"
+        "path": "../data/cores/compat/rollback/mgba-spst4-multi/native/windows-x86_64/mgba_splitscreen_libretro.dll",
+        "sha256": "97f9912c2bb4791f7c82227e70f97f01de96becfe2cc0a8e71e41d2a645c236d"
       },
       "windows-x86": {
         "label": "Windows x86 (32-bit)",
-        "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-x86/mgba_splitscreen_libretro.dll",
-        "sha256": "df10dc94668747e6e2bab97aa7b5f93002371e696dcfde04ab29e77c48311f41"
+        "path": "../data/cores/compat/rollback/mgba-spst4-multi/native/windows-x86/mgba_splitscreen_libretro.dll",
+        "sha256": "6b8f2e2f42ea8c805b95cebe4c77152832755d30594a32c23faa5c21d8cf4692"
       },
       "windows-arm64": {
         "label": "Windows ARM64",
-        "path": "../data/cores/compat/rollback/mgba-spst4/native/windows-arm64/mgba_splitscreen_libretro.dll",
-        "sha256": "89d6f68a47524afacdaa71f128a5c3094dc300f169ba5647dde4ec6c73a6e8f9"
-      },
-      "android-arm64-v8a": {
-        "label": "Android ARM64 (arm64-v8a)",
-        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-arm64-v8a/mgba_splitscreen_libretro.so",
-        "sha256": "65be08511f9b3bc208ef6d2ac2d0a40839428cca6eff4e0eb74118b53eb39697"
-      },
-      "android-armeabi-v7a": {
-        "label": "Android ARM32 (armeabi-v7a)",
-        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-armeabi-v7a/mgba_splitscreen_libretro.so",
-        "sha256": "70cb553dbf3cf36a37b28cd4d623b24769f4a959420e4e84543e84814e879cc2"
-      },
-      "android-x86_64": {
-        "label": "Android x86_64",
-        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-x86_64/mgba_splitscreen_libretro.so",
-        "sha256": "9eaca80693337f78b4c71c6c857f0bf31161a79e68aef789eec0871c0ac6b4cf"
-      },
-      "android-x86": {
-        "label": "Android x86 (32-bit)",
-        "path": "../data/cores/compat/rollback/mgba-spst4/native/android-x86/mgba_splitscreen_libretro.so",
-        "sha256": "65735665ff973790a484c8960f492bf34033fc338abeb1024f33d927b3db27ac"
+        "path": "../data/cores/compat/rollback/mgba-spst4-multi/native/windows-arm64/mgba_splitscreen_libretro.dll",
+        "sha256": "d9264ac6b8e07f1af8a4692808624d4919747012129ac92dac65c4c35c493720"
+      }
+    },
+    "launch": {
+      "extension": "gba",
+      "subsystem": "gba_link_2p",
+      "options": {
+        "splitscreen_players": "2",
+        "splitscreen_layout": "auto",
+        "splitscreen_link": "enabled",
+        "splitscreen_audio": "player 1",
+        "splitscreen_audio_low_pass": "off",
+        "splitscreen_audio_limiter": "off",
+        "splitscreen_fs_assist": "off",
+        "splitscreen_overlays": "off",
+        "video_rotation": "0"
       }
     }
   },
@@ -218,6 +226,19 @@
         "label": "Android x86 (32-bit)",
         "path": "../data/cores/compat/rollback/snes9x-2d4cce69/native/android-x86/snes9x_libretro.so",
         "sha256": "c493844f6602f70695327f07054e0ba1b17e309e2c7cdcd4ffa394df78d97967"
+      }
+    },
+    "launch": {
+      "extension": "sfc",
+      "subsystem": "",
+      "options": {
+        "snes9x_region": "auto",
+        "snes9x_overclock_superfx": "100%",
+        "snes9x_overclock_cycles": "disabled",
+        "snes9x_up_down_allowed": "disabled",
+        "snes9x_audio_interpolation": "gaussian",
+        "snes9x_blargg": "disabled",
+        "snes9x_randomize_memory": "disabled"
       }
     }
   }

@@ -1,0 +1,32 @@
+--- a/src/platform/libretro-splitscreen/libretro.c
++++ b/src/platform/libretro-splitscreen/libretro.c
+@@ -866,8 +866,19 @@
+ 	UNUSED(code);
+ }
+ 
++static bool _ensureSaveMemory(void) {
++	/* Frontends restore SRAM before retro_run, after options are available. */
++	if (pendingLoad && !menuActive) {
++		pendingLoad = false;
++		if (!_doLoad(pendingPlayers)) {
++			return false;
++		}
++	}
++	return sp.nPlayers > 0;
++}
++
+ void* retro_get_memory_data(unsigned id) {
+-	if (!sp.nPlayers) {
++	if (!_ensureSaveMemory()) {
+ 		return NULL;
+ 	}
+ 	return sp_memory_data(&sp, id);
+@@ -875,7 +886,7 @@
+ }
+ 
+ size_t retro_get_memory_size(unsigned id) {
+-	if (!sp.nPlayers) {
++	if (!_ensureSaveMemory()) {
+ 		return 0;
+ 	}
+ 	return sp_memory_size(&sp, id);

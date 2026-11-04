@@ -1,0 +1,11 @@
+# mGBA Splitscreen ordered cartridge build
+
+Version: 0.1.0-f1d5975-rollback2. State profile: SPST4.
+Source: https://github.com/Spuds0588/mgba-splitscreen/tree/f1d5975d77285f77affbfe64b7050ebd5c4b6a77
+Source archive: https://github.com/Spuds0588/mgba-splitscreen/archive/f1d5975d77285f77affbfe64b7050ebd5c4b6a77.tar.gz
+
+The GBA Link 2/3/4 Player subsystems load each ordered cartridge independently. Single-content loading repeats one ROM as before. Use the room's Windows download and Play.cmd to prepare the exact core, ROM order, options and connection automatically. Keep a browser participant connected as host.
+
+Apply mgba-rollback-state.patch, mgba-multi-rom.patch and mgba-native-startup.patch to the pinned source. Windows builds also apply mgba-native-platforms.patch. The build-retroarch-rollback-mgba.sh recipe builds web and Linux; the standalone project's scripts/build-native-cores.py builds Windows with --jobs 2. Preserve license.txt with distributions.
+
+Windows x64, x86 and ARM64 binaries are included. Android packages for the older rollback1 version are intentionally excluded from this profile. Build completion does not imply device qualification. See the adapter's ROLLBACK_ROOMS.md for validation status.
