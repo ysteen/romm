@@ -1,0 +1,336 @@
+--- a/src/platform/libretro-splitscreen/instances.c
++++ b/src/platform/libretro-splitscreen/instances.c
+@@ -21,6 +21,9 @@
+ #include <mgba/gba/interface.h>
+ #include <mgba/internal/gba/gba.h>
+ #include <mgba/internal/gba/memory.h>
++#include <mgba/internal/arm/macros.h>
++#include <mgba/internal/gba/io.h>
++#include <mgba/internal/gba/serialize.h>
+ #include <mgba-util/audio-buffer.h>
+ #include <mgba-util/memory.h>
+ 
+@@ -120,6 +123,10 @@
+ 	mCoreInitConfig(p->core, NULL);
+ 	/* Repo gotcha: core->init() BEFORE handing the core any buffers. */
+ 	p->core->init(p->core);
++	/* Epoch travels in states; emulated frames, not host clocks, advance RTC. */
++	p->core->rtc.override = RTC_FAKE_EPOCH;
++	p->core->rtc.value = 946684800000LL;
++	((struct GBA*) p->core->board)->idleOptimization = IDLE_LOOP_IGNORE;
+ 
+ 	p->videoBuf = anonymousMemoryMap(SP_VIDEO_W * SP_VIDEO_H * BYTES_PER_PIXEL);
+ 	if (!p->videoBuf) {
+@@ -846,22 +853,82 @@
+  * the per-player max. Sizes are fixed at load time so the total never grows. */
+ 
+ #define SP_STATE_MAGIC 0x54535053u /* "SPST" little-endian */
+-#define SP_STATE_VERSION 1
++#define SP_STATE_VERSION 4 /* Shared native/WASM rollback state. */
++
++enum { SP_RUNTIME_WORDS = 16 };
++
++static size_t _runtimeSize(struct sp_manager* sp) {
++	return 8 + (size_t) sp->nPlayers * (SP_RUNTIME_WORDS * sizeof(uint32_t) + GBA_SIZE_FLASH1M);
++}
++
++static void _saveRuntime(struct sp_manager* sp, uint8_t* out) {
++	uint32_t header[2] = { sp->linkAttached, sp->stallRun };
++	for (unsigned j = 0; j < 2; ++j) STORE_32LE(header[j], j * 4, out);
++	out += sizeof(header);
++	for (int i = 0; i < sp->nPlayers; ++i) {
++		struct sp_player* p = &sp->players[i];
++		struct GBA* gba = p->core->board;
++		struct GBAudio* psg = &gba->audio.psg;
++		/* Write-only frequencies and pending PSG samples are absent from mGBA states. */
++		uint32_t fields[SP_RUNTIME_WORDS] = { p->asleep, p->lastFrameCounter, p->framesProduced,
++			gba->earlyExit | (gba->haltPending << 1) | ((gba->timing.reroot != NULL) << 2),
++			gba->video.stallMask, psg->ch1.control.frequency, psg->ch2.control.frequency,
++			psg->ch3.rate, psg->ch1.sweep.step, psg->ch1.sample, psg->ch2.sample,
++			psg->ch3.sample, psg->ch3.window, psg->ch4.sample, psg->ch4.nSamples,
++			psg->ch4.samples };
++		for (unsigned j = 0; j < SP_RUNTIME_WORDS; ++j) STORE_32LE(fields[j], j * 4, out);
++		out += sizeof(fields);
++		/* Save hardware can still be undetected when the initial SRAM is imported. */
++		memcpy(out, p->saveData, GBA_SIZE_FLASH1M); out += GBA_SIZE_FLASH1M;
++	}
++}
++
++static void _loadRuntime(struct sp_manager* sp, const uint8_t* in) {
++	uint32_t header[2];
++	for (unsigned j = 0; j < 2; ++j) LOAD_32LE(header[j], j * 4, in);
++	in += sizeof(header);
++	sp->stallRun = header[1];
++	for (int i = 0; i < sp->nPlayers; ++i) {
++		struct sp_player* p = &sp->players[i];
++		uint32_t fields[SP_RUNTIME_WORDS];
++		for (unsigned j = 0; j < SP_RUNTIME_WORDS; ++j) LOAD_32LE(fields[j], j * 4, in);
++		in += sizeof(fields);
++		p->asleep = fields[0];
++		p->lastFrameCounter = fields[1];
++		p->framesProduced = fields[2];
++		struct GBA* gba = p->core->board;
++		gba->earlyExit = fields[3] & 1;
++		gba->haltPending = (fields[3] >> 1) & 1;
++		/* VRAM contention depends on the current scanline, including VBlank. */
++		gba->video.stallMask = fields[4];
++		struct GBAudio* psg = &gba->audio.psg;
++		psg->ch1.control.frequency = fields[5];
++		psg->ch2.control.frequency = fields[6];
++		psg->ch3.rate = fields[7];
++		psg->ch1.sweep.step = fields[8];
++		psg->ch1.sample = (int32_t) fields[9];
++		psg->ch2.sample = (int32_t) fields[10];
++		psg->ch3.sample = (int32_t) fields[11];
++		psg->ch3.window = (int32_t) fields[12];
++		psg->ch4.sample = (int32_t) fields[13];
++		psg->ch4.nSamples = fields[14];
++		psg->ch4.samples = fields[15];
++		if (!(fields[3] & 4) && gba->timing.reroot) {
++			gba->timing.root = gba->timing.reroot;
++			gba->timing.reroot = NULL;
++		}
++		memcpy(p->saveData, in, GBA_SIZE_FLASH1M); in += GBA_SIZE_FLASH1M;
++	}
++	_spResetAudioPost();
++}
+ 
+ size_t sp_serialize_size(struct sp_manager* sp) {
+-	/* Measure once per session: coordinator state is not independently
+-	 * serializable, so pad generously — each core's state plus the header,
+-	 * rounded up. The first serialize call fixes the value. */
+-	size_t total = 16; /* header */
++	size_t total = 16 + (size_t) sp->nPlayers * 4;
+ 	for (int i = 0; i < sp->nPlayers; ++i) {
+-		struct VFile* vfm = VFileMemChunk(NULL, 0);
+-		mCoreSaveStateNamed(sp->players[i].core, vfm, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
+-		total += vfm->size(vfm) + 4096; /* per-player padding for growth */
+-		vfm->close(vfm);
+-	}
+-	/* Coordinator bookkeeping is small (a table + event queues); its content
+-	 * is rebuilt on unserialize via a driver reset, see below. */
+-	return total;
++		total += sp->players[i].core->stateSize(sp->players[i].core)
++			+ GBA_SIZE_FLASH1M + 65536;
++	}
++	return total + _runtimeSize(sp);
+ }
+ 
+ bool sp_serialize(struct sp_manager* sp, void* data, size_t size) {
+@@ -869,6 +936,9 @@
+ 	 * | per-player slices (mGBA core state + extdata). Slice lengths live in
+ 	 * the header because mGBA's core state is a raw struct with no in-band
+ 	 * size, and extdata after it is variable-length. */
++	if (!data || size != sp_serialize_size(sp)) return false;
++	uint8_t* runtime = (uint8_t*) data + size - _runtimeSize(sp);
++	size -= _runtimeSize(sp);
+ 	size_t headerSize = 3 * sizeof(uint32_t) + (size_t) sp->nPlayers * sizeof(uint32_t);
+ 	if (size < headerSize) {
+ 		return false;
+@@ -899,11 +969,18 @@
+ 	if (ok) {
+ 		/* Pad the remainder (size must never shrink between frames). */
+ 		memset((char*) data + offset, 0, size - offset);
++		_saveRuntime(sp, runtime);
+ 	}
+ 	return ok;
+ }
+ 
+ bool sp_unserialize(struct sp_manager* sp, const void* data, size_t size) {
++	if (!data || size != sp_serialize_size(sp)) return false;
++	const uint8_t* runtime = (const uint8_t*) data + size - _runtimeSize(sp);
++	uint32_t linked;
++	LOAD_32LE(linked, 0, runtime);
++	if (linked != sp->linkAttached) return false;
++	size -= _runtimeSize(sp);
+ 	/* Layout must match sp_serialize: u32 magic | u32 version | u32 nPlayers
+ 	 * | u32 sliceLen[nPlayers] | per-player slices (core state + extdata). */
+ 	size_t headerSize = 3 * sizeof(uint32_t) + (size_t) sp->nPlayers * sizeof(uint32_t);
+@@ -918,7 +995,15 @@
+ 		       header[0], header[1], header[2], sp->nPlayers);
+ 		return false;
+ 	}
++	/* Reject invalid slice lengths before changing either console. */
+ 	size_t offset = headerSize;
++	for (int i = 0; i < sp->nPlayers; ++i) {
++		uint32_t len;
++		LOAD_32LE(len, 12 + i * 4, data);
++		if (len < sp->players[i].core->stateSize(sp->players[i].core) || len > size - offset) return false;
++		offset += len;
++	}
++	offset = headerSize;
+ 	for (int i = 0; i < sp->nPlayers; ++i) {
+ 		uint32_t len;
+ 		memcpy(&len, (const char*) data + 3 * sizeof(uint32_t) + (size_t) i * sizeof(len),
+@@ -928,7 +1013,20 @@
+ 			return false;
+ 		}
+ 		struct VFile* vfm = VFileFromConstMemory((const char*) data + offset, len);
+-		bool ok = mCoreLoadStateNamed(sp->players[i].core, vfm, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
++		struct mCore* core = sp->players[i].core;
++		struct GBA* gba = core->board;
++		struct GBASIODriver* driver = gba->sio.driver;
++		/* Restoring one console's I/O must not enqueue new peer transfers. */
++		gba->sio.driver = NULL;
++		bool ok = mCoreLoadStateNamed(core, vfm, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
++		gba->sio.driver = driver;
++		if (ok) {
++			const struct GBASerializedState* raw = (const void*) ((const char*) data + offset);
++			LOAD_16(gba->sio.rcnt, GBA_REG_RCNT, raw->io);
++			LOAD_16(gba->sio.siocnt, GBA_REG_SIOCNT, raw->io);
++			gba->memory.io[GBA_REG(RCNT)] = gba->sio.rcnt;
++			gba->memory.io[GBA_REG(SIOCNT)] = gba->sio.siocnt;
++		}
+ 		vfm->close(vfm);
+ 		if (!ok) {
+ 			_spLog("unserialize: player %d failed at offset %zu", i, offset);
+@@ -936,6 +1034,22 @@
+ 		}
+ 		offset += len;
+ 	}
++	/* All hardware must be restored before the shared link driver state. */
++	offset = headerSize;
++	for (int i = 0; i < sp->nPlayers; ++i) {
++		uint32_t len;
++		LOAD_32LE(len, 12 + i * 4, data);
++		struct mCore* core = sp->players[i].core;
++		struct mStateExtdata extra;
++		mStateExtdataInit(&extra);
++		struct VFile* vfm = VFileFromConstMemory((const char*) data + offset, len);
++		bool ok = mCoreExtractExtdata(core, vfm, &extra) && core->loadExtraState(core, &extra);
++		vfm->close(vfm);
++		mStateExtdataDeinit(&extra);
++		if (!ok) return false;
++		offset += len;
++	}
++	_loadRuntime(sp, runtime);
+ 	/* NOTE: no coordinator reset here. The lockstep driver serializes its full
+ 	 * state through each core's savestate (player queues, cycle offsets, sleep
+ 	 * flags, and — via player 0 — the coordinator bookkeeping), so the link
+--- a/src/platform/libretro-splitscreen/libretro.c
++++ b/src/platform/libretro-splitscreen/libretro.c
+@@ -560,7 +560,7 @@
+ void retro_get_system_info(struct retro_system_info* info) {
+ 	info->need_fullpath = false;
+ 	info->valid_extensions = "gba";
+-	info->library_version = "0.1.0";
++	info->library_version = "0.1.0-f1d5975-rollback1";
+ 	info->library_name = "mGBA Splitscreen";
+ 	info->block_extract = false;
+ }
+@@ -584,6 +584,8 @@
+ }
+ 
+ void retro_init(void) {
++	uint64_t quirks = RETRO_SERIALIZATION_QUIRK_MUST_INITIALIZE;
++	environCallback(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
+ 	enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_RGB565;
+ 	environCallback(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt);
+ 
+@@ -828,13 +830,7 @@
+ 	if (!sp.nPlayers) {
+ 		return 0;
+ 	}
+-	/* Fixed at first call per session via the padded measure in instances.c:
+-	 * the value must never INCREASE during a session, so measure generously. */
+-	static size_t cached = 0;
+-	if (!cached) {
+-		cached = sp_serialize_size(&sp);
+-	}
+-	return cached;
++	return sp_serialize_size(&sp);
+ }
+ 
+ bool retro_serialize(void* data, size_t size) {
+--- a/src/gba/sio/lockstep.c
++++ b/src/gba/sio/lockstep.c
+@@ -369,6 +369,7 @@
+ 	player->otherModes[2] = _modeIntToEnum(GBASIOLockstepSerializedFlagsGetPlayer2Mode(flags));
+ 	player->otherModes[3] = _modeIntToEnum(GBASIOLockstepSerializedFlagsGetPlayer3Mode(flags));
+ 
++	mTimingDeschedule(&driver->p->p->timing, &lockstep->event);
+ 	if (GBASIOLockstepSerializedFlagsGetEventScheduled(flags)) {
+ 		int32_t when;
+ 		LOAD_32LE(when, 0, &state->driver.nextEvent);
+@@ -391,6 +392,7 @@
+ 	for (i = 0; i < MAX_LOCKSTEP_EVENTS - 1; ++i) {
+ 		player->buffer[i].next = &player->buffer[i + 1];
+ 	}
++	player->buffer[MAX_LOCKSTEP_EVENTS - 1].next = NULL;
+ 	player->freeList = &player->buffer[0];
+ 	player->queue = NULL;
+ 
+@@ -421,6 +423,9 @@
+ 		}
+ 	}
+ 
++	/* Pending events must not link into the unused event pool. */
++	*lastEvent = NULL;
++
+ 	if (player->playerId == 0) {
+ 		LOAD_32LE(coordinator->cycle, 0, &state->coordinator.cycle);
+ 		LOAD_32LE(coordinator->waiting, 0, &state->coordinator.waiting);
+@@ -447,7 +452,9 @@
+ 
+ 	STORE_32LE(DRIVER_STATE_VERSION, 0, &state->version);
+ 
+-	STORE_32LE(lockstep->event.when - mTimingCurrentTime(&driver->p->p->timing), 0, &state->driver.nextEvent);
++	STORE_32LE(mTimingIsScheduled(&driver->p->p->timing, &lockstep->event)
++		? lockstep->event.when - mTimingCurrentTime(&driver->p->p->timing) : 0,
++		0, &state->driver.nextEvent);
+ 
+ 	MutexLock(&coordinator->mutex);
+ 	struct GBASIOLockstepPlayer* player = TableLookup(&coordinator->players, lockstep->lockstepId);
+--- a/src/gba/cart/gpio.c
++++ b/src/gba/cart/gpio.c
+@@ -522,7 +522,10 @@
+ 	// GBP/SIO stuff is only here for legacy reasons
+ 	flags2 = GBASerializedHWFlags2SetGbpInputsPosted(flags2, hw->p->sio.gbp.inputsPosted);
+ 	flags2 = GBASerializedHWFlags2SetGbpTxPosition(flags2, hw->p->sio.gbp.txPosition);
+-	STORE_32(hw->p->sio.completeEvent.when - mTimingCurrentTime(&hw->p->timing), 0, &state->hw.sioNextEvent);
++	/* A busy linked port is completed by its driver, not the dummy SIO event. */
++	STORE_32(mTimingIsScheduled(&hw->p->timing, &hw->p->sio.completeEvent)
++		? hw->p->sio.completeEvent.when - mTimingCurrentTime(&hw->p->timing) : UINT32_MAX,
++		0, &state->hw.sioNextEvent);
+ 
+ 	state->hw.flags2 = flags2;
+ }
+--- a/src/gba/io.c
++++ b/src/gba/io.c
+@@ -1049,6 +1049,8 @@
+ 		STORE_32(gba->timers[i].event.when - mTimingCurrentTime(&gba->timing), 0, &state->timers[i].nextEvent);
+ 		STORE_32(gba->timers[i].flags, 0, &state->timers[i].flags);
+ 	}
++	/* The write-only serial send latch is sampled by the cable driver. */
++	STORE_16(gba->memory.io[GBA_REG(SIOMLT_SEND)], GBA_REG_SIOMLT_SEND, state->io);
+ 	STORE_32(gba->bus, 0, &state->bus);
+ 
+ 	GBADMASerialize(gba, state);
+@@ -1089,6 +1091,7 @@
+ 	gba->sio.siocnt = gba->memory.io[GBA_REG(SIOCNT)];
+ 	GBASIOWriteRCNT(&gba->sio, gba->memory.io[GBA_REG(RCNT)]);
+ 
++	LOAD_16(gba->memory.io[GBA_REG(SIOMLT_SEND)], GBA_REG_SIOMLT_SEND, state->io);
+ 	LOAD_32(gba->bus, 0, &state->bus);
+ 	GBADMADeserialize(gba, state);
+ 	GBAHardwareDeserialize(&gba->memory.hw, state);
+--- a/src/gba/audio.c
++++ b/src/gba/audio.c
+@@ -503,7 +503,6 @@
+ }
+ 
+ void GBAAudioDeserialize(struct GBAAudio* audio, const struct GBASerializedState* state) {
+-	GBAudioPSGDeserialize(&audio->psg, &state->audio.psg, &state->audio.flags);
+ 
+ 	uint16_t reg;
+ 	LOAD_16(reg, GBA_REG_SOUND1CNT_X, state->io);
+@@ -514,6 +513,9 @@
+ 	GBAIOWrite(audio->p, GBA_REG_SOUND3CNT_X, reg & 0x7FFF);
+ 	LOAD_16(reg, GBA_REG_SOUND4CNT_HI, state->io);
+ 	GBAIOWrite(audio->p, GBA_REG_SOUND4CNT_HI, reg & 0x7FFF);
++	/* Register writes advance channels; restore their exact phase afterwards. */
++	LOAD_16(audio->p->memory.io[GBA_REG(SOUNDCNT_X)], GBA_REG_SOUNDCNT_X, state->io);
++	GBAudioPSGDeserialize(&audio->psg, &state->audio.psg, &state->audio.flags);
+ 
+ 	LOAD_32(audio->chA.internalSample, 0, &state->audio.internalA);
+ 	LOAD_32(audio->chB.internalSample, 0, &state->audio.internalB);

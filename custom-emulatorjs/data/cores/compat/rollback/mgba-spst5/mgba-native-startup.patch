@@ -1,0 +1,20 @@
+--- a/src/platform/libretro-splitscreen/libretro.c
++++ b/src/platform/libretro-splitscreen/libretro.c
+@@ -748,13 +748,11 @@
+ 		havePath = false;
+ 	}
+ 	_readOptions();
+-	/* Quick path: N copies of this one ROM. The count is chosen on the boot
+-	 * menu (defaulting to the persisted option) instead of requiring a trip
+-	 * to Core Options on every load. */
+-	pendingPlayers = 2;
++	/* Netplay reloads content before connecting. Waiting for menu input here
++	 * prevents serialization and the initial SRAM exchange from completing. */
++	pendingPlayers = playersOpt;
+ 	pendingLoad = true;
+-	menuActive = true;
+-	spMenuStart(playersOpt);
++	menuActive = false;
+ 	return true;
+ }
+ 

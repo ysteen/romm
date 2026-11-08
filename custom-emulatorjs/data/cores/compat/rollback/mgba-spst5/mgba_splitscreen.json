@@ -1,0 +1,7 @@
+{
+  "core": "mgba_splitscreen",
+  "buildStart": "fb09bb01a337289198b362fdf35dd4be5aac8852551c04962b72087c8546cdf4",
+  "options": {
+    "defaultWebGL2": true
+  }
+}

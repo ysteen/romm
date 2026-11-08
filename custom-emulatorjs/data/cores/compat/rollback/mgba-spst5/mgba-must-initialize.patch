@@ -1,0 +1,13 @@
+--- a/src/platform/libretro-splitscreen/libretro.c
++++ b/src/platform/libretro-splitscreen/libretro.c
+@@ -584,6 +584,10 @@
+ }
+ 
+ void retro_init(void) {
++	/* The linked machines are constructed by the first retro_run call. */
++	uint64_t quirks = RETRO_SERIALIZATION_QUIRK_MUST_INITIALIZE;
++	environCallback(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
++
+ 	enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_RGB565;
+ 	environCallback(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt);
+ 

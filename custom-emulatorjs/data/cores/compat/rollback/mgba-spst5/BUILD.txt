@@ -1,0 +1,38 @@
+mGBA Splitscreen link cable core
+
+Version: 0.1.0-f1d5975-cable1
+State profile: SPST5
+Input profile: link-cable-r3-v1
+Source: https://github.com/Spuds0588/mgba-splitscreen/tree/f1d5975d77285f77affbfe64b7050ebd5c4b6a77
+Source archive: https://github.com/Spuds0588/mgba-splitscreen/archive/f1d5975d77285f77affbfe64b7050ebd5c4b6a77.tar.gz
+
+All targets apply mgba-rollback-state.patch, mgba-multi-rom.patch and
+mgba-cable.patch. Native targets also apply mgba-native-startup.patch and
+mgba-native-save-init.patch before the cable patch. The cross-platform recipe
+additionally applies mgba-native-platforms.patch and, for Windows,
+mgba-local-player-view.patch before the cable patch. Preserve that patch order.
+
+The standalone retroarch-netplay-bridge project owns
+scripts/build-retroarch-rollback-mgba.sh for web and Linux, and
+scripts/build-native-cores.py for Windows and Android. Use at most two build jobs.
+The included shell recipe uses the prepared Emscripten and RetroArch frontend
+dependencies from that project. manifest.json records the build inputs and hashes.
+
+The GBA Link 2/3/4 Player subsystems load each ordered cartridge independently.
+The room launcher prepares the matching core, cartridge order, options and saves.
+The cable profile reserves RetroPad R3 for the broker's deterministic disconnect
+signal; the launcher disables its physical binding in the isolated config.
+Leaving the room disconnects only that participant's emulated cable. Closing just
+the game keeps room membership and the cable attached. A live rejoin reconnects
+after state synchronization. Every participant needs this exact core version.
+Battery saves remain usable. SPST4 full states do not match this profile.
+
+The web package and Linux x86_64 core are included here. native/ contains Windows
+x64, x86 and ARM64, plus Android arm64-v8a, armeabi-v7a, x86_64 and x86 artifacts
+with individual manifests. Android requires API 24 or later and uses 16 KiB ELF
+alignment. These are built artifacts, not a device qualification claim.
+
+Local deployment testing was deferred at the user's request on 2026-11-07.
+Use a fresh room and refresh its browser page after updating. Open Windows
+RetroArch through the room's launcher to download the matching core and options.
+Preserve license.txt and the source patches when distributing these files.

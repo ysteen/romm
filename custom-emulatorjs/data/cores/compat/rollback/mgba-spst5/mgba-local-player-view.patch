@@ -1,0 +1,64 @@
+--- a/src/platform/libretro-splitscreen/libretro.c
++++ b/src/platform/libretro-splitscreen/libretro.c
+@@ -61,6 +61,30 @@
+ static bool limiterOpt = true;   /* audio post: soft-knee limiter */
+ static unsigned advertisedRate; /* audio rate last sent via SET_SYSTEM_AV_INFO */
+ static bool coreOptionsChanged; /* option visibility changed since last poll */
++
++static int localPlayerView = -1;
++static unsigned localViewPoll;
++
++static void _applyLocalPlayerView(void) {
++#ifdef _WIN32
++	const wchar_t* path = _wgetenv(L"ROMM_NETPLAY_PLAYER_FILE");
++	if (!path || !*path) return;
++	if (localPlayerView < 0) localPlayerView = 0;
++	if ((localViewPoll++ % 15) == 0) {
++		FILE* file = _wfopen(path, L"rb");
++		if (file) {
++			int value = fgetc(file);
++			fclose(file);
++			if (value >= '0' && value <= '4') localPlayerView = value - '0';
++		}
++	}
++	/* Display preferences stay outside serialized emulation state. */
++	layoutOpt = SP_LAYOUT_FOCUS;
++	focusedOpt = localPlayerView > 0 ? localPlayerView - 1 : 0;
++	audioOpt = (enum spAudio) focusedOpt;
++	overlaysOpt = false;
++#endif
++}
+ 
+ /* The upstream keymap order: libretro pad -> GBA keymask bit. */
+ static const int keymap[] = {
+@@ -379,6 +403,7 @@
+ 
+ 	/* A persisted value may name a view the current session cannot show (e.g.
+ 	 * a saved quadrant layout after dropping to 2 players); fall back to Auto. */
++	_applyLocalPlayerView();
+ 	if (!_layoutValidFor((int) sp.nPlayers ? (int) sp.nPlayers : pendingPlayers, layoutOpt)) {
+ 		layoutOpt = SP_LAYOUT_AUTO;
+ 	}
+@@ -762,11 +787,13 @@
+ 	}
+ 
+ 	sp_composite(&sp, &vid, overlaysOpt);
++	if (localPlayerView == 0 || localPlayerView > sp.nPlayers) memset(vid.out, 0, vid.outSize);
+ 	videoCallback(vid.out, vid.width, vid.height, vid.width * BYTES_PER_PIXEL);
+ 
+ 	int16_t mix[SP_AUDIO_MAX_FRAMES * 2];
+ 	size_t produced = sp_audio(&sp, audioOpt, mix, SP_AUDIO_MAX_FRAMES);
+ 	if (produced && audioCallback) {
++		if (localPlayerView == 0 || localPlayerView > sp.nPlayers) memset(mix, 0, produced * 2 * sizeof(*mix));
+ 		audioCallback(mix, produced);
+ 	}
+ }
+@@ -814,6 +841,8 @@
+ }
+ 
+ void retro_unload_game(void) {
++	localPlayerView = -1;
++	localViewPoll = 0;
+ 	/* Diagnostic: pairs with the retro_reset line; distinguishes an unload+reload
+ 	 * cycle (content change, savestate state-load, netplay sync) from a reset. */
+ 	_spLogLine("frontend requested UNLOAD (retro_unload_game)");

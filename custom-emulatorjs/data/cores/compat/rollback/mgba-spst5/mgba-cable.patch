@@ -1,0 +1,228 @@
+diff --git a/include/mgba/internal/gba/sio/lockstep.h b/include/mgba/internal/gba/sio/lockstep.h
+index 36166ed..38ee98d 100644
+--- a/include/mgba/internal/gba/sio/lockstep.h
++++ b/include/mgba/internal/gba/sio/lockstep.h
+@@ -125,6 +125,7 @@ void GBASIOLockstepCoordinatorAttach(struct GBASIOLockstepCoordinator*, struct G
+ void GBASIOLockstepCoordinatorDetach(struct GBASIOLockstepCoordinator*, struct GBASIOLockstepDriver*);
+ size_t GBASIOLockstepCoordinatorAttached(struct GBASIOLockstepCoordinator*);
+ void GBASIOLockstepCoordinatorRecover(struct GBASIOLockstepCoordinator*);
++void GBASIOLockstepCoordinatorCableChanged(struct GBASIOLockstepCoordinator*);
+ 
+ void GBASIOLockstepDriverCreate(struct GBASIOLockstepDriver*, struct mLockstepUser*);
+ 
+diff --git a/src/gba/sio/lockstep.c b/src/gba/sio/lockstep.c
+index 371576a..93102b4 100644
+--- a/src/gba/sio/lockstep.c
++++ b/src/gba/sio/lockstep.c
+@@ -590,6 +590,7 @@ static bool GBASIOLockstepDriverStart(struct GBASIODriver* driver) {
+ 	}
+ 	if (coordinator->nAttached < 2) {
+ 		mLOG(GBA_SIO, DEBUG, "Attempted to start transfer with no secondary players");
++		ret = true;
+ 		goto out;
+ 	}
+ 	struct GBASIOLockstepPlayer* player = TableLookup(&coordinator->players, lockstep->lockstepId);
+@@ -1418,6 +1419,29 @@ void GBASIOLockstepCoordinatorDeinit(struct GBASIOLockstepCoordinator* coordinat
+ 	TableDeinit(&coordinator->players);
+ }
+ 
++void GBASIOLockstepCoordinatorCableChanged(struct GBASIOLockstepCoordinator* coordinator) {
++	MutexLock(&coordinator->mutex);
++	coordinator->waiting = 0;
++	coordinator->transferActive = false;
++	memset(coordinator->multiData, 0xFF, sizeof(coordinator->multiData));
++	memset(coordinator->normalData, 0xFF, sizeof(coordinator->normalData));
++	for (int i = 0; i < coordinator->nAttached; ++i) {
++		struct GBASIOLockstepPlayer* player = TableLookup(&coordinator->players, coordinator->attachedPlayers[i]);
++		/* Pending transfers refer to the previous cable's wire IDs. */
++		player->queue = NULL;
++		player->dataReceived = false;
++		for (unsigned j = 0; j < MAX_LOCKSTEP_EVENTS; ++j)
++			player->buffer[j].next = j + 1 < MAX_LOCKSTEP_EVENTS ? &player->buffer[j + 1] : NULL;
++		player->freeList = player->buffer;
++		for (int j = 0; j < MAX_GBAS; ++j) {
++			struct GBASIOLockstepPlayer* other = TableLookup(&coordinator->players, coordinator->attachedPlayers[j]);
++			_setReady(coordinator, player, j, other ? other->mode : (enum GBASIOMode) -1);
++		}
++		GBASIOLockstepPlayerWake(player);
++	}
++	MutexUnlock(&coordinator->mutex);
++}
++
+ void GBASIOLockstepCoordinatorAttach(struct GBASIOLockstepCoordinator* coordinator, struct GBASIOLockstepDriver* driver) {
+ 	if (driver->coordinator && driver->coordinator != coordinator) {
+ 		// TODO
+diff --git a/src/platform/libretro-splitscreen/instances.c b/src/platform/libretro-splitscreen/instances.c
+index 107febf..243f975 100644
+--- a/src/platform/libretro-splitscreen/instances.c
++++ b/src/platform/libretro-splitscreen/instances.c
+@@ -74,10 +74,8 @@ static void _lockstepWake(struct mLockstepUser* user) {
+ }
+ 
+ static int _lockstepRequestedId(struct mLockstepUser* user) {
+-	/* The driver asks which wire id this player wants; report the assigned
+-	 * slot (0..3). The coordinator renumbers by attach order anyway. */
+ 	struct sp_player* p = (struct sp_player*) user;
+-	return p->playerId;
++	return p->consoleId;
+ }
+ 
+ static void _lockstepPlayerIdChanged(struct mLockstepUser* user, int id) {
+@@ -95,6 +93,7 @@ static void _lockstepPlayerIdChanged(struct mLockstepUser* user, int id) {
+ static bool _spLoadOne(struct sp_player* p, int index, const void* rom, size_t romSize) {
+ 	memset(p, 0, sizeof(*p));
+ 	p->playerId = index;
++	p->consoleId = index;
+ 
+ 	/* Per-player ROM copy: save data must not alias between players. */
+ 	p->romData = anonymousMemoryMap(romSize);
+@@ -173,6 +172,7 @@ static void _spAttachLink(struct sp_manager* sp) {
+ 		GBASIOLockstepCoordinatorAttach(&sp->coordinator, &sp->players[i].driver);
+ 	}
+ 	sp->linkAttached = true;
++	sp->cableMask = (1u << n) - 1;
+ 	_spLog("[splitscreen] link attached: %d players on the virtual cable", n);
+ }
+ 
+@@ -285,6 +285,30 @@ void sp_set_fs_assist(struct sp_manager* sp, bool on) {
+ 	}
+ }
+ 
++static void _spSetCableMask(struct sp_manager* sp, unsigned mask) {
++	if (!sp->linkAttached || mask == sp->cableMask) return;
++	for (int i = 0; i < sp->nPlayers; ++i) {
++		if ((sp->cableMask & (1u << i)) && !(mask & (1u << i))) {
++			struct sp_player* p = &sp->players[i];
++			p->core->setPeripheral(p->core, mPERIPH_GBA_LINK_PORT, NULL);
++			p->asleep = false;
++		}
++	}
++	if (!mask) {
++		GBASIOLockstepCoordinatorDeinit(&sp->coordinator);
++		GBASIOLockstepCoordinatorInit(&sp->coordinator);
++		GBASIOLockstepCoordinatorSetFSSuppressed(&sp->coordinator, sp->fsSuppressed);
++	}
++	for (int i = 0; i < sp->nPlayers; ++i) {
++		if (!(sp->cableMask & (1u << i)) && (mask & (1u << i))) {
++			struct sp_player* p = &sp->players[i];
++			p->core->setPeripheral(p->core, mPERIPH_GBA_LINK_PORT, &p->driver);
++		}
++	}
++	sp->cableMask = mask;
++	GBASIOLockstepCoordinatorCableChanged(&sp->coordinator);
++}
++
+ void sp_reset(struct sp_manager* sp) {
+ 	for (int i = 0; i < sp->nPlayers; ++i) {
+ 		sp->players[i].asleep = false;
+@@ -297,6 +321,7 @@ void sp_reset(struct sp_manager* sp) {
+ 	if (sp->linkAttached) {
+ 		for (int i = 0; i < sp->nPlayers; ++i) {
+ 			GBASIOLockstepCoordinatorDetach(&sp->coordinator, &sp->players[i].driver);
++			sp->players[i].driver.lockstepId = 0;
+ 		}
+ 		GBASIOLockstepCoordinatorDeinit(&sp->coordinator);
+ 		GBASIOLockstepCoordinatorInit(&sp->coordinator);
+@@ -322,13 +347,19 @@ bool sp_run_frame(struct sp_manager* sp, void (*poll)(void),
+ 	}
+ 
+ 	int n = sp->nPlayers;
++	unsigned cableMask = 0;
++	uint32_t keys[SP_MAX_PLAYERS];
++	for (int i = 0; i < n; ++i) {
++		keys[i] = readKeys ? readKeys((unsigned) i) : 0;
++		if (!(keys[i] & 0x8000)) cableMask |= 1u << i;
++	}
++	_spSetCableMask(sp, cableMask);
+ 	int32_t budget[SP_MAX_PLAYERS];
+ 	int32_t frameCycles[SP_MAX_PLAYERS];
+ 	bool anyCore = false;
+ 	for (int i = 0; i < n; ++i) {
+ 		struct sp_player* p = &sp->players[i];
+-		uint32_t keys = readKeys ? readKeys((unsigned) i) : 0;
+-		p->core->setKeys(p->core, keys);
++		p->core->setKeys(p->core, keys[i] & 0x3FF);
+ 		int32_t fc = p->core->frameCycles(p->core);
+ 		if (fc <= 0) {
+ 			fc = SP_FRAME_CYCLES_FALLBACK;
+@@ -853,7 +884,7 @@ size_t sp_audio(struct sp_manager* sp, enum spAudio source, int16_t* out, size_t
+  * the per-player max. Sizes are fixed at load time so the total never grows. */
+ 
+ #define SP_STATE_MAGIC 0x54535053u /* "SPST" little-endian */
+-#define SP_STATE_VERSION 4 /* Shared native/WASM rollback state. */
++#define SP_STATE_VERSION 5
+ 
+ enum { SP_RUNTIME_WORDS = 16 };
+ 
+@@ -862,7 +893,7 @@ static size_t _runtimeSize(struct sp_manager* sp) {
+ }
+ 
+ static void _saveRuntime(struct sp_manager* sp, uint8_t* out) {
+-	uint32_t header[2] = { sp->linkAttached, sp->stallRun };
++	uint32_t header[2] = { sp->cableMask, sp->stallRun };
+ 	for (unsigned j = 0; j < 2; ++j) STORE_32LE(header[j], j * 4, out);
+ 	out += sizeof(header);
+ 	for (int i = 0; i < sp->nPlayers; ++i) {
+@@ -977,9 +1008,9 @@ bool sp_serialize(struct sp_manager* sp, void* data, size_t size) {
+ bool sp_unserialize(struct sp_manager* sp, const void* data, size_t size) {
+ 	if (!data || size != sp_serialize_size(sp)) return false;
+ 	const uint8_t* runtime = (const uint8_t*) data + size - _runtimeSize(sp);
+-	uint32_t linked;
+-	LOAD_32LE(linked, 0, runtime);
+-	if (linked != sp->linkAttached) return false;
++	uint32_t cableMask;
++	LOAD_32LE(cableMask, 0, runtime);
++	if (cableMask >= (1u << sp->nPlayers)) return false;
+ 	size -= _runtimeSize(sp);
+ 	/* Layout must match sp_serialize: u32 magic | u32 version | u32 nPlayers
+ 	 * | u32 sliceLen[nPlayers] | per-player slices (core state + extdata). */
+@@ -1003,6 +1034,7 @@ bool sp_unserialize(struct sp_manager* sp, const void* data, size_t size) {
+ 		if (len < sp->players[i].core->stateSize(sp->players[i].core) || len > size - offset) return false;
+ 		offset += len;
+ 	}
++	_spSetCableMask(sp, cableMask);
+ 	offset = headerSize;
+ 	for (int i = 0; i < sp->nPlayers; ++i) {
+ 		uint32_t len;
+diff --git a/src/platform/libretro-splitscreen/instances.h b/src/platform/libretro-splitscreen/instances.h
+index 64699a6..b41b32b 100644
+--- a/src/platform/libretro-splitscreen/instances.h
++++ b/src/platform/libretro-splitscreen/instances.h
+@@ -75,6 +75,7 @@ struct sp_player {
+ 	struct mAudioBuffer* audio;
+ 	struct GBASIOLockstepDriver driver;
+ 	bool asleep;
++	int consoleId;
+ 	int playerId;              /* wire id assigned by the coordinator */
+ 	uint32_t lastFrameCounter;
+ 	uint32_t framesProduced;
+@@ -89,6 +90,7 @@ struct sp_manager {
+ 	int nPlayers;
+ 	struct GBASIOLockstepCoordinator coordinator;
+ 	bool linkAttached;         /* true when nPlayers > 1 (link wired up) */
++	unsigned cableMask;
+ 	bool fsSuppressed;         /* host FS-assist policy, re-applied on reset */
+ 	unsigned stallRun;         /* consecutive 0-step frames (stall watchdog) */
+ 	/* Audio pacing + post-processing. EMA is seeded at load from the
+diff --git a/src/platform/libretro-splitscreen/libretro.c b/src/platform/libretro-splitscreen/libretro.c
+index 4d424b0..f2c5bd4 100644
+--- a/src/platform/libretro-splitscreen/libretro.c
++++ b/src/platform/libretro-splitscreen/libretro.c
+@@ -624,7 +624,7 @@ void retro_set_input_state(retro_input_state_t input) {
+ void retro_get_system_info(struct retro_system_info* info) {
+ 	info->need_fullpath = false;
+ 	info->valid_extensions = "gba";
+-	info->library_version = "0.1.0-f1d5975-rollback2";
++	info->library_version = "0.1.0-f1d5975-cable1";
+ 	info->library_name = "mGBA Splitscreen";
+ 	info->block_extract = false;
+ }
+@@ -707,7 +707,7 @@ void retro_reset(void) {
+ }
+ 
+ static uint32_t _readKeys(unsigned port) {
+-	uint32_t keys = 0;
++	uint32_t keys = inputCallback(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3) ? 0x8000 : 0;
+ 	for (unsigned i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
+ 		keys |= (uint32_t) (!!inputCallback(port, RETRO_DEVICE_JOYPAD, 0, keymap[i])) << i;
+ 	}
