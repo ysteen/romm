@@ -1,0 +1,16 @@
+{
+  "core": "SameBoy",
+  "version": "1.0.4c87d256-cable1",
+  "sourceRevision": "c87d256",
+  "target": "windows-arm64",
+  "compiler": "clang version 23.1.0 (https://github.com/llvm/llvm-project.git ea7d852a70e8bdfaf601d6626a760f9771b2c4b4)",
+  "sha256": {
+    "sameboy_libretro.dll": "9a0b14ab66169b31ddad9ae106a433715de7fae240956d5ba07b91e4233ead73"
+  },
+  "inputProfile": "link-cable-r3-v1",
+  "cablePatchSha256": "f754ed531176fa21eba3a9910f004f7633f5755fa397696ee58176b2f4020e05",
+  "stateProfile": "SBR3",
+  "patchSha256": "7a63a0571b7abd6c9ebe07be0a197f9ae8e88c14338fc3ae846d5fde2e00eded",
+  "localPlayerView": "netplay-mode-file-v1",
+  "localPlayerViewPatchSha256": "3c9da4e22cefdd69095ad1599afb8fc15c670755626e1241cb83a211c5599b67"
+}
