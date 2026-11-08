@@ -11,6 +11,25 @@
   "orderedCartridges": true,
   "nativeStartup": "configured-players-v1",
   "sha256": {
+    "BUILD.txt": "e4b2fbcc0c873c970357e7cea008eaec7292c121b7657bba184346fac915f24c",
+    "build-retroarch-rollback-mgba.sh": "c585d7ca2ad00926a8aeaf85e078c5a350b837a56a078939ba696eabbd0d6cce",
+    "license.txt": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
+    "mgba-cable.patch": "d08207c77dff739087dbfc43f1a96fdcc3eaf4c33a2314febd4385f1a1639642",
+    "mgba-local-player-view.patch": "04847ca9eedf57f4f72c0a48bfd98b7732451d482c1189b19a60154763db5c63",
+    "mgba-multi-rom.patch": "796d57519549374057bf6d9367a8df75d02f2a2c2165809ac4f0c8a1b9370085",
+    "mgba-must-initialize.patch": "4867a5b9e42162bf3aa2ebb31fbce689ee230c6276efb780d58cdd2866d61d08",
+    "mgba-native-platforms.patch": "6b6e55deed5410c4b59a8245452476dc707258998cc9d48f14e030b6d488c872",
+    "mgba-native-save-init.patch": "a225e2d46c559957b9f403ee869b38fbcacb3938411e3cc6575aab89efdec7d2",
+    "mgba-native-startup.patch": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede",
+    "mgba-rollback-state.patch": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+    "mgba_splitscreen-wasm.data": "fb09bb01a337289198b362fdf35dd4be5aac8852551c04962b72087c8546cdf4",
+    "mgba_splitscreen.json": "6a2ca96eb46702686c85554f2b97a55a5f0b64fa7b26f194266e9617589e2fc2",
+    "mgba_splitscreen_libretro.info": "a319402894181fed587d05ec750d649d15f0cefc34c7095fe6c13a268a2feca6",
+    "mgba_splitscreen_libretro.so": "0b0dd195489e59058b5b73e631eada76c296f7900ca9d7539791a54a954d97d5"
+  },
+  "inputProfile": "link-cable-r3-v1",
+  "cablePatchSha256": "d08207c77dff739087dbfc43f1a96fdcc3eaf4c33a2314febd4385f1a1639642",
+  "buildArtifactSha256": {
     "native/mgba_splitscreen_libretro.so": "0b0dd195489e59058b5b73e631eada76c296f7900ca9d7539791a54a954d97d5",
     "native-probe.so": "f78a2ebd003ec5111a849417acb794ae21fa172a6feb0e5721ddf37638cdea48",
     "wasm/mgba_splitscreen_libretro.a": "41f2fda2f70de518602ae814bb2c175e88d98bd6a9d952dcd3f23b0d95a93891",
@@ -23,6 +42,9 @@
     "web/build.json": "14e716b419aaeb7fe74a70a4ddb14e107c8e648d791f2ebb935b5e144d9adf4a",
     "web/mgba_link_libretro.js": "2153a3da40d62848bc19c686273b48a881fd3c5e964d1b0ef724af27b76c493d"
   },
-  "inputProfile": "link-cable-r3-v1",
-  "cablePatchSha256": "d08207c77dff739087dbfc43f1a96fdcc3eaf4c33a2314febd4385f1a1639642"
+  "platform": "linux-x86_64",
+  "nativeCore": "mgba_splitscreen_libretro.so",
+  "webBundle": "mgba_splitscreen-wasm.data",
+  "license": "license.txt",
+  "buildInstructions": "BUILD.txt"
 }

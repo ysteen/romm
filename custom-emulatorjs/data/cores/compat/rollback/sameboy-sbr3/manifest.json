@@ -4,6 +4,20 @@
   "stateProfile": "SBR3",
   "patchSha256": "7a63a0571b7abd6c9ebe07be0a197f9ae8e88c14338fc3ae846d5fde2e00eded",
   "sha256": {
+    "BUILD.txt": "79c3124c826c046868af175876e7ba05e90a5fdc17246685cf9ed9d802cac7cc",
+    "build-retroarch-compat-sameboy.sh": "1f5e8e47dd5abed37a5c5a8b004163e970fdd89934304fde58e40de93187c9fb",
+    "license.txt": "875b2c940181c315fa99ce5292326b985a43cdc4e878b38995066d6b495ff151",
+    "sameboy-cable.patch": "f754ed531176fa21eba3a9910f004f7633f5755fa397696ee58176b2f4020e05",
+    "sameboy-local-player-view.patch": "3c9da4e22cefdd69095ad1599afb8fc15c670755626e1241cb83a211c5599b67",
+    "sameboy-rollback-state.patch": "7a63a0571b7abd6c9ebe07be0a197f9ae8e88c14338fc3ae846d5fde2e00eded",
+    "sameboy-wasm.data": "c6a0c8ff5b2466d5b89409cd879768512592a446e4410febf0dcec2b801e7357",
+    "sameboy.json": "dac02f981824ab86c04f39af537196395382ed92834ec56583ce108a5dd8e350",
+    "sameboy_libretro.info": "c4aa7a79c7ae20f1e347f94c9940d542a6bc3e4d2428c7a4f2363b3130c612bb",
+    "sameboy_libretro.so": "65e2d6695f46c5d5814de39e37f864ef4b8168568553c9c7468a7f48657dbd9a"
+  },
+  "inputProfile": "link-cable-r3-v1",
+  "cablePatchSha256": "f754ed531176fa21eba3a9910f004f7633f5755fa397696ee58176b2f4020e05",
+  "buildArtifactSha256": {
     "native-source/sameboy_libretro.so": "65e2d6695f46c5d5814de39e37f864ef4b8168568553c9c7468a7f48657dbd9a",
     "native-probe.so": "2b38ef207afc3261eedd0ea58f9b5b95d350cd8486aa04ee21e4430735311dbd",
     "sameboy_libretro.a": "1bdde6a8208fc769ff15c7582a428d735c5632b64a156a126d6659b3246ba33d",
@@ -16,6 +30,9 @@
     "web/sameboy-wasm.data": "c6a0c8ff5b2466d5b89409cd879768512592a446e4410febf0dcec2b801e7357",
     "web/sameboy_libretro.js": "75e8371d9cb9dc29003a74eeaa2df263d0859bd2c62992c9b23abc42ef67f6c5"
   },
-  "inputProfile": "link-cable-r3-v1",
-  "cablePatchSha256": "f754ed531176fa21eba3a9910f004f7633f5755fa397696ee58176b2f4020e05"
+  "platform": "linux-x86_64",
+  "nativeCore": "sameboy_libretro.so",
+  "webBundle": "sameboy-wasm.data",
+  "license": "license.txt",
+  "buildInstructions": "BUILD.txt"
 }
