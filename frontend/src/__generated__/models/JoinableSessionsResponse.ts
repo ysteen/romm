@@ -6,3 +6,4 @@ import type { JoinableSessionSchema } from './JoinableSessionSchema';
 export type JoinableSessionsResponse = {
     sessions: Array<JoinableSessionSchema>;
 };
+

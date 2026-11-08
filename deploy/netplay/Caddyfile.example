@@ -1,0 +1,10 @@
+# Replace the hostname with the origin supplied to install.py init.
+# Run Caddy on the same host as Docker. WebSocket upgrades are automatic.
+romm.example.com {
+    handle_path /netplay/* {
+        reverse_proxy 127.0.0.1:8082
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8080
+    }
+}

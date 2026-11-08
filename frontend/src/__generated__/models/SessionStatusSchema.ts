@@ -12,3 +12,4 @@ export type SessionStatusSchema = {
     core_tier?: (string | null);
     termination?: (SessionTerminationSchema | null);
 };
+

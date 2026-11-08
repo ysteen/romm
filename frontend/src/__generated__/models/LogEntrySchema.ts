@@ -11,3 +11,4 @@ export type LogEntrySchema = {
     module: string;
     message: string;
 };
+

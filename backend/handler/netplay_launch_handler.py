@@ -31,14 +31,18 @@ from endpoints.responses.netplay_bridge import (
     BridgeNativeTicketResponse,
     BridgeNativeTicketStatus,
 )
+from handler.asset_store import reserve_version_name
 from handler.auth.dependencies import can_access
 from handler.auth.permissions import resolve_permissions
 from handler.database import db_rom_handler, db_save_handler, db_user_handler
 from handler.filesystem import fs_asset_handler, fs_rom_handler
+from handler.filesystem.assets_handler import hash_save_content
 from handler.netplay_bridge_handler import ROOM_ID, bridge_request
+from handler.netplay_settings_handler import public_addresses
 from handler.redis_handler import redis_client
 from handler.scan_handler import scan_save
 from models.permission import PermAction, PermEntity
+from utils.uploads import sanitize_asset_filename
 from utils.zip_cache import ensure_zipfile_writable
 
 CORE_IDS = {
@@ -245,6 +249,7 @@ async def prepare(
             "romId": body.rom_id,
             "password": body.password,
             "clientPlatform": body.platform,
+            "saveAllowed": True,
             "battery": base64.b64encode(battery).decode(),
             "cartridge": body.cartridge.model_dump() if body.cartridge else None,
         },
@@ -262,6 +267,9 @@ async def prepare(
         ex=LAUNCH_LIFETIME,
     )
     grant_key = _grant_key(room["id"], value["player"])
+    from handler.netplay_save_handler import register_owner
+
+    register_owner(room["id"], value["player"], str(request.user.id), body.rom_id, core)
     identity = {"owner": str(request.user.id), "rom_id": body.rom_id, "core": core}
     previous = json.loads(redis_client.get(grant_key) or "{}")
     if all(previous.get(key) == value for key, value in identity.items()):
@@ -273,14 +281,15 @@ async def prepare(
             json.dumps(identity | {"frame": -1, "generation": -1}),
             ex=SAVE_GRANT_LIFETIME,
         )
+    public_url, native_host = public_addresses(
+        NETPLAY_BRIDGE_PUBLIC_URL, NETPLAY_BRIDGE_PUBLIC_HOST
+    )
     return BridgeNativeResponse(
         id=room["id"],
         player=value["player"],
         credential=value["credential"],
         native_password=value["nativePassword"],
-        native_host=NETPLAY_BRIDGE_PUBLIC_HOST
-        or urlsplit(NETPLAY_BRIDGE_PUBLIC_URL).hostname
-        or "",
+        native_host=native_host or urlsplit(public_url).hostname or "",
         native_port=value["tcpPort"],
         expires_at=value["expiresAt"],
         package_url=f"/api/netplay/bridge/rooms/{room['id']}/native/package",
@@ -384,6 +393,9 @@ async def session_manifest(
         profile["subsystem"] = f"gba_link_{session['players']}p"
         profile["options"]["splitscreen_players"] = str(session["players"])
         profile["options"]["splitscreen_layout"] = "auto"
+    public_url, native_host = public_addresses(
+        NETPLAY_BRIDGE_PUBLIC_URL, NETPLAY_BRIDGE_PUBLIC_HOST
+    )
     return base | {
         "schemaVersion": 3 if session.get("nativeAuthority") else 1,
         "roomId": room_id,
@@ -411,9 +423,7 @@ async def session_manifest(
             for slot, rom in enumerate(session["cartridges"])
         ],
         "connection": {
-            "host": NETPLAY_BRIDGE_PUBLIC_HOST
-            or urlsplit(NETPLAY_BRIDGE_PUBLIC_URL).hostname
-            or "",
+            "host": native_host or urlsplit(public_url).hostname or "",
             "port": session["tcpPort"],
             "password": session["nativePassword"],
             "nickname": session["nickname"],
@@ -510,7 +520,8 @@ async def package(request: Request, room_id: str, credential: str) -> bytes:
                 else ""
             )
             + "Extract this ZIP, then open Play.cmd within 15 minutes.\r\n"
-            "The helper checks for an existing RetroArch first. If none matches, it downloads official portable RetroArch 1.22.2 (about 200 MB, Windows x64/x86). No installation or administrator access is needed.\r\n"
+            "The helper checks for an existing RetroArch first. If none is found for this platform, it downloads official portable RetroArch 1.22.2 (about 200 MB, Windows x64/x86). No installation or administrator access is needed.\r\n"
+            "SameBoy requires RetroArch 1.22.2 or later. If an older version is installed, update that installation and try again. It will not be replaced automatically.\r\n"
             "To use another location: powershell.exe -NoProfile -ExecutionPolicy Bypass -File Launch.ps1 -Manifest session.json -RetroArch D:\\RetroArch\\retroarch.exe\r\n"
             "Windows ARM64 requires an existing ARM64 RetroArch, or select Windows x64 in the room to use the portable x64 runtime.\r\n"
             "Keep your own room page open. RetroArch has host priority; the host uses Start game in that page.\r\n"
@@ -561,7 +572,8 @@ def launcher_package(request: Request) -> bytes:
                 "The helper is copied to %LOCALAPPDATA%\\RomMNetplay\\Launcher. You can delete the downloaded ZIP after registration.\r\n"
                 "For each game, join its RomM room and click Open in Windows RetroArch. Allow your browser to open the launcher. No new ZIP is needed.\r\n"
                 "Your web seat is retained until the launcher contacts the server; the room displays RetroArch once its connection succeeds. Keep your room page open. RetroArch has host priority.\r\n"
-                "The helper reuses an existing matching RetroArch or downloads a portable copy. Games, cores and selected saves come from the room.\r\n"
+                "The helper reuses an existing RetroArch. It downloads a portable copy only if none is found for this platform. Games, cores and selected saves come from the room.\r\n"
+                "SameBoy requires RetroArch 1.22.2 or later. If an older version is installed, update that installation and try again. It will not be replaced automatically.\r\n"
                 "Unregister Launcher.cmd removes only this launcher's per-user link registration.\r\n"
             )
             + (
@@ -619,6 +631,18 @@ async def _save_progress(
             status_code=409, detail="Native participant has no player number"
         )
     cartridge = room["cartridges"][0 if room["system"] == "snes" else seat]
+    owners = room.get("saveOwners")
+    owner = owners[seat] if isinstance(owners, list) and seat < len(owners) else None
+    if (
+        not isinstance(owner, dict)
+        or owner.get("player") != body.player
+        or owner.get("owner") != body.owner
+        or owner.get("romId") != grant["rom_id"]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Save does not belong to this game's original player",
+        )
     if cartridge["romId"] != grant["rom_id"]:
         raise HTTPException(
             status_code=409, detail="Save cartridge does not match the selected player"
@@ -627,9 +651,22 @@ async def _save_progress(
         raise HTTPException(
             status_code=409, detail="A newer confirmed save has already arrived"
         )
+    return await persist_progress(room["id"], body, grant_key, grant)
+
+
+async def persist_progress(
+    room_id: str,
+    body: BridgeNativeSaveRequest,
+    grant_key: str,
+    grant: dict[str, Any],
+    *,
+    lifetime: int | None = SAVE_GRANT_LIFETIME,
+) -> dict[str, Any]:
     data = decode_battery(body.battery)
     digest = hashlib.sha256(data).hexdigest()
     if not data or digest == grant.get("digest"):
+        grant.update(frame=body.frame, generation=body.generation)
+        redis_client.set(grant_key, json.dumps(grant), ex=lifetime)
         return {"saved": False}
     user = db_user_handler.get_user(int(grant["owner"]))
     rom = db_rom_handler.get_rom(grant["rom_id"])
@@ -639,17 +676,34 @@ async def _save_progress(
         )
     emulator = grant["core"]
     slot = "netplay" if emulator == "snes9x" else "link"
-    filename = f"room-{room['id']}-p{body.player + 1}.srm"
+    path = fs_asset_handler.build_saves_file_path(
+        user, rom.platform.fs_slug, rom.id, emulator
+    )
+    filename = grant.get("filename")
+    if not filename:
+        base_name = sanitize_asset_filename(f"{rom.fs_name_no_ext.strip()}.srm", "save")
+        filename = sanitize_asset_filename(
+            await reserve_version_name(user.id, rom.id, path, base_name),
+            "save",
+        )
+        grant["filename"] = filename
+        redis_client.set(grant_key, json.dumps(grant), ex=lifetime)
     existing = db_save_handler.get_save_by_filename(
         user_id=user.id, rom_id=rom.id, file_name=filename, emulator=emulator, slot=slot
     )
     if existing and existing.content_hash != grant.get("content_hash"):
+        if existing.content_hash == hash_save_content(io.BytesIO(data)):
+            grant.update(
+                frame=body.frame,
+                generation=body.generation,
+                digest=digest,
+                content_hash=existing.content_hash,
+            )
+            redis_client.set(grant_key, json.dumps(grant), ex=lifetime)
+            return {"saved": False, "id": existing.id}
         raise HTTPException(
             status_code=409, detail="The room save was modified outside this session"
         )
-    path = fs_asset_handler.build_saves_file_path(
-        user, rom.platform.fs_slug, rom.id, emulator
-    )
     await fs_asset_handler.write_file(data, path, filename)
     scanned = await scan_save(filename, user, rom.platform.fs_slug, rom.id, emulator)
     if existing:
@@ -674,5 +728,5 @@ async def _save_progress(
         digest=digest,
         content_hash=scanned.content_hash,
     )
-    redis_client.set(grant_key, json.dumps(grant), ex=SAVE_GRANT_LIFETIME)
+    redis_client.set(grant_key, json.dumps(grant), ex=lifetime)
     return {"saved": True, "id": saved.id}

@@ -8,11 +8,12 @@ const read = (file) =>
 const constants = runInNewContext(
   read("consts.js").replace(/^export /gm, "") + "\n({ cores, netplaySystems })",
 );
+const document = { pointerLockElement: null };
 const Emulator = runInNewContext(
   read("emulator.js")
     .replace(/^import\s[^;]+;/gm, "")
     .replace(/^export .*;$/gm, "") + "\nEmulatorJS",
-  { CONSTS: constants },
+  { CONSTS: constants, document },
 );
 
 function runtime(core, controlScheme) {
@@ -21,6 +22,56 @@ function runtime(core, controlScheme) {
     preGetSetting: () => null,
   });
 }
+
+test("melonDS DS ignores saved mouse lock and releases its canvas lock", () => {
+  const emu = runtime("melondsds");
+  emu.canvas = {};
+  document.pointerLockElement = emu.canvas;
+  let releases = 0;
+  document.exitPointerLock = () => {
+    releases++;
+    document.pointerLockElement = null;
+  };
+  emu.handleSpecialOptions("lockMouse", "enabled");
+  assert.equal(emu.enableMouseLock, false);
+  assert.equal(releases, 1);
+  document.pointerLockElement = {};
+  emu.handleSpecialOptions("lockMouse", "enabled");
+  assert.equal(releases, 1, "Another canvas must keep its lock");
+  document.pointerLockElement = null;
+});
+
+test("mouse lock remains available to mouse cores and disabled on touch devices", () => {
+  for (const core of ["dosbox_pure", "melonds", "snes9x"]) {
+    const emu = runtime(core);
+    emu.handleSpecialOptions("lockMouse", "enabled");
+    assert.equal(emu.enableMouseLock, true, core);
+    emu.handleSpecialOptions("lockMouse", "disabled");
+    assert.equal(emu.enableMouseLock, false, core);
+    emu.hasTouchScreen = true;
+    emu.handleSpecialOptions("lockMouse", "enabled");
+    assert.equal(emu.enableMouseLock, false, core);
+  }
+});
+
+test("holding a virtual button cannot become the DS stylus or leave it pressed", () => {
+  const emu = runtime("melondsds");
+  emu.canvas = {};
+  const pad = { identifier: 1, target: {} };
+  const stylus = { identifier: 2, target: emu.canvas };
+  for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
+    const released = type === "touchend" || type === "touchcancel";
+    const event = {
+      type,
+      touches: released ? [pad] : [pad, stylus],
+      targetTouches: released ? [] : [stylus],
+      changedTouches: released ? [pad, stylus] : [stylus],
+    };
+    emu.filterCanvasTouches(event);
+    assert.deepEqual(Array.from(event.touches), released ? [] : [stylus], type);
+    assert.deepEqual(Array.from(event.changedTouches), [stylus], type);
+  }
+});
 
 test("DOS automatic mouse input follows touch and physical mouse without saving a preference", () => {
   const emu = runtime("dosbox_pure");

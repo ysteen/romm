@@ -9,3 +9,4 @@ export type MusicStatsSchema = {
     total_tracks: number;
     total_duration_seconds: number;
 };
+

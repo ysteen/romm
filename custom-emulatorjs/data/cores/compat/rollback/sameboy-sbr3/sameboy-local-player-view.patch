@@ -1,0 +1,135 @@
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -107,6 +107,37 @@
+     uint32_t capacity;
+ } output_audio_buffer = {NULL, 0, 0};
+ 
++static int local_player_view = -1;
++static unsigned local_view_poll;
++
++static void update_local_player_view(void)
++{
++#ifdef _WIN32
++    const wchar_t *path = _wgetenv(L"ROMM_NETPLAY_PLAYER_FILE");
++    if (!path || !*path || emulated_devices != 2) return;
++    int view = local_player_view < 0 ? 0 : local_player_view;
++    if ((local_view_poll++ % 15) == 0) {
++        FILE *file = _wfopen(path, L"rb");
++        if (file) {
++            int value = fgetc(file);
++            fclose(file);
++            if (value >= '0' && value <= '4') view = value <= '2' ? value - '0' : 0;
++        }
++    }
++    if (view != local_player_view) {
++        local_player_view = view;
++        geometry_updated = true;
++        output_audio_buffer.sizes[0] = output_audio_buffer.sizes[1] = 0;
++    }
++#endif
++}
++
++static unsigned local_audio_output(void)
++{
++    return local_player_view < 0 ? audio_out :
++           local_player_view == 2 ? AUDIO_OUT_GB_2 : AUDIO_OUT_GB_1;
++}
++
+ char retro_system_directory[4096];
+ 
+ GB_gameboy_t gameboy[2];
+@@ -255,6 +286,10 @@
+     output_audio_buffer.sizes[0] -= remaining_frames * 2;
+     int16_t *buf_pos = output_audio_buffer.data;
+ 
++    if (local_player_view == 0) {
++        memset(buf_pos, 0, remaining_frames * 2 * sizeof(*buf_pos));
++    }
++
+     while (remaining_frames > 0) {
+         size_t uploaded_frames = audio_batch_cb(buf_pos, remaining_frames);
+         buf_pos += uploaded_frames * 2;
+@@ -267,6 +302,7 @@
+ 
+ static void audio_callback(GB_gameboy_t *gb, GB_sample_t *sample)
+ {
++    const unsigned selected_audio = local_audio_output();
+     unsigned index = 0;
+     if (gb == &gameboy[1]) {
+         index = 1;
+@@ -276,13 +312,13 @@
+         ensure_output_audio_buffer_capacity(output_audio_buffer.capacity * 1.5);
+     }
+     
+-    if ((index == 0 && audio_out == AUDIO_OUT_GB_1) ||
+-        (index == 1 && audio_out == AUDIO_OUT_GB_2)) {
++    if ((index == 0 && selected_audio == AUDIO_OUT_GB_1) ||
++        (index == 1 && selected_audio == AUDIO_OUT_GB_2)) {
+         output_audio_buffer.data[output_audio_buffer.sizes[0]++] = sample->left;
+         output_audio_buffer.data[output_audio_buffer.sizes[0]++] = sample->right;
+         output_audio_buffer.sizes[1] = output_audio_buffer.sizes[0];
+     }
+-    else if (audio_out == AUDIO_OUT_BOTH) {
++    else if (selected_audio == AUDIO_OUT_BOTH) {
+         if (output_audio_buffer.sizes[index] < output_audio_buffer.sizes[!index]) {
+             // We're the second instance to reach this sample, add and divide (To prevent overflow)
+             output_audio_buffer.data[output_audio_buffer.sizes[index]] =
+@@ -1295,6 +1331,8 @@
+ 
+ void retro_init(void)
+ {
++    local_player_view = -1;
++    local_view_poll = 0;
+     const char *dir = NULL;
+ 
+     if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &dir) && dir) {
+@@ -1364,10 +1402,11 @@
+ 
+ void retro_get_system_av_info(struct retro_system_av_info *info)
+ {
++    update_local_player_view();
+     struct retro_game_geometry geom;
+     struct retro_system_timing timing = { GB_get_usual_frame_rate(&gameboy[0]), GB_get_sample_rate(&gameboy[audio_out == AUDIO_OUT_BOTH? 0 : audio_out])};
+ 
+-    if (emulated_devices == 2) {
++    if (emulated_devices == 2 && local_player_view < 0) {
+         if (screen_layout == LAYOUT_TOP_DOWN) {
+             geom.base_width = GB_get_screen_width(&gameboy[0]);
+             geom.base_height = GB_get_screen_height(&gameboy[0]) * emulated_devices;
+@@ -1451,6 +1490,8 @@
+ 
+ void retro_run(void)
+ {
++
++    update_local_player_view();
+ 
+     bool updated = false;
+ 
+@@ -1503,7 +1544,17 @@
+         GB_run_frame(&gameboy[0]);
+     }
+ 
+-    if (emulated_devices == 2) {
++    if (emulated_devices == 2 && local_player_view >= 0) {
++        unsigned width = GB_get_screen_width(&gameboy[0]);
++        unsigned height = GB_get_screen_height(&gameboy[0]);
++        const uint32_t *pixels = frame_buf + (local_player_view == 2 ? width * height : 0);
++        if (local_player_view == 0) {
++            memset(frame_buf_copy, 0, width * height * sizeof(*frame_buf_copy));
++            pixels = frame_buf_copy;
++        }
++        video_cb(pixels, width, height, width * sizeof(*pixels));
++    }
++    else if (emulated_devices == 2) {
+         if (screen_layout == LAYOUT_TOP_DOWN) {
+             video_cb(frame_buf,
+                      GB_get_screen_width(&gameboy[0]),
+@@ -1628,6 +1679,8 @@
+ 
+ void retro_unload_game(void)
+ {
++    local_player_view = -1;
++    local_view_poll = 0;
+     for (int i = 0; i < emulated_devices; i++) {
+         log_cb(RETRO_LOG_INFO, "Unloading GB: %d\n", emulated_devices);
+         GB_free(&gameboy[i]);

@@ -22,3 +22,4 @@ export type UserSchema = {
     created_at: string;
     updated_at: string;
 };
+

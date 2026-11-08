@@ -7,3 +7,4 @@ export type RAProgression = {
     total?: number;
     results?: Array<RAUserGameProgression>;
 };
+

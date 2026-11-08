@@ -10,3 +10,4 @@ export type SetupLibraryResponse = {
     existing_platforms: Array<SetupExistingPlatform>;
     supported_platforms: Array<PlatformSchema>;
 };
+

@@ -12,3 +12,4 @@ export type AppriseChannelCreatePayload = {
     service: string;
     fields: Record<string, (boolean | number | string | Array<string>)>;
 };
+

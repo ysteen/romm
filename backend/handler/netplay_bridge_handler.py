@@ -17,6 +17,7 @@ from endpoints.responses.netplay_bridge import (
     BridgeConnectionResponse,
 )
 from handler.database import db_rom_handler
+from handler.netplay_settings_handler import public_addresses
 from utils.context import ctx_aiohttp_session
 
 ROOM_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -33,7 +34,10 @@ def bridge_system(rom_id: int) -> str | None:
 def bridge_enabled() -> bool:
     if not NETPLAY_BRIDGE_TOKEN:
         return False
-    for value in (NETPLAY_BRIDGE_URL, NETPLAY_BRIDGE_PUBLIC_URL):
+    public_url, _ = public_addresses(
+        NETPLAY_BRIDGE_PUBLIC_URL, NETPLAY_BRIDGE_PUBLIC_HOST
+    )
+    for value in (NETPLAY_BRIDGE_URL, public_url):
         try:
             url = urlsplit(value)
             if (
@@ -57,6 +61,7 @@ async def bridge_request(
     payload: dict[str, Any] | None = None,
     *,
     response_limit: int = 256 * 1024,
+    raw_response: bool = False,
 ) -> Any:
     if not bridge_enabled():
         raise HTTPException(status_code=404, detail="Netplay relay is not configured")
@@ -90,6 +95,7 @@ async def bridge_request(
                             "Removed from this room by the host": "The host removed you from this room.",
                             "No native ports available": "No RetroArch room ports are available. Try a web-only room.",
                             "Room capacity reached": "The relay has no free rooms. Please try again later.",
+                            "New rooms are disabled by the administrator": "The administrator has paused new room creation. Existing rooms remain available.",
                             "Another browser host must remain connected": "Another browser player must remain connected to host the room before you switch to RetroArch.",
                             "Account already joined this room": "You are already preparing or connected to this room in RetroArch.",
                             "Create a room with native preparation enabled": "Create a new room with RetroArch clients enabled to use the Windows launcher.",
@@ -117,7 +123,7 @@ async def bridge_request(
                 body.extend(chunk)
                 if len(body) > response_limit:
                     raise ValueError("Oversized relay response")
-            return json.loads(body)
+            return bytes(body) if raw_response else json.loads(body)
     except (TimeoutError, aiohttp.ClientError, ValueError) as error:
         raise HTTPException(
             status_code=502, detail="Netplay relay is unavailable"
@@ -162,7 +168,10 @@ def bridge_connection(value: Any, *, player: int = 0) -> BridgeConnectionRespons
             )
         ):
             raise ValueError("Invalid room path")
-        public = urlsplit(NETPLAY_BRIDGE_PUBLIC_URL.rstrip("/"))
+        public_url, native_host = public_addresses(
+            NETPLAY_BRIDGE_PUBLIC_URL, NETPLAY_BRIDGE_PUBLIC_HOST
+        )
+        public = urlsplit(public_url.rstrip("/"))
         websocket_url = urlunsplit(
             (
                 "wss" if public.scheme == "https" else "ws",
@@ -175,7 +184,7 @@ def bridge_connection(value: Any, *, player: int = 0) -> BridgeConnectionRespons
         return BridgeConnectionResponse(
             id=room_id,
             websocket_url=websocket_url,
-            native_host=NETPLAY_BRIDGE_PUBLIC_HOST or public.hostname or "",
+            native_host=native_host or public.hostname or "",
             native_port=value["tcpPort"],
             password=value.get("password", ""),
             players=value["players"],

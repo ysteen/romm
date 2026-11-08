@@ -127,3 +127,4 @@ export type DetailedRomSchema = {
     all_user_notes: Array<UserNoteSchema>;
     download_formats: Array<string>;
 };
+

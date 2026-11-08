@@ -1,0 +1,213 @@
+--- a/src/platform/libretro-splitscreen/libretro.c
++++ b/src/platform/libretro-splitscreen/libretro.c
+@@ -41,10 +41,9 @@
+ 
+ static struct sp_manager sp;
+ static struct sp_video vid;
+-static void* romCopy;       /* single-ROM quick path: the shared ROM bytes */
+-static size_t romCopySize;
+-static char romPath[PATH_MAX];
+-static bool havePath;
++static void* romCopies[SP_MAX_PLAYERS];
++static size_t romSizes[SP_MAX_PLAYERS];
++static unsigned romCount;
+ static bool pendingLoad;    /* deferred until first retro_run (options ready) */
+ static int pendingPlayers;
+ static bool menuActive;     /* in-core boot menu (single-ROM quick path) */
+@@ -476,8 +475,48 @@
+ 	_applyGeometry();
+ }
+ 
+-static bool _doLoad(int nPlayers, const void* data, size_t size, const char* path) {
+-	if (!sp_load(&sp, nPlayers, data, size, &vid)) {
++static void _clearRoms(void) {
++	for (unsigned i = 0; i < SP_MAX_PLAYERS; ++i) {
++		free(romCopies[i]);
++		romCopies[i] = NULL;
++		romSizes[i] = 0;
++	}
++	romCount = 0;
++}
++
++static bool _copyRoms(const struct retro_game_info* games, unsigned count) {
++	_clearRoms();
++	pendingLoad = false;
++	menuActive = false;
++	if (!games || !count || count > SP_MAX_PLAYERS) return false;
++	for (unsigned i = 0; i < count; ++i) {
++		if (!games[i].data || !games[i].size || games[i].size > 32 * 1024 * 1024) {
++			_clearRoms();
++			return false;
++		}
++		romCopies[i] = malloc(games[i].size);
++		if (!romCopies[i]) {
++			_clearRoms();
++			return false;
++		}
++		romSizes[i] = games[i].size;
++		memcpy(romCopies[i], games[i].data, games[i].size);
++	}
++	romCount = count;
++	return true;
++}
++
++static bool _doLoad(int nPlayers) {
++	const void* data[SP_MAX_PLAYERS];
++	size_t sizes[SP_MAX_PLAYERS];
++	if (nPlayers < 1 || nPlayers > SP_MAX_PLAYERS || !romCount ||
++	    (romCount != 1 && romCount != (unsigned) nPlayers)) return false;
++	for (int i = 0; i < nPlayers; ++i) {
++		unsigned slot = romCount == 1 ? 0 : (unsigned) i;
++		data[i] = romCopies[slot];
++		sizes[i] = romSizes[slot];
++	}
++	if (!sp_load_roms(&sp, nPlayers, data, sizes, &vid)) {
+ 		return false;
+ 	}
+ 	advertisedRate = sp.players[0].core->audioSampleRate(sp.players[0].core);
+@@ -560,7 +599,7 @@
+ void retro_get_system_info(struct retro_system_info* info) {
+ 	info->need_fullpath = false;
+ 	info->valid_extensions = "gba";
+-	info->library_version = "0.1.0-f1d5975-rollback1";
++	info->library_version = "0.1.0-f1d5975-rollback2";
+ 	info->library_name = "mGBA Splitscreen";
+ 	info->block_extract = false;
+ }
+@@ -630,9 +669,7 @@
+ 	sp_deinit(&sp);
+ 	free(vid.out);
+ 	memset(&vid, 0, sizeof(vid));
+-	free(romCopy);
+-	romCopy = NULL;
+-	romCopySize = 0;
++	_clearRoms();
+ }
+ 
+ void retro_reset(void) {
+@@ -664,7 +701,7 @@
+ 			menuActive = false;
+ 			pendingLoad = false; /* the menu-take IS the load; don't re-run the deferred one */
+ 			pendingPlayers = spMenuSelection();
+-			if (!_doLoad(pendingPlayers, romCopy, romCopySize, havePath ? romPath : NULL)) {
++			if (!_doLoad(pendingPlayers)) {
+ 				_spLogLine("ERROR: load failed after menu; refusing to run");
+ 			}
+ 		}
+@@ -672,7 +709,7 @@
+ 	}
+ 	if (pendingLoad) {
+ 		pendingLoad = false;
+-		if (!_doLoad(pendingPlayers, romCopy, romCopySize, havePath ? romPath : NULL)) {
++		if (!_doLoad(pendingPlayers)) {
+ 			_spLogLine("ERROR: load failed; refusing to run");
+ 			return;
+ 		}
+@@ -735,18 +772,8 @@
+ }
+ 
+ bool retro_load_game(const struct retro_game_info* game) {
+-	/* Copy the ROM now (need_fullpath=false guarantees game->data), defer the
+-	 * heavy N-instance construction until retro_run: the frontend's core
+-	 * options are only reliable after the load call returns. */
+-	romCopySize = game->size;
+-	romCopy = malloc(romCopySize);
+-	memcpy(romCopy, game->data, romCopySize);
+-	if (game->path) {
+-		snprintf(romPath, sizeof(romPath), "%s", game->path);
+-		havePath = true;
+-	} else {
+-		havePath = false;
+-	}
++	/* The frontend may release content buffers before the first frame. */
++	if (!_copyRoms(game, 1)) return false;
+ 	_readOptions();
+ 	/* Quick path: N copies of this one ROM. The count is chosen on the boot
+ 	 * menu (defaulting to the persisted option) instead of requiring a trip
+@@ -774,27 +801,14 @@
+ 		_spLogLine("unsupported subsystem type");
+ 		return false;
+ 	}
+-	if (num_info < (size_t) n) {
++	if (num_info != (size_t) n) {
+ 		char msg[96];
+ 		snprintf(msg, sizeof(msg), "subsystem needs %d ROMs, got %u", n, (unsigned) num_info);
+ 		_spLogLine(msg);
+ 		return false;
+ 	}
+-	/* All entries must be GBA ROMs; player 1's is the primary content. */
+-	size_t size = info[0].size;
+-	romCopySize = size;
+-	romCopy = malloc(romCopySize);
+-	memcpy(romCopy, info[0].data, romCopySize);
+-	if (info[0].path) {
+-		snprintf(romPath, sizeof(romPath), "%s", info[0].path);
+-		havePath = true;
+-	} else {
+-		havePath = false;
+-	}
++	if (!_copyRoms(info, (unsigned) n)) return false;
+ 	_readOptions();
+-	/* Spec edge case: distinct ROMs per player are NOT loaded yet — v1 links
+-	 * N copies of the primary ROM (matches the quick path). When we support
+-	 * per-player ROMs, _doLoad takes an array. */
+ 	pendingPlayers = n;
+ 	pendingLoad = true;
+ 	menuActive = false; /* subsystem declares its count; no menu */
+@@ -806,9 +820,7 @@
+ 	 * cycle (content change, savestate state-load, netplay sync) from a reset. */
+ 	_spLogLine("frontend requested UNLOAD (retro_unload_game)");
+ 	sp_deinit(&sp);
+-	free(romCopy);
+-	romCopy = NULL;
+-	romCopySize = 0;
++	_clearRoms();
+ 	free(vid.out);
+ 	memset(&vid, 0, sizeof(vid));
+ 	pendingLoad = false;
+--- a/src/platform/libretro-splitscreen/instances.c
++++ b/src/platform/libretro-splitscreen/instances.c
+@@ -215,7 +215,7 @@
+ 	}
+ }
+ 
+-bool sp_load(struct sp_manager* sp, int nPlayers, const void* rom, size_t romSize,
++bool sp_load_roms(struct sp_manager* sp, int nPlayers, const void* const* roms, const size_t* romSizes,
+              struct sp_video* vid) {
+ 	if (sp->nPlayers) {
+ 		/* Re-load on a live manager (e.g. the deferred load racing the menu
+@@ -224,13 +224,13 @@
+ 	}
+ 	memset(sp, 0, sizeof(*sp));
+ 	_spResetAudioPost();
+-	if (nPlayers < 1 || nPlayers > SP_MAX_PLAYERS || !rom || !romSize) {
++	if (nPlayers < 1 || nPlayers > SP_MAX_PLAYERS || !roms || !romSizes) {
+ 		return false;
+ 	}
+ 	sp->nPlayers = nPlayers;
+ 	bool ok = true;
+ 	for (int i = 0; i < nPlayers && ok; ++i) {
+-		ok = _spLoadOne(&sp->players[i], i, rom, romSize);
++		ok = roms[i] && romSizes[i] && _spLoadOne(&sp->players[i], i, roms[i], romSizes[i]);
+ 		if (!ok) {
+ 			_spLog("[splitscreen] player %d failed to load", i);
+ 		}
+--- a/src/platform/libretro-splitscreen/instances.h
++++ b/src/platform/libretro-splitscreen/instances.h
+@@ -113,13 +113,10 @@
+ 	size_t outSize;
+ };
+ 
+-/* Load `nPlayers` copies of `rom` (all players may share the same source
+- * buffer; each player gets its own memory copy + save). Returns true on
+- * success; on failure sp_deinit leaves the manager zeroed. */
+-bool sp_load(struct sp_manager* sp, int nPlayers, const void* rom, size_t romSize,
+-             struct sp_video* vid);
++/* Each slot owns its cartridge and save buffer. */
++bool sp_load_roms(struct sp_manager* sp, int nPlayers, const void* const* roms, const size_t* romSizes,
++                  struct sp_video* vid);
+ 
+-/* Deinit everything (safe on a zeroed manager). */
+ void sp_deinit(struct sp_manager* sp);
+ 
+ /* Reset all cores (retro_reset). */

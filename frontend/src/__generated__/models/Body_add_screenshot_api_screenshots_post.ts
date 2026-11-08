@@ -8,3 +8,4 @@ export type Body_add_screenshot_api_screenshots_post = {
      */
     screenshotFile: string;
 };
+

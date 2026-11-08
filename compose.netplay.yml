@@ -15,3 +15,6 @@ services:
       service: netplay-bridge
     build:
       context: ${NETPLAY_BRIDGE_SOURCE:-../retroarch-netplay-bridge}
+
+volumes:
+  netplay-saves:

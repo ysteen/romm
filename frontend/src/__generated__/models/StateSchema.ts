@@ -25,3 +25,4 @@ export type StateSchema = {
     is_public?: boolean;
     screenshot: (ScreenshotSchema | null);
 };
+

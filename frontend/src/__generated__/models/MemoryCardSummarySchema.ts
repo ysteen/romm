@@ -11,3 +11,4 @@ export type MemoryCardSummarySchema = {
     total_bytes: number;
     game_codes: Array<string>;
 };
+

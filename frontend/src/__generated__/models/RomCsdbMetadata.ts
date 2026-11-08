@@ -14,3 +14,4 @@ export type RomCsdbMetadata = {
     genres?: Array<string>;
     download_urls?: Array<string>;
 };
+

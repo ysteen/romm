@@ -29,3 +29,4 @@ export type SaveSchema = {
     origin_device_id?: (string | null);
     device_syncs?: Array<DeviceSyncSchema>;
 };
+

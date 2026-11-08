@@ -14,6 +14,7 @@ from rq.exceptions import (
 )
 from rq.job import Job, JobStatus
 from rq.timeouts import JobTimeoutException
+from tests.factories import make_platform
 from tests.scan_job_stubs import (
     NON_SCAN_FUNC,
     make_job,
@@ -3149,6 +3150,83 @@ class TestIdentifyRomFiles:
         identify_harness.refresh.assert_not_called()
         identify_harness.scan_rom.assert_awaited_once()
         identify_harness.db.add_rom.assert_called()
+
+    @pytest.mark.parametrize("error", [TimeoutError, asyncio.CancelledError])
+    @pytest.mark.parametrize("new_entry", [True, False])
+    async def test_files_are_registered_before_metadata_can_fail(
+        self, identify_harness, error, new_entry
+    ):
+        rom_file = RomFile(
+            file_name="Game.zip", file_path="test/roms", file_size_bytes=1024
+        )
+        identify_harness.get_rom_files.return_value = ParsedRomFiles(
+            rom_files=[rom_file], crc_hash="", md5_hash="", sha1_hash="", ra_hash=""
+        )
+        identify_harness.db.sync_rom_files.return_value = SyncedRomFiles(
+            files=[rom_file], orphaned_cover_paths=[]
+        )
+
+        async def failed_metadata(**_):
+            identify_harness.db.sync_rom_files.assert_called_once_with(1, [rom_file])
+            raise error("Metadata interrupted")
+
+        identify_harness.scan_rom.side_effect = failed_metadata
+        rom = None if new_entry else identify_harness.existing_rom()
+        with pytest.raises(error, match="Metadata interrupted"):
+            await identify_harness.run(rom, ScanType.COMPLETE, [])
+
+        identify_harness.db.sync_rom_files.assert_called_once_with(1, [rom_file])
+
+    @pytest.mark.parametrize("error", [TimeoutError, asyncio.CancelledError])
+    async def test_failed_metadata_keeps_new_file_rows_in_database(self, mocker, error):
+        platform = make_platform("upload-scan-regression")
+        rom_file = RomFile(
+            file_name="Uploaded.zip",
+            file_path="upload-scan-regression/roms",
+            file_size_bytes=1024,
+            category=RomFileCategory.GAME,
+        )
+        patch_identify_rom(
+            mocker,
+            parsed=ParsedRomFiles(
+                rom_files=[rom_file],
+                crc_hash="",
+                md5_hash="",
+                sha1_hash="",
+                ra_hash="",
+            ),
+            roms_fs_structure="upload-scan-regression/roms",
+            name_with_no_tags="Uploaded",
+            platform_slug=platform.slug,
+        )
+        mocker.patch.object(scan_module, "db_rom_handler", db_rom_handler)
+        mocker.patch.object(
+            scan_module,
+            "scan_rom",
+            AsyncMock(side_effect=error("Metadata interrupted")),
+        )
+        with pytest.raises(error, match="Metadata interrupted"):
+            await _identify_rom(
+                platform=platform,
+                fs_rom=make_fs_rom("Uploaded.zip", "upload-scan-regression/roms"),
+                rom=None,
+                scan_type=ScanType.QUICK,
+                roms_ids=[],
+                metadata_sources=[],
+                launchbox_remote_enabled=False,
+                socket_manager=AsyncMock(),
+                scan_stats=AsyncMock(),
+                scanned_rom_ids=set(),
+            )
+        created = next(
+            r
+            for r in db_rom_handler.get_roms_scalar()
+            if r.platform_id == platform.id and r.fs_name == "Uploaded.zip"
+        )
+        files = db_rom_handler.rom_files_for_rom_id(created.id)
+        assert [(f.file_name, f.file_size_bytes) for f in files] == [
+            ("Uploaded.zip", 1024)
+        ]
 
 
 class TestIdentifyRomEmitsNewFlag:

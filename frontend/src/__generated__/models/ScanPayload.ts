@@ -15,3 +15,4 @@ export type ScanPayload = {
     apis?: (Array<MetadataSource> | null);
     launchbox_remote_enabled?: boolean;
 };
+

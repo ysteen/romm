@@ -6,3 +6,4 @@ export type IGDBMetadataPlatform = {
     igdb_id: number;
     name: string;
 };
+

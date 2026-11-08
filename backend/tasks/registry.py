@@ -23,6 +23,8 @@ from config import (
     ENABLE_SYNC_FOLDER_WATCHER,
     ENABLE_SYNC_PUSH_PULL,
     LAUNCHBOX_API_ENABLED,
+    NETPLAY_BRIDGE_TOKEN,
+    NETPLAY_BRIDGE_URL,
     ROM_CONVERTO_ENABLED,
     SCAN_TIMEOUT,
     SCHEDULED_BUILD_RECOMMENDATIONS_CRON,
@@ -148,6 +150,15 @@ CLEANUP_NETPLAY_SPEC: Final = TaskSpec(
     task_type=TaskType.CLEANUP,
     enabled=ENABLE_SCHEDULED_CLEANUP_NETPLAY,
     cron_string=SCHEDULED_CLEANUP_NETPLAY_CRON,
+)
+
+SYNC_NETPLAY_SAVES_SPEC: Final = TaskSpec(
+    implementation="tasks.scheduled.sync_netplay_saves.sync_netplay_saves_task",
+    title="Sync multiplayer saves",
+    description="Stores queued multiplayer progress in each original player's account",
+    task_type=TaskType.SYNC,
+    enabled=bool(NETPLAY_BRIDGE_URL and NETPLAY_BRIDGE_TOKEN),
+    cron_string="* * * * *",
 )
 
 CLEANUP_UPLOAD_TMP_SPEC: Final = TaskSpec(
@@ -280,6 +291,7 @@ SCHEDULED_TASKS: Final[dict[str, TaskSpec]] = {
     "cleanup_conversion_cache": CLEANUP_CONVERSION_CACHE_SPEC,
     "cleanup_orphaned_resources": CLEANUP_ORPHANED_RESOURCES_SPEC,
     "cleanup_netplay": CLEANUP_NETPLAY_SPEC,
+    "sync_netplay_saves": SYNC_NETPLAY_SAVES_SPEC,
     "cleanup_upload_tmp": CLEANUP_UPLOAD_TMP_SPEC,
     "reap_streaming_sessions": REAP_STREAMING_SESSIONS_SPEC,
     "cleanup_sync_sessions": CLEANUP_SYNC_SESSIONS_SPEC,

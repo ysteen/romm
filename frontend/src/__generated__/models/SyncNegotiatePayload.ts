@@ -25,3 +25,4 @@ export type SyncNegotiatePayload = {
      */
     emulators?: (Array<string> | null);
 };
+

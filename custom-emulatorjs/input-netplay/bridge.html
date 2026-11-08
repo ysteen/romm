@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RomM multiplayer room</title>
-    <link rel="stylesheet" href="bridge.css?v=room-ui-20261104" />
+    <link rel="stylesheet" href="bridge.css?v=room-list-20261107" />
   </head>
   <body>
     <div id="screen" hidden></div>
@@ -23,7 +23,7 @@
         </div>
       </header>
       <section id="setup" aria-label="Multiplayer room">
-        <fieldset>
+        <fieldset class="create-room">
           <legend>Create a room</legend>
           <label
             >Players
@@ -37,6 +37,13 @@
             ><input type="checkbox" id="native" /> Allow RetroArch
             clients</label
           >
+          <label
+            >When a player disconnects
+            <select id="create-disconnect-policy">
+              <option value="continue">Keep playing</option>
+              <option value="pause" selected>Pause until players rejoin</option>
+            </select>
+          </label>
           <label
             >Room password (optional)
             <input
@@ -54,14 +61,16 @@
             <button id="create" class="primary" disabled>Create room</button>
           </div>
         </fieldset>
-        <fieldset>
-          <legend>Join a room</legend>
-          <label
-            >Open rooms
-            <select id="rooms">
-              <option value="">Choose a room</option>
-            </select></label
-          >
+        <fieldset class="browse-rooms">
+          <legend>Room list</legend>
+          <div class="room-list-toolbar">
+            <p id="room-count" class="hint" role="status">Loading rooms…</p>
+            <button id="refresh" disabled>Refresh</button>
+          </div>
+          <ul id="rooms" class="room-list" aria-label="Available rooms"></ul>
+          <p id="rooms-empty" class="hint" hidden>
+            No rooms yet. Create one and invite your friends.
+          </p>
           <label id="join-password-label"
             >Room password
             <input id="join-password" type="password" autocomplete="off"
@@ -69,11 +78,27 @@
           <p id="join-help" class="hint"></p>
           <div class="form-actions">
             <button id="join" class="primary" disabled>Join room</button>
-            <button id="refresh" disabled>Refresh rooms</button>
           </div>
         </fieldset>
       </section>
       <section id="lobby" hidden aria-label="Waiting room">
+        <label
+          >When a player disconnects
+          <select
+            id="disconnect-policy"
+            aria-describedby="disconnect-policy-help"
+          >
+            <option value="continue">Keep playing</option>
+            <option value="pause">Pause until players rejoin</option>
+          </select>
+        </label>
+        <p class="hint">
+          Windows pause mode requires the latest registered launcher.
+        </p>
+        <p id="disconnect-policy-help" class="hint">
+          The host can change this setting. Rejoining players resume from the
+          synchronized game state.
+        </p>
         <h2>Players</h2>
         <p id="lobby-status" role="status"></p>
         <ul id="participants" aria-label="Players"></ul>
@@ -141,7 +166,8 @@
         <p class="hint">
           No administrator access is needed. The launcher uses a matching
           RetroArch installation or downloads a portable copy. It sets up the
-          core, cartridges and your selected save automatically.
+          matching core and its info file, cartridges and your selected save
+          automatically. No manual core installation is needed.
         </p>
         <label
           >RetroArch platform
@@ -151,29 +177,34 @@
           ></select
         ></label>
         <p id="native-platform-hint" class="hint"></p>
-        <p><a id="core-download" download hidden>Download matching core</a></p>
-        <p>
-          <a id="core-info-download" download hidden
-            >Download core info (.info)</a
-          >
-        </p>
-        <p id="core-info-install" class="hint" hidden>
-          Also copy the .info file into the folder shown under RetroArch
-          Settings → Directory → Core Info. Close RetroArch, remove
-          core_info.cache from that folder if present, then reopen it. Select
-          the matching core under Load Core, then choose your game under Load
-          Content.
-        </p>
-        <p id="native-game-load" class="hint" hidden>
-          mGBA: the Windows session prepares every cartridge in the room's
-          order. For manual loading, use the GBA Link subsystem with that same
-          order. Loading one GBA file repeats it in every slot.
-        </p>
-        <p>
-          <a id="core-build" target="_blank" rel="noopener"
-            >Source and build instructions</a
-          >
-        </p>
+        <details id="manual-core-details">
+          <summary>Manual core downloads (optional)</summary>
+          <p>
+            <a id="core-download" download hidden>Download matching core</a>
+          </p>
+          <p>
+            <a id="core-info-download" download hidden
+              >Download core info (.info)</a
+            >
+          </p>
+          <p id="core-info-install" class="hint" hidden>
+            Also copy the .info file into the folder shown under RetroArch
+            Settings → Directory → Core Info. Close RetroArch, remove
+            core_info.cache from that folder if present, then reopen it. Select
+            the matching core under Load Core, then choose your game under Load
+            Content.
+          </p>
+          <p id="native-game-load" class="hint" hidden>
+            mGBA: the Windows session prepares every cartridge in the room's
+            order. For manual loading, use the GBA Link subsystem with that same
+            order. Loading one GBA file repeats it in every slot.
+          </p>
+          <p>
+            <a id="core-build" target="_blank" rel="noopener"
+              >Source and build instructions</a
+            >
+          </p>
+        </details>
       </details>
       <details class="room-help">
         <summary>Playing and saving</summary>
@@ -186,6 +217,6 @@
         <p id="save-hint" class="hint"></p>
       </details>
     </main>
-    <script type="module" src="bridge.js?v=automatic-join-20261104"></script>
+    <script type="module" src="bridge.js?v=disconnect-policy-20261108"></script>
   </body>
 </html>

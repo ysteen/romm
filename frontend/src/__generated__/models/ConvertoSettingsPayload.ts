@@ -10,3 +10,4 @@ export type ConvertoSettingsPayload = {
     cache_max_size_gb: number;
     platform_formats: Record<string, string>;
 };
+

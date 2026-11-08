@@ -14,3 +14,4 @@ export type ManualMetadata = {
     youtube_video_id?: (string | null);
     alternative_names?: (Array<string> | null);
 };
+

@@ -17,3 +17,4 @@ export type StreamingContainerSchema = {
     supports_live_states: boolean;
     import_kinds: Array<'save' | 'state'>;
 };
+

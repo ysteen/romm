@@ -13,3 +13,4 @@ export type RomForgeStatus = {
     history_limit: number;
     retention_days: number;
 };
+

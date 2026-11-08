@@ -1,0 +1,21 @@
+{
+  "core": "SameBoy",
+  "version": "1.0.4c87d256-cable1",
+  "stateProfile": "SBR3",
+  "patchSha256": "7a63a0571b7abd6c9ebe07be0a197f9ae8e88c14338fc3ae846d5fde2e00eded",
+  "sha256": {
+    "native-source/sameboy_libretro.so": "65e2d6695f46c5d5814de39e37f864ef4b8168568553c9c7468a7f48657dbd9a",
+    "native-probe.so": "2b38ef207afc3261eedd0ea58f9b5b95d350cd8486aa04ee21e4430735311dbd",
+    "sameboy_libretro.a": "1bdde6a8208fc769ff15c7582a428d735c5632b64a156a126d6659b3246ba33d",
+    "core-probe.mjs": "2b1c7d12d9335725b45d7cfa85147dad5f6883dc8e70e0e9ecd414256b32ea3b",
+    "core-probe.wasm": "f9b7bb91e5a6a02a679122213e1b21b5a01ee4993f3a443255f6785b110e8c83",
+    "web/sameboy_libretro.wasm": "a181233debeb30d39dce7c9a0c02b17ced523da468321e1e087b24bd767e9362",
+    "web/license.txt": "875b2c940181c315fa99ce5292326b985a43cdc4e878b38995066d6b495ff151",
+    "web/core.json": "d2d30691e516512a42ddb25430bf1dc8af11ea752f152b9f964dd881fb8dd85c",
+    "web/build.json": "dc6b7ab26d0a3ba68f27d15d7527fbad58e9b4451c1978755c7b698c34edb5d7",
+    "web/sameboy-wasm.data": "c6a0c8ff5b2466d5b89409cd879768512592a446e4410febf0dcec2b801e7357",
+    "web/sameboy_libretro.js": "75e8371d9cb9dc29003a74eeaa2df263d0859bd2c62992c9b23abc42ef67f6c5"
+  },
+  "inputProfile": "link-cable-r3-v1",
+  "cablePatchSha256": "f754ed531176fa21eba3a9910f004f7633f5755fa397696ee58176b2f4020e05"
+}

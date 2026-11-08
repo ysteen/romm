@@ -17,3 +17,4 @@ export type NotificationChannelUpdatePayload = {
     address?: (string | null);
     fields?: (Record<string, (boolean | number | string | Array<string>)> | null);
 };
+

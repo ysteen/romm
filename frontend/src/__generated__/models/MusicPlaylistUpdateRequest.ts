@@ -7,3 +7,4 @@ export type MusicPlaylistUpdateRequest = {
     description?: (string | null);
     is_public?: (boolean | null);
 };
+

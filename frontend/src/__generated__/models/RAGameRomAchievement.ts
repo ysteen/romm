@@ -17,3 +17,4 @@ export type RAGameRomAchievement = {
     display_order: (number | null);
     type: (string | null);
 };
+

@@ -16,3 +16,4 @@ export type WatcherTaskStatusResponse = {
     task_type: string;
     meta: WatcherTaskMeta;
 };
+

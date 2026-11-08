@@ -8,3 +8,4 @@ export type PlaySessionIngestResult = {
     id?: (number | null);
     detail?: (string | null);
 };
+

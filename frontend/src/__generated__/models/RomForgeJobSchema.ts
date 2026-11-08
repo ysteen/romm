@@ -20,3 +20,4 @@ export type RomForgeJobSchema = {
     started_at: (string | null);
     ended_at: (string | null);
 };
+

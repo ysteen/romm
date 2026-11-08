@@ -8,3 +8,4 @@ export type LoadStateResponse = {
     slot: number;
     platform: string;
 };
+

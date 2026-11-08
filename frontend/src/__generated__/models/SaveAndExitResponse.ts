@@ -8,3 +8,4 @@ export type SaveAndExitResponse = {
     platform: string;
     released: boolean;
 };
+

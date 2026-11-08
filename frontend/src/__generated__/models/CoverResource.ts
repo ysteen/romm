@@ -19,3 +19,4 @@ export type CoverResource = {
     humor: boolean;
     epilepsy: boolean;
 };
+

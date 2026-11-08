@@ -11,3 +11,4 @@ export type ContainerBusyDetail = {
     rom_name: (string | null);
     claimed_at: (string | null);
 };
+

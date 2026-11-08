@@ -8,3 +8,4 @@ export type SearchCoverSchema = {
     name: string;
     resources: Array<CoverResource>;
 };
+

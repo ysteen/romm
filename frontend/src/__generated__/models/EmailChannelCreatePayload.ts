@@ -11,3 +11,4 @@ export type EmailChannelCreatePayload = {
     name: string;
     address: string;
 };
+

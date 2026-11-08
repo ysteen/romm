@@ -9,3 +9,4 @@ export type EjsControls = {
     _2: Record<string, EjsControlsButton>;
     _3: Record<string, EjsControlsButton>;
 };
+

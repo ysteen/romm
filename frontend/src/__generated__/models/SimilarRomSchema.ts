@@ -9,3 +9,4 @@ export type SimilarRomSchema = {
     score: number;
     reasons: Array<SimilarityReasonSchema>;
 };
+

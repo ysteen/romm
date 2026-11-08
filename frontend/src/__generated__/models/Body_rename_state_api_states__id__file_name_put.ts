@@ -5,3 +5,4 @@
 export type Body_rename_state_api_states__id__file_name_put = {
     file_name: string;
 };
+

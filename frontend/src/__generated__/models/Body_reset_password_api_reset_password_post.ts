@@ -6,3 +6,4 @@ export type Body_reset_password_api_reset_password_post = {
     token: string;
     new_password: string;
 };
+

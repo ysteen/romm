@@ -6,3 +6,4 @@ export type SaveAndExitRequest = {
     slot?: number;
     wait?: boolean;
 };
+

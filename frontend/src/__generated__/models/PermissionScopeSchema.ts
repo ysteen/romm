@@ -6,3 +6,4 @@ export type PermissionScopeSchema = {
     kind?: 'global' | 'platform' | 'collection' | 'rom';
     id?: (number | null);
 };
+

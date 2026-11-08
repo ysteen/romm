@@ -8,3 +8,4 @@ export type NotificationActorSchema = {
     avatar_path: string;
     updated_at: string;
 };
+

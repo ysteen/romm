@@ -6,3 +6,4 @@ export type CsdbCredit = {
     name?: string;
     role?: string;
 };
+

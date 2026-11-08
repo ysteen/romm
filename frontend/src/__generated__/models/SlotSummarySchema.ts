@@ -8,3 +8,4 @@ export type SlotSummarySchema = {
     count: number;
     latest: SaveSchema;
 };
+

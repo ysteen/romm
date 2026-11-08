@@ -7,3 +7,4 @@ export type FrontendDict = {
     DISABLE_LOGS_VIEWER: boolean;
     YOUTUBE_BASE_URL: string;
 };
+

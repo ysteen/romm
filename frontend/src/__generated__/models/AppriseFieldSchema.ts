@@ -14,3 +14,4 @@ export type AppriseFieldSchema = {
     min: (number | null);
     max: (number | null);
 };
+

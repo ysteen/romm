@@ -1,0 +1,37 @@
+SameBoy link cable core
+
+Version: 1.0.4c87d256-cable1
+State profile: SBR3
+Input profile: link-cable-r3-v1
+Source: https://github.com/libretro/SameBoy/tree/c87d256
+Source archive: https://github.com/libretro/SameBoy/archive/c87d256.tar.gz
+
+Apply sameboy-rollback-state.patch followed by sameboy-cable.patch. Build with
+GIT_VERSION=c87d256-cable1. The standalone retroarch-netplay-bridge project owns
+scripts/build-retroarch-compat-sameboy.sh for web and Linux, and
+scripts/build-native-cores.py for Windows and Android. Use at most two build jobs.
+Windows also applies sameboy-local-player-view.patch. Its per-target manifest
+records the patch hash. ROMM_NETPLAY_PLAYER_FILE selects local screen and audio
+without changing SBR3 state or the compatibility version. The room launcher sets
+this variable and automatically installs the matching DLL and .info metadata.
+The included shell recipe uses the prepared Emscripten and RetroArch frontend
+dependencies from that project. manifest.json records the build inputs and hashes.
+
+The cable profile reserves RetroPad R3 for the broker's deterministic disconnect
+signal. The room launcher disables the physical R3 binding in its isolated config.
+Leaving the room disconnects that participant's emulated cable; closing only the
+game keeps room membership and the cable attached. A live rejoin reconnects the
+cable after state synchronization. Every participant needs this exact core version.
+Existing battery saves remain usable. SBR2 full states do not match this profile.
+
+The web package and Linux x86_64 core are included here. native/ contains Windows
+x64, x86 and ARM64, plus Android arm64-v8a, armeabi-v7a, x86_64 and x86 artifacts
+with individual manifests. Android requires API 24 or later and uses 16 KiB ELF
+alignment. These are built artifacts, not a device qualification claim.
+
+Windows x64 qualification on 2026-11-07 verified local screen/audio selection,
+unchanged SBR3 states, and two RetroArch 1.22.2 clients launched with automatic
+core/info downloads through 1,250 frames and two native state checks.
+Use a fresh room and refresh its browser page after updating. Open Windows
+RetroArch through the room's launcher to download the matching core and options.
+Preserve license.txt and the source patches when distributing these files.

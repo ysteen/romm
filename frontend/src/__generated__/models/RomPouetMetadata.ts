@@ -22,3 +22,4 @@ export type RomPouetMetadata = {
     companies?: Array<string>;
     download_urls?: Array<string>;
 };
+

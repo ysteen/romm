@@ -9,3 +9,4 @@ export type JoinedSessionSchema = {
     rom_id?: (number | null);
     rom_name?: (string | null);
 };
+

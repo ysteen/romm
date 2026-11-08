@@ -14,3 +14,4 @@ export type Body_add_collection_api_collections_post = {
      */
     url_cover?: string;
 };
+

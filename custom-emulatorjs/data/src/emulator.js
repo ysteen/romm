@@ -1,8 +1,9 @@
+import { WfcSession } from "./wfc-session.js?v=20261107.1";
 import { EJS_Cache, EJS_CacheItem, EJS_FileItem, EJS_Download } from "./cache.js?v=20261101.2";
 import { EJS_COMPRESSION } from "./compression.js";
 // Static module imports do not inherit the cache revision from emulator.js.
 // Bump changed module queries and the active player's ROMM_RUNTIME_REVISION together.
-import { EJS_GameManager } from "./GameManager.js?v=20261101.2";
+import { EJS_GameManager } from "./GameManager.js?v=20261107.1";
 import "./azahar-system-data.js?v=20260922.1";
 import { GamepadHandler } from "./gamepad.js";
 import { EJS_STORAGE, EJS_DUMMYSTORAGE } from "./storage.js";
@@ -10,7 +11,7 @@ import { cyrb53 } from "./utils.js";
 import { EJS_SETUP } from "./setup.js";
 import { Netplay } from "./netplay.js?v=20261101.2";
 import { EJS_license } from "./license.js";
-import * as CONSTS from "./consts.js?v=20261029.1";
+import * as CONSTS from "./consts.js?v=20261107.1";
 import { linkCore, selectLinkCartridge, unpackLinkCartridge } from "./link-core.js?v=20261024.1";
 
 import "./vendor/nipplejs.js";
@@ -349,6 +350,10 @@ class EmulatorJS {
         // through Emscripten's DOM selector handling.
         this.canvas.id = "canvas";
         this.canvas.classList.add("ejs_canvas");
+        if (this.usesAbsolutePointer()) {
+            this.elements.parent.classList.add("ejs-absolute-pointer");
+            this.addEventListener(this.canvas, "touchstart touchmove touchend touchcancel", event => this.filterCanvasTouches(event));
+        }
         this.videoRotation = ([0, 1, 2, 3].includes(this.config.videoRotation)) ? this.config.videoRotation : this.preGetSetting("videoRotation") || 0;
         this.videoRotationChanged = false;
         this.capture = this.capture || {};
@@ -373,7 +378,7 @@ class EmulatorJS {
             if (["dos", "dosbox_pure"].includes(this.getCore())) {
                 this.elements.parent.classList.add("ejs-touch-mouse");
                 this.addEventListener(this.canvas, "pointerdown pointermove", event => this.updateDosBoxMouseInput(event));
-            } else {
+            } else if (!this.usesAbsolutePointer()) {
                 this.canvas.classList.add("ejs-canvas-no-pointer");
             }
         }
@@ -869,7 +874,7 @@ class EmulatorJS {
                     this.coreName = core.name;
                     this.repository = core.repo;
                     this.defaultCoreOpts = core.options;
-                    this.enableMouseLock = core.options.supportsMouse;
+            this.enableMouseLock = core.options.supportsMouse && !this.usesAbsolutePointer();
                     this.retroarchOpts = core.retroarchOpts;
                     this.saveFileExt = core.save;
                 } else if (k === "license.txt") {
@@ -916,6 +921,7 @@ class EmulatorJS {
                 }
             }
 
+            if (rep.options?.supportsThreads === false) threads = false;
             let legacy = (this.supportsWebgl2 && this.webgl2Enabled ? "" : "-legacy");
             let filename = this.getCore() + (threads ? "-thread" : "") + legacy + "-wasm.data";
 
@@ -1240,6 +1246,12 @@ class EmulatorJS {
             // Keep the upstream order for all other cores.
             await this.gameManager.loadExternalFiles();
             await this.gameManager.mountFileSystems();
+        }
+        if (this.getCore() === "melondsds") {
+            this.wfcSession = new WfcSession(this.gameManager, message => this.displayMessage(message, 6000));
+            this.on("exit", () => this.wfcSession?.close());
+            try { await this.wfcSession.connect(this.config.gameId); }
+            catch (error) { this.wfcSession.close(); throw error; }
         }
         this.callEvent("saveDatabaseLoaded", this.gameManager.FS);
         if (this.getCore() === "ppsspp") {
@@ -2689,7 +2701,7 @@ class EmulatorJS {
 
         this.addEventListener(this.canvas, "click", (e) => {
             if (e.pointerType === "touch") return;
-            if (this.enableMouseLock && !this.touch && !this.hasTouchScreen && !this.paused) {
+            if (this.enableMouseLock && !this.usesAbsolutePointer() && !this.touch && !this.hasTouchScreen && !this.paused) {
                 if (this.canvas.requestPointerLock) {
                     this.canvas.requestPointerLock();
                 } else if (this.canvas.mozRequestPointerLock) {
@@ -3059,6 +3071,19 @@ class EmulatorJS {
         }
     }
 
+    usesAbsolutePointer() {
+        return this.getCore() === "melondsds";
+    }
+    filterCanvasTouches(event) {
+        // The native input driver must not count virtual-pad touches as stylus input.
+        if (event.touches.length !== event.targetTouches.length) {
+            Object.defineProperty(event, "touches", { value: event.targetTouches });
+        }
+        const changed = Array.from(event.changedTouches).filter(touch => touch.target === this.canvas);
+        if (changed.length !== event.changedTouches.length) {
+            Object.defineProperty(event, "changedTouches", { value: changed });
+        }
+    }
     getControlScheme() {
         if (this.config.controlScheme && typeof this.config.controlScheme === "string") {
             return this.config.controlScheme;
@@ -5283,7 +5308,10 @@ class EmulatorJS {
         } else if (option === "altKeyboardInput") {
             this.gameManager.setAltKeyEnabled(value === "enabled");
         } else if (option === "lockMouse") {
-            this.enableMouseLock = value === "enabled" && !this.touch && !this.hasTouchScreen;
+            this.enableMouseLock = value === "enabled" && !this.usesAbsolutePointer() && !this.touch && !this.hasTouchScreen;
+            if (!this.enableMouseLock && document.pointerLockElement === this.canvas) {
+                document.exitPointerLock();
+            }
         } else if (option === "autofireInterval") {
             this.defaultAutoFireInterval = parseInt(value);
         } else if (option.startsWith("controller-port-device-p")) {
@@ -5643,6 +5671,7 @@ class EmulatorJS {
         let funcs = [];
         let settings = {};
         this.changeSettingOption = (title, newValue, startup) => {
+            if (title === "lockMouse" && this.usesAbsolutePointer()) newValue = "disabled";
             this.allSettings[title] = newValue;
             if (startup !== true) {
                 this.settings[title] = newValue;
@@ -5778,7 +5807,7 @@ class EmulatorJS {
         if (core && core.length > 1) {
             addToMenu(this.localization("Core" + " (" + this.localization("Requires restart") + ")"), "retroarch_core", core, this.getCore(), home);
         }
-        if (typeof window.SharedArrayBuffer === "function" && !this.requiresThreads(this.getCore())) {
+        if (typeof window.SharedArrayBuffer === "function" && !this.requiresThreads(this.getCore()) && this.defaultCoreOpts?.supportsThreads !== false) {
             addToMenu(this.localization("Threads"), "ejs_threads", {
                 "enabled": this.localization("Enabled"),
                 "disabled": this.localization("Disabled")
@@ -5986,10 +6015,12 @@ class EmulatorJS {
             "enabled": this.localization("Enabled"),
         }, "disabled", inputOptions, true);
 
-        addToMenu(this.localization("Lock Mouse"), "lockMouse", {
-            "disabled": this.localization("Disabled"),
-            "enabled": this.localization("Enabled"),
-        }, (this.enableMouseLock === true ? "enabled" : "disabled"), inputOptions, true);
+        if (!this.usesAbsolutePointer()) {
+            addToMenu(this.localization("Lock Mouse"), "lockMouse", {
+                "disabled": this.localization("Disabled"),
+                "enabled": this.localization("Enabled"),
+            }, (this.enableMouseLock === true ? "enabled" : "disabled"), inputOptions, true);
+        }
 
         addToMenu(this.localization("Autofire Interval"), "autofireInterval", {
             "20": "20ms",

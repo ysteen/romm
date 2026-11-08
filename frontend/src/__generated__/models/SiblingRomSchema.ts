@@ -10,3 +10,4 @@ export type SiblingRomSchema = {
     is_main_sibling: boolean;
     readonly sort_comparator: string;
 };
+

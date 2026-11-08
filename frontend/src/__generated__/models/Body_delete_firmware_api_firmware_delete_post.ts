@@ -12,3 +12,4 @@ export type Body_delete_firmware_api_firmware_delete_post = {
      */
     delete_from_fs?: Array<number>;
 };
+

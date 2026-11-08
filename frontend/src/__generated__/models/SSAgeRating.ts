@@ -6,3 +6,4 @@ export type SSAgeRating = {
     rating: string;
     category: string;
 };
+

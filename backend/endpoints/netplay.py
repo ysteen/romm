@@ -5,6 +5,8 @@ from starlette.responses import FileResponse
 
 from decorators.auth import protected_route
 from endpoints.responses.netplay_bridge import (
+    BridgeAdminContextResponse,
+    BridgeAdminResponse,
     BridgeConfigResponse,
     BridgeConnectionResponse,
     BridgeControlRequest,
@@ -15,11 +17,15 @@ from endpoints.responses.netplay_bridge import (
     BridgeNativeSeatRequest,
     BridgeNativeTicketResponse,
     BridgeNativeTicketStatus,
+    BridgeNetworkSettings,
     BridgeRoomRequest,
     BridgeRoomResponse,
+    BridgeRuntimeSettings,
 )
 from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
+from handler import netplay_admin_handler as bridge_admin
 from handler import netplay_launch_handler as native_launch
+from handler import netplay_save_handler as server_saves
 from handler.auth.constants import Scope
 from handler.auth.dependencies import assert_rom_visible, can_access, get_permissions
 from handler.auth.permissions import resolve_permissions
@@ -34,6 +40,7 @@ from handler.netplay_bridge_handler import (
 )
 from handler.netplay_handler import NetplayRoom, get_link_cartridge, netplay_handler
 from models.permission import PermAction, PermEntity
+from models.user import Role
 from utils.router import APIRouter
 
 router = APIRouter(
@@ -43,6 +50,90 @@ router = APIRouter(
 
 
 DEFAULT_MAX_PLAYERS = 4
+
+
+def _assert_bridge_admin(request: Request, response: Response) -> None:
+    if request.user.role != Role.ADMIN:
+        raise HTTPException(
+            status_code=403, detail="Only RomM administrators can manage the relay"
+        )
+    response.headers["Cache-Control"] = "no-store"
+
+
+@protected_route(
+    router.get,
+    "/bridge/admin/ui/{asset:path}",
+    [Scope.LOGS_READ],
+    response_class=Response,
+    include_in_schema=False,
+)
+async def get_bridge_admin_ui(
+    request: Request, response: Response, asset: str
+) -> Response:
+    _assert_bridge_admin(request, response)
+    content, media_type = await bridge_admin.ui_asset(asset or "index.html")
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": (
+                "default-src 'none'; script-src 'self'; style-src 'self'; "
+                "connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; "
+                "form-action 'self'"
+            ),
+        },
+    )
+
+
+@protected_route(router.get, "/bridge/admin/context", [Scope.LOGS_READ])
+async def get_bridge_admin_context(
+    request: Request, response: Response
+) -> BridgeAdminContextResponse:
+    _assert_bridge_admin(request, response)
+    return BridgeAdminContextResponse(
+        application_name="RomM",
+        application_url="/",
+        csrf_cookie="romm_csrftoken",
+        csrf_header="x-csrftoken",
+    )
+
+
+@protected_route(router.get, "/bridge/admin", [Scope.LOGS_READ])
+async def get_bridge_admin(request: Request, response: Response) -> BridgeAdminResponse:
+    _assert_bridge_admin(request, response)
+    return await bridge_admin.overview(request.user.username)
+
+
+@protected_route(router.put, "/bridge/admin/settings", [Scope.USERS_WRITE])
+async def update_bridge_settings(
+    request: Request, response: Response, body: BridgeRuntimeSettings
+) -> dict[str, Any]:
+    _assert_bridge_admin(request, response)
+    return await bridge_admin.update_runtime(body)
+
+
+@protected_route(router.put, "/bridge/admin/network", [Scope.USERS_WRITE])
+async def update_bridge_network(
+    request: Request, response: Response, body: BridgeNetworkSettings
+) -> BridgeNetworkSettings:
+    _assert_bridge_admin(request, response)
+    return bridge_admin.update_network(body)
+
+
+@protected_route(router.get, "/bridge/admin/logs", [Scope.LOGS_READ])
+async def get_bridge_logs(
+    request: Request, response: Response, after: int = Query(default=0, ge=0)
+) -> dict[str, Any]:
+    _assert_bridge_admin(request, response)
+    return await bridge_admin.logs(after)
+
+
+@protected_route(router.post, "/bridge/admin/saves/sync", [Scope.TASKS_RUN])
+async def sync_bridge_saves(request: Request, response: Response) -> dict[str, int]:
+    _assert_bridge_admin(request, response)
+    return await server_saves.sync_pending()
 
 
 def _get_owner_player_name(room: NetplayRoom) -> str:
@@ -272,7 +363,11 @@ async def get_bridge_rooms(
                 starting=room.get("starting", False),
                 can_start=room.get("canStart", False),
                 native_authority=room.get("nativeAuthority", False),
+                disconnect_policy=room.get("disconnectPolicy", "continue"),
+                waiting_for_players=room.get("waitingForPlayers", []),
                 save_host=room.get("saveHost"),
+                requires_new_game=room.get("requiresNewGame", False),
+                saves=room.get("saves", {}),
             )
             for room in await bridge_rooms()
             if _room_visible(request, room, rom_id)
@@ -308,8 +403,18 @@ async def create_bridge_room(
         nativeAuthority=body.nativeAllowed
         and body.cartridges is not None
         and body.maxPrediction > 0,
+        saveAllowed=Scope.ASSETS_WRITE in request.auth.scopes,
     )
-    return bridge_connection(await bridge_request("POST", "", payload))
+    value = await bridge_request("POST", "", payload)
+    if payload["saveAllowed"]:
+        server_saves.register_owner(
+            value["id"],
+            0,
+            str(request.user.id),
+            body.rom_id,
+            native_launch.CORE_IDS[body.coreName],
+        )
+    return bridge_connection(value)
 
 
 @protected_route(router.post, "/bridge/rooms/{room_id}/join", [Scope.ROMS_READ])
@@ -328,10 +433,34 @@ async def join_bridge_room(
             "nickname": body.nickname or request.user.username,
             "password": body.password,
             "romId": body.rom_id,
+            "saveAllowed": Scope.ASSETS_WRITE in request.auth.scopes,
             **({"cartridge": body.cartridge.model_dump()} if body.cartridge else {}),
         },
     )
+    if Scope.ASSETS_WRITE in request.auth.scopes:
+        server_saves.register_owner(
+            room_id,
+            value["player"],
+            str(request.user.id),
+            body.rom_id,
+            native_launch.CORE_IDS[room["coreName"]],
+        )
     return bridge_connection(value)
+
+
+@protected_route(
+    router.post, "/bridge/rooms/{room_id}/saves/sync", [Scope.ASSETS_WRITE]
+)
+async def sync_room_saves(request: Request, room_id: str) -> dict[str, int]:
+    room = await bridge_room(room_id)
+    if not any(
+        member.get("owner") == str(request.user.id)
+        for member in room.get("members", [])
+    ):
+        raise HTTPException(
+            status_code=403, detail="Join the room before synchronizing saves"
+        )
+    return await server_saves.sync_pending(room_id)
 
 
 @protected_route(
@@ -513,6 +642,11 @@ async def control_bridge_room(
             {
                 "owner": str(request.user.id),
                 "t": "start-request" if body.action == "start" else body.action,
+                **(
+                    {"disconnectPolicy": body.disconnectPolicy}
+                    if body.disconnectPolicy is not None
+                    else {}
+                ),
                 "player": body.player,
                 "seat": body.seat,
             },

@@ -7,3 +7,4 @@ export type BulkOperationResponse = {
     failed_ids: Array<number>;
     errors: Array<string>;
 };
+

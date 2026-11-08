@@ -10,3 +10,4 @@ export type AppriseServiceSchema = {
     url_fields: Array<string>;
     fields: Array<AppriseFieldSchema>;
 };
+

@@ -1,4 +1,8 @@
-import { importBattery } from "./link-core.js?v=20261021.10";
+import {
+  importBattery,
+  CABLE_INPUT,
+  CABLE_INPUT_PROFILE,
+} from "./link-core.js?v=cable1";
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
   let value = index;
@@ -57,6 +61,7 @@ export class BridgeSession {
       seats,
       startFrame = 0,
       inputs = [],
+      inputProfile = null,
     },
   ) {
     if (
@@ -85,6 +90,9 @@ export class BridgeSession {
       inputDelay,
       maxPrediction,
     });
+    if (inputProfile && inputProfile !== CABLE_INPUT_PROFILE)
+      throw new Error("Unsupported relay input profile");
+    this.reservedInput = inputProfile ? CABLE_INPUT : 0;
     this.frame = startFrame;
     this.seats = playerSeats(seats, players);
     this.confirmed = startFrame;
@@ -140,6 +148,7 @@ export class BridgeSession {
   }
 
   submit(buttons) {
+    buttons &= ~this.reservedInput;
     const f = this.nextInput++;
     if (!frameNumber(f)) throw new Error("Relay frame counter exhausted");
     this.inputs[this.player].set(f, buttons);
@@ -292,6 +301,7 @@ export class BridgeConnection {
       onRestart = () => {},
       onHandoff = () => {},
       onContent = null,
+      onSaveStatus = () => {},
     },
   ) {
     Object.assign(this, {
@@ -313,10 +323,12 @@ export class BridgeConnection {
       onRestart,
       onHandoff,
       onContent,
+      onSaveStatus,
     });
     this.session = null;
     this.transfer = null;
     this.stateRequests = new Set();
+    this.saveRequests = new Map();
     this.contentEpoch = 0;
     this.gameClosed = false;
     this.closed = false;
@@ -393,6 +405,7 @@ export class BridgeConnection {
           maxPrediction: this.maxPrediction,
           startFrame: transfer.f,
           inputs: transfer.inputs,
+          inputProfile: this.inputProfile,
           send: (packet) => this.send(packet),
         });
         this.started = true;
@@ -453,6 +466,8 @@ export class BridgeConnection {
         "action-error",
         "peer-left",
         "peer-error",
+        "save-status",
+        "save-stored",
       ].includes(packet.t)
     ) {
       if (Number.isInteger(packet.size))
@@ -506,6 +521,10 @@ export class BridgeConnection {
         if (packet.player !== this.player || packet.players !== this.players)
           throw new Error("Relay assigned an unexpected player slot");
         this.manualStart = packet.manualStart === true;
+        if (packet.inputProfile && packet.inputProfile !== CABLE_INPUT_PROFILE)
+          throw new Error("Unsupported relay input profile");
+        this.inputProfile = packet.inputProfile ?? null;
+        this.serverSaves = packet.serverSaves === true;
         this.nativeAuthority = packet.nativeAuthority === true;
         this.host = packet.host ?? 0;
         this.generation = packet.generation ?? 0;
@@ -568,6 +587,7 @@ export class BridgeConnection {
         if (!this.started && this.seats[this.player] !== null)
           this.onSeats(this.seats[this.player]);
         this.onLobby(packet);
+        if (packet.saves) this.onSaveStatus(packet.saves);
         if (
           previousHost !== this.host &&
           this.adapter &&
@@ -647,6 +667,18 @@ export class BridgeConnection {
         }
         break;
       }
+      case "save-status":
+        this.onSaveStatus(packet);
+        break;
+      case "save-stored": {
+        const request = this.saveRequests.get(packet.id);
+        if (!request) break;
+        this.saveRequests.delete(packet.id);
+        clearTimeout(request.timer);
+        if (packet.error) request.reject(new Error(packet.error));
+        else request.resolve();
+        break;
+      }
       case "action-error":
         this.onActionError(String(packet.message ?? "Lobby action failed"));
         break;
@@ -710,6 +742,7 @@ export class BridgeConnection {
           maxPrediction: this.maxPrediction,
           seats: this.seats,
           send: (packet) => this.send(packet),
+          inputProfile: this.inputProfile,
         });
         this.session.start();
         this.onStatus("connected");
@@ -819,6 +852,34 @@ export class BridgeConnection {
     this.send({ t: "start-request" });
   }
 
+  saveProgress() {
+    if (!this.serverSaves || !this.started || !this.session)
+      return Promise.reject(new Error("No running server save session"));
+    if (this.saveRequests.size)
+      return this.saveRequests.values().next().value.promise;
+    const id = `${this.player}-${Date.now()}`;
+    let resolve, reject;
+    const promise = new Promise((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    const timer = setTimeout(() => {
+      this.saveRequests.delete(id);
+      reject(new Error("The server did not confirm save storage"));
+    }, 10000);
+    this.saveRequests.set(id, { resolve, reject, promise, timer });
+    try {
+      const f = this.session.confirmed,
+        bytes = this.session.stateAt(f);
+      this.send({ t: "save-state", id, f, size: bytes.length }, bytes);
+    } catch (error) {
+      clearTimeout(timer);
+      this.saveRequests.delete(id);
+      reject(error);
+    }
+    return promise;
+  }
+
   closeGame(notify = true) {
     if (this.closed || this.gameClosed) return;
     if (this.session) {
@@ -860,6 +921,13 @@ export class BridgeConnection {
   stop() {
     if (this.closed) return;
     this.closed = true;
+    for (const request of this.saveRequests.values()) {
+      clearTimeout(request.timer);
+      request.reject(
+        new Error("The room connection closed before save confirmation"),
+      );
+    }
+    this.saveRequests.clear();
     if (this.session) this.session.stopped = true;
     this.socket.close();
     this.onStatus("stopped");

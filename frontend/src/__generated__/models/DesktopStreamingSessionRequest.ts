@@ -5,3 +5,4 @@
 export type DesktopStreamingSessionRequest = {
     container: string;
 };
+

@@ -23,3 +23,4 @@ export type SmartCollectionSchema = {
     owner_username: string;
     readonly rom_count: number;
 };
+

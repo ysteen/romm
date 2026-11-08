@@ -12,3 +12,4 @@ export type UserForm = {
     avatar?: (string | null);
     ui_settings?: (string | null);
 };
+

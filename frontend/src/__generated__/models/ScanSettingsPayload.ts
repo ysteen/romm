@@ -24,3 +24,4 @@ export type ScanSettingsPayload = {
     gamelist_image: MetadataMediaType;
     pegasus_export: boolean;
 };
+

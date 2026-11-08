@@ -1,0 +1,16 @@
+{
+  "core": "melondsds",
+  "buildStart": "2026-11-07T12:21:29.348431+00:00",
+  "options": {
+    "defaultWebGL2": true,
+    "supportsMouse": true,
+    "supportsThreads": false
+  },
+  "minimumEJSVersion": "4.3.0",
+  "version": "melondsds-f394adb-wfc1",
+  "source": "f394adbacb5722ee97c1b37c8064da9a25818310",
+  "melonDS": "16f127dbb587a73371827ce79689c5d237c4b59b",
+  "emscripten": "3.1.74",
+  "wfcTransport": "ethernet-websocket-v1",
+  "patchSha256": "c0443dfe695d9bc79547e40e6e0fb960e1e853aa3ffcf26e63001a2322498dfd"
+}

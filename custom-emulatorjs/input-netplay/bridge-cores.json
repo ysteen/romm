@@ -2,70 +2,76 @@
   "sameboy": {
     "web": {
       "coreName": "SameBoy",
-      "coreVersion": "1.0.4c87d256-rollback2",
+      "coreVersion": "1.0.4c87d256-cable1",
       "maxPrediction": 12,
       "paths": {
-        "sameboy-wasm.data": "../data/cores/compat/rollback/sameboy-sbr2/sameboy-wasm.data",
-        "sameboy.json": "../data/cores/compat/rollback/sameboy-sbr2/sameboy.json"
+        "sameboy-wasm.data": "../data/cores/compat/rollback/sameboy-sbr3/sameboy-wasm.data",
+        "sameboy.json": "../data/cores/compat/rollback/sameboy-sbr3/sameboy.json"
       },
-      "nativeDownload": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so",
-      "manifest": "../data/cores/compat/rollback/sameboy-sbr2/manifest.json",
-      "buildInstructions": "../data/cores/compat/rollback/sameboy-sbr2/BUILD.txt",
-      "nativePlatform": "Linux x86_64"
+      "nativeDownload": "../data/cores/compat/rollback/sameboy-sbr3/sameboy_libretro.so",
+      "manifest": "../data/cores/compat/rollback/sameboy-sbr3/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/sameboy-sbr3/BUILD.txt",
+      "nativePlatform": "Linux x86_64",
+      "inputProfile": "link-cable-r3-v1"
     },
     "native": {
       "coreName": "SameBoy",
-      "coreVersion": "1.0.4c87d256-rollback2",
+      "coreVersion": "1.0.4c87d256-cable1",
       "maxPrediction": 12,
       "paths": {
-        "sameboy-wasm.data": "../data/cores/compat/rollback/sameboy-sbr2/sameboy-wasm.data",
-        "sameboy.json": "../data/cores/compat/rollback/sameboy-sbr2/sameboy.json"
+        "sameboy-wasm.data": "../data/cores/compat/rollback/sameboy-sbr3/sameboy-wasm.data",
+        "sameboy.json": "../data/cores/compat/rollback/sameboy-sbr3/sameboy.json"
       },
-      "nativeDownload": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so",
-      "manifest": "../data/cores/compat/rollback/sameboy-sbr2/manifest.json",
-      "buildInstructions": "../data/cores/compat/rollback/sameboy-sbr2/BUILD.txt",
-      "nativePlatform": "Linux x86_64"
+      "nativeDownload": "../data/cores/compat/rollback/sameboy-sbr3/sameboy_libretro.so",
+      "manifest": "../data/cores/compat/rollback/sameboy-sbr3/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/sameboy-sbr3/BUILD.txt",
+      "nativePlatform": "Linux x86_64",
+      "inputProfile": "link-cable-r3-v1",
+      "coreInfo": {
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/sameboy_libretro.info",
+        "sha256": "c4aa7a79c7ae20f1e347f94c9940d542a6bc3e4d2428c7a4f2363b3130c612bb"
+      }
     },
     "downloads": {
       "linux-x86_64": {
         "label": "Linux x86_64",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/sameboy_libretro.so",
-        "sha256": "4437abafb749c883482e3f6f0451271eb091f8736abfd2b205981325e41932c8"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/sameboy_libretro.so",
+        "sha256": "65e2d6695f46c5d5814de39e37f864ef4b8168568553c9c7468a7f48657dbd9a"
       },
       "windows-x86_64": {
         "label": "Windows x64 (64-bit)",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/windows-x86_64/sameboy_libretro.dll",
-        "sha256": "2bc658b1e950a4586102491db1879d09127201b5af6b23f7123251a404ecb464"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/native/windows-x86_64/sameboy_libretro.dll",
+        "sha256": "61f466b6fb71ffe26c429fe14e5c33bb7d08bace5eb365a14303cf8a2b568f7f"
       },
       "windows-x86": {
         "label": "Windows x86 (32-bit)",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/windows-x86/sameboy_libretro.dll",
-        "sha256": "77c33ed6818c980936826a86a8a0a0cc59b9220125467c293cea02398662280f"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/native/windows-x86/sameboy_libretro.dll",
+        "sha256": "3aef19f12c55beebe1ea4c8c6bda81ee0ff5afe8f377f8dc292e9376b918f143"
       },
       "windows-arm64": {
         "label": "Windows ARM64",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/windows-arm64/sameboy_libretro.dll",
-        "sha256": "f1c99d9a24deeadacb76e0f22d0bba6a5599602c5cb2bd2ee4cd8b597cad216d"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/native/windows-arm64/sameboy_libretro.dll",
+        "sha256": "9a0b14ab66169b31ddad9ae106a433715de7fae240956d5ba07b91e4233ead73"
       },
       "android-arm64-v8a": {
         "label": "Android ARM64 (arm64-v8a)",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-arm64-v8a/sameboy_libretro.so",
-        "sha256": "e6062f9fc8587771f635f532c491182e3064f76c328ab4e3bd4bfca18e55aa27"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/native/android-arm64-v8a/sameboy_libretro.so",
+        "sha256": "f632d639db177736476e2b34dde7927f9146aafab2c91fd9b1ea9c5de82a8c78"
       },
       "android-armeabi-v7a": {
         "label": "Android ARM32 (armeabi-v7a)",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-armeabi-v7a/sameboy_libretro.so",
-        "sha256": "1421be7ecb91bff29a66b323bc92b172404d24a1b76a77759e93017117c4c5aa"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/native/android-armeabi-v7a/sameboy_libretro.so",
+        "sha256": "e1d0b678d1a3a7fb4528e67fffd6adb1e839125f4f7803f2f14b24d74519f44c"
       },
       "android-x86_64": {
         "label": "Android x86_64",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-x86_64/sameboy_libretro.so",
-        "sha256": "d2809852e05587942331d3e17e52800ffa29bcd8b26e5041d58caf2ebde02395"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/native/android-x86_64/sameboy_libretro.so",
+        "sha256": "49be267052cc3ef3765efac35ecf8f7349935c01eb5caf7dfb3d3d94d9bef208"
       },
       "android-x86": {
         "label": "Android x86 (32-bit)",
-        "path": "../data/cores/compat/rollback/sameboy-sbr2/native/android-x86/sameboy_libretro.so",
-        "sha256": "72bc853a78e93504a3f56dc75feda14b581c68553114aac28669f4df0dcd3e03"
+        "path": "../data/cores/compat/rollback/sameboy-sbr3/native/android-x86/sameboy_libretro.so",
+        "sha256": "3d651bc3510d51a8dd69edb4e271709dd3a5f115a6d8348becac46f1134a7b41"
       }
     },
     "launch": {
@@ -85,62 +91,84 @@
   "mgba_splitscreen": {
     "web": {
       "coreName": "mGBA Splitscreen",
-      "coreVersion": "0.1.0-f1d5975-rollback2",
+      "coreVersion": "0.1.0-f1d5975-cable1",
       "maxPrediction": 12,
       "paths": {
-        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen-wasm.data",
-        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen.json"
+        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen-wasm.data",
+        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen.json"
       },
-      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.so",
-      "manifest": "../data/cores/compat/rollback/mgba-spst4-multi/manifest.json",
-      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4-multi/BUILD.txt",
+      "nativeDownload": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen_libretro.so",
+      "manifest": "../data/cores/compat/rollback/mgba-spst5/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/mgba-spst5/BUILD.txt",
       "nativePlatform": "Linux x86_64",
       "waitForCoreInitialization": true,
       "options": {
         "splitscreen_layout": "auto"
-      }
+      },
+      "inputProfile": "link-cable-r3-v1"
     },
     "native": {
       "coreName": "mGBA Splitscreen",
-      "coreVersion": "0.1.0-f1d5975-rollback2",
+      "coreVersion": "0.1.0-f1d5975-cable1",
       "maxPrediction": 12,
       "paths": {
-        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen-wasm.data",
-        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen.json"
+        "mgba_splitscreen-wasm.data": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen-wasm.data",
+        "mgba_splitscreen.json": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen.json"
       },
-      "nativeDownload": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.so",
-      "manifest": "../data/cores/compat/rollback/mgba-spst4-multi/manifest.json",
-      "buildInstructions": "../data/cores/compat/rollback/mgba-spst4-multi/BUILD.txt",
+      "nativeDownload": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen_libretro.so",
+      "manifest": "../data/cores/compat/rollback/mgba-spst5/manifest.json",
+      "buildInstructions": "../data/cores/compat/rollback/mgba-spst5/BUILD.txt",
       "nativePlatform": "Linux x86_64",
       "waitForCoreInitialization": true,
       "options": {
         "splitscreen_layout": "auto"
       },
       "coreInfo": {
-        "path": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.info",
-        "sha256": "4f0b38680fa58fa993d8fa0d240adcc08b7247df2e2eb7e2e547350fcf636aa3"
-      }
+        "path": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen_libretro.info",
+        "sha256": "a319402894181fed587d05ec750d649d15f0cefc34c7095fe6c13a268a2feca6"
+      },
+      "inputProfile": "link-cable-r3-v1"
     },
     "downloads": {
       "linux-x86_64": {
         "label": "Linux x86_64",
-        "path": "../data/cores/compat/rollback/mgba-spst4-multi/mgba_splitscreen_libretro.so",
-        "sha256": "59e239bad357e06166c6a90bdc174f258a501ad8c71d5abff50341e8cc6066cd"
+        "path": "../data/cores/compat/rollback/mgba-spst5/mgba_splitscreen_libretro.so",
+        "sha256": "0b0dd195489e59058b5b73e631eada76c296f7900ca9d7539791a54a954d97d5"
       },
       "windows-x86_64": {
         "label": "Windows x64 (64-bit)",
-        "path": "../data/cores/compat/rollback/mgba-spst4-multi/native/windows-x86_64/mgba_splitscreen_libretro.dll",
-        "sha256": "97f9912c2bb4791f7c82227e70f97f01de96becfe2cc0a8e71e41d2a645c236d"
+        "path": "../data/cores/compat/rollback/mgba-spst5/native/windows-x86_64/mgba_splitscreen_libretro.dll",
+        "sha256": "50b7b4fe3af5e9c06dea0b046c8aa69ad44f9571983cf21882876f5896332227"
       },
       "windows-x86": {
         "label": "Windows x86 (32-bit)",
-        "path": "../data/cores/compat/rollback/mgba-spst4-multi/native/windows-x86/mgba_splitscreen_libretro.dll",
-        "sha256": "6b8f2e2f42ea8c805b95cebe4c77152832755d30594a32c23faa5c21d8cf4692"
+        "path": "../data/cores/compat/rollback/mgba-spst5/native/windows-x86/mgba_splitscreen_libretro.dll",
+        "sha256": "1ff63eae2c4698fea72de2993f3f0dc4c49ed5321820892bf501b0e1f072a887"
       },
       "windows-arm64": {
         "label": "Windows ARM64",
-        "path": "../data/cores/compat/rollback/mgba-spst4-multi/native/windows-arm64/mgba_splitscreen_libretro.dll",
-        "sha256": "d9264ac6b8e07f1af8a4692808624d4919747012129ac92dac65c4c35c493720"
+        "path": "../data/cores/compat/rollback/mgba-spst5/native/windows-arm64/mgba_splitscreen_libretro.dll",
+        "sha256": "6ffe303258eb5ad7891b1e53db53fd4cb3d30f6e574fa6d3d1f97dd5fe0a1d79"
+      },
+      "android-arm64-v8a": {
+        "label": "Android ARM64 (arm64-v8a)",
+        "path": "../data/cores/compat/rollback/mgba-spst5/native/android-arm64-v8a/mgba_splitscreen_libretro.so",
+        "sha256": "402a8f5f291da557893733d518e17404dbd24cfe9c607a90718c60ace2e468d9"
+      },
+      "android-armeabi-v7a": {
+        "label": "Android ARM32 (armeabi-v7a)",
+        "path": "../data/cores/compat/rollback/mgba-spst5/native/android-armeabi-v7a/mgba_splitscreen_libretro.so",
+        "sha256": "6fc64ed93d8b9b3de5051bb183a581839e68787501a8905041833b6ea249a22c"
+      },
+      "android-x86_64": {
+        "label": "Android x86_64",
+        "path": "../data/cores/compat/rollback/mgba-spst5/native/android-x86_64/mgba_splitscreen_libretro.so",
+        "sha256": "092980fa7bf3e7d35b20f9a67653b15c744ea1ff4e6292c25ae3e0541e1d67b1"
+      },
+      "android-x86": {
+        "label": "Android x86 (32-bit)",
+        "path": "../data/cores/compat/rollback/mgba-spst5/native/android-x86/mgba_splitscreen_libretro.so",
+        "sha256": "f4454743b03394a837c0eea9cf26ef964bf3b4814741a46f818da1847e4cefc5"
       }
     },
     "launch": {

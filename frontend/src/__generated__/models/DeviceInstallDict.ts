@@ -6,3 +6,4 @@ export type DeviceInstallDict = {
     ENABLED: boolean;
     EXCLUDED_PLATFORM_SLUGS: Array<string>;
 };
+

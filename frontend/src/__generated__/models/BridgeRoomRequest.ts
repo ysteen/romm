@@ -18,5 +18,7 @@ export type BridgeRoomRequest = {
     maxPrediction?: number;
     cartridges?: (Array<BridgeCartridge> | null);
     collectCartridges?: boolean;
+    disconnectPolicy?: 'continue' | 'pause';
+    saveSize?: (number | null);
 };
 

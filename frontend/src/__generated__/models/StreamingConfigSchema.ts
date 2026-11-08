@@ -8,3 +8,4 @@ export type StreamingConfigSchema = {
     containers: Array<StreamingContainerSchema>;
     emulator_labels: Record<string, string>;
 };
+

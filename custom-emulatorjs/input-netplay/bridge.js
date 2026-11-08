@@ -9,7 +9,7 @@ import {
 import {
   BridgeConnection,
   crc32,
-} from "../data/src/bridge-session.js?v=automatic-join-20261104";
+} from "../data/src/bridge-session.js?v=cable1-20261107";
 import { installBridgeMenu } from "./bridge-menu.js?v=room-lifetime-20261104";
 import { unpackRoomCartridge } from "./cartridge.js";
 import { installNativeDownloads } from "./native-downloads.js?v=native-startup-20261102";
@@ -100,6 +100,8 @@ let ticker,
   autosave,
   initialized = false;
 const rooms = new Map();
+let selectedRoomId = "";
+let roomListLoading = false;
 
 function csrfHeaders() {
   const cookie = document.cookie
@@ -254,7 +256,7 @@ async function loadCartridges(ids, expected) {
 }
 
 function updatePlayChoice() {
-  const selected = room ?? rooms.get($("rooms").value);
+  const selected = room ?? rooms.get(selectedRoomId);
   const allowed = room
     ? activeNativeAllowed
     : selected?.native_allowed && selected?.native_auth;
@@ -264,12 +266,16 @@ function updatePlayChoice() {
   const needsWindowsPlatform =
     client === "windows" && !$("native-platform").value.startsWith("windows-");
   const joinedWeb = !!connection?.joinRequested;
+  const waitingForNewGame = lastLobby?.members.find(
+    (member) => member.player === connection?.player,
+  )?.waitingForNewGame;
   $("play-choice").hidden = !!nativeSession;
   $("play-client").querySelector('[value="windows"]').disabled = !allowed;
   $("play-client").disabled =
     !connected || !!nativeTicket || !!connection?.preparing;
   $("join-game").disabled =
     !connected ||
+    waitingForNewGame ||
     !!connection?.preparing ||
     !Number.isInteger(seat) ||
     !client ||
@@ -281,44 +287,121 @@ function updatePlayChoice() {
     : client === "web" && joinedWeb
       ? "Joined in Web"
       : "Join game";
-  $("join-game-help").textContent = nativeTicket
-    ? "Waiting for the Windows launcher to connect…"
-    : client === "web" && joinedWeb
-      ? connection?.started
-        ? "Playing in this browser."
-        : "Joined in Web. Waiting for the host or current game state."
-      : needsWindowsPlatform
-        ? "Choose a Windows platform under Windows launcher & core setup below."
-        : "Choose your player number and how to play, then select Join game.";
+  $("join-game-help").textContent = waitingForNewGame
+    ? "Wait for the host to prepare a new game with your own save."
+    : nativeTicket
+      ? "Waiting for the Windows launcher to connect…"
+      : client === "web" && joinedWeb
+        ? connection?.started
+          ? "Playing in this browser."
+          : "Joined in Web. Waiting for the host or current game state."
+        : needsWindowsPlatform
+          ? "Choose a Windows platform under Windows launcher & core setup below."
+          : "Choose your player number and how to play, then select Join game.";
+}
+
+function cartridgeTitle(id) {
+  if (!Number.isSafeInteger(id) || id <= 0)
+    return Promise.resolve("Unknown cartridge");
+  if (!cartridgeNames.has(id))
+    cartridgeNames.set(
+      id,
+      api(`/roms/${id}`)
+        .then((item) => item.name ?? item.fs_name)
+        .catch(() => "Unavailable cartridge"),
+    );
+  return cartridgeNames.get(id);
 }
 
 async function refreshRooms() {
-  if (room && !connection?.closed) return;
+  if ((room && !connection?.closed) || roomListLoading) return;
+  roomListLoading = true;
+  $("refresh").disabled = true;
+  $("rooms").setAttribute("aria-busy", "true");
+  $("room-count").textContent = "Refreshing rooms…";
   try {
-    const previous = $("rooms").value;
     const listed = await api(`/netplay/bridge/rooms?rom_id=${rom.id}`);
+    const titles = new Map();
+    await Promise.all(
+      [
+        ...new Set(
+          listed.flatMap((item) => [
+            item.rom_id,
+            ...(item.members ?? []).map((member) => member.romId),
+          ]),
+        ),
+      ].map(async (id) => titles.set(id, await cartridgeTitle(id))),
+    );
     rooms.clear();
-    $("rooms").replaceChildren(new Option("Choose a room", ""));
+    $("rooms").replaceChildren();
     for (const item of listed) {
       rooms.set(item.id, item);
-      const option = new Option(
-        `Room ${item.id.slice(0, 6)} · ${item.current}/${item.players} · ${item.started ? "Playing" : item.has_password ? "Password required" : "No password"}`,
-        item.id,
+      const row = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "room-card";
+      button.dataset.roomId = item.id;
+      button.disabled = item.current >= item.players;
+      const members = [...(item.members ?? [])].sort(
+        (a, b) =>
+          Number(b.player === item.host) - Number(a.player === item.host),
       );
-      option.disabled = item.current >= item.players;
-      $("rooms").append(option);
+      const title = document.createElement("strong");
+      title.className = "room-card-title";
+      title.textContent = titles.get(members[0]?.romId ?? item.rom_id);
+      const info = document.createElement("span");
+      info.className = "room-card-meta";
+      info.textContent = `${item.current}/${item.players} players · ${button.disabled ? "Full" : item.started ? "Playing" : "Waiting"} · ${item.has_password ? "Password required" : "Open"}`;
+      button.append(title, info);
+      for (const member of members) {
+        const entry = document.createElement("span");
+        entry.className = "room-cartridge";
+        const game = document.createElement("span");
+        game.textContent = titles.get(member.romId) ?? "Unknown cartridge";
+        const player = document.createElement("span");
+        player.className = "room-card-meta";
+        player.textContent = `${member.player === item.host ? "Host" : "Player"} · ${member.nickname || "Player"}`;
+        entry.append(game, player);
+        button.append(entry);
+      }
+      const identity = document.createElement("span");
+      identity.className = "room-card-meta";
+      identity.textContent = `Room ${item.id.slice(0, 6)}`;
+      button.append(identity);
+      button.onclick = () => {
+        selectedRoomId = item.id;
+        updateJoin();
+      };
+      row.append(button);
+      $("rooms").append(row);
     }
     const invited = new URLSearchParams(location.search).get("room");
-    const selected = rooms.has(previous) ? previous : invited;
-    if (selected && rooms.has(selected)) $("rooms").value = selected;
+    selectedRoomId = rooms.has(selectedRoomId)
+      ? selectedRoomId
+      : rooms.has(invited)
+        ? invited
+        : "";
+    $("room-count").textContent =
+      `${listed.length} ${listed.length === 1 ? "room" : "rooms"}`;
+    $("rooms-empty").hidden = listed.length > 0;
     updateJoin();
   } catch (error) {
-    fail(error);
+    $("room-count").textContent = "Could not refresh rooms. Try again.";
+    status(error.message, true);
+  } finally {
+    roomListLoading = false;
+    $("refresh").disabled = false;
+    $("rooms").removeAttribute("aria-busy");
   }
 }
 
 function updateJoin() {
-  const selected = rooms.get($("rooms").value);
+  for (const button of $("rooms").querySelectorAll("[data-room-id]"))
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.roomId === selectedRoomId),
+    );
+  const selected = rooms.get(selectedRoomId);
   $("join").disabled = !selected || selected.current >= selected.players;
   $("join-password-label").hidden = !selected?.has_password;
   $("join-help").textContent = !selected
@@ -352,6 +435,13 @@ function renderLobby(value) {
   if (!gameVisible) showRoom(true);
   const ownPlayer = connection?.player ?? nativeSession?.player;
   const host = Number.isInteger(ownPlayer) && ownPlayer === value.host;
+  $("disconnect-policy").value =
+    value.disconnectPolicy ?? value.disconnect_policy ?? "continue";
+  $("disconnect-policy").disabled = !host || value.starting;
+  const missing = value.waitingForPlayers ?? value.waiting_for_players ?? [];
+  $("disconnect-policy-help").textContent = missing.length
+    ? `Paused: waiting for ${missing.length} ${missing.length === 1 ? "player" : "players"} to rejoin. The host can choose Keep playing to continue without them.`
+    : "The host can change this setting. Rejoining players resume from the synchronized game state.";
   const differentCartridges =
     value.collectCartridges &&
     value.contentPrepared &&
@@ -362,22 +452,25 @@ function renderLobby(value) {
         value.cartridges?.[seat]?.romId !== member.romId
       );
     });
-  $("start").hidden = !host || (value.running && !differentCartridges);
+  const requiresNewGame = value.requiresNewGame || differentCartridges;
+  $("start").hidden = !host || (value.running && !requiresNewGame);
   $("start").disabled = !value.canStart;
-  $("start").textContent = differentCartridges
-    ? "Prepare new game"
-    : "Start game";
+  $("start").textContent = requiresNewGame ? "Prepare new game" : "Start game";
   $("lobby-status").textContent = value.starting
     ? "Preparing the game…"
-    : value.running
-      ? differentCartridges
-        ? "A different cartridge is waiting for the next game. The host can prepare a new game or remove that player."
-        : "Game in progress. Select Join game to continue from the current state."
-      : value.canStart
-        ? host
-          ? "Everyone is ready. You can start the game."
-          : "Waiting for the host to start."
-        : `${value.members.length}/${value.players} players in the room.`;
+    : missing.length
+      ? "Game paused. Waiting for players to rejoin."
+      : value.requiresNewGame
+        ? "A player needs a new game with their own save. The host can prepare a new game or remove that player."
+        : value.running
+          ? differentCartridges
+            ? "A different cartridge is waiting for the next game. The host can prepare a new game or remove that player."
+            : "Game in progress. Select Join game to continue from the current state."
+          : value.canStart
+            ? host
+              ? "Everyone is ready. You can start the game."
+              : "Waiting for the host to start."
+            : `${value.members.length}/${value.players} players in the room.`;
   if (!connection?.started)
     status(
       value.starting
@@ -405,17 +498,10 @@ function renderLobby(value) {
     const game = document.createElement("span");
     game.className = "member-game";
     game.textContent = "Loading cartridge name…";
-    if (!cartridgeNames.has(member.romId))
-      cartridgeNames.set(
-        member.romId,
-        api(`/roms/${member.romId}`)
-          .then((item) => item.name ?? item.fs_name)
-          .catch(() => "Unavailable cartridge"),
-      );
-    void cartridgeNames.get(member.romId).then((title) => {
-      game.textContent = `Cartridge: ${title}`;
+    void cartridgeTitle(member.romId).then((title) => {
+      game.textContent = title;
     });
-    name.append(game);
+    name.prepend(game);
     const select = document.createElement("select");
     select.dataset.player = String(member.player);
     select.setAttribute(
@@ -558,7 +644,7 @@ async function boot(players, nativeAllowed, contents, keepRoom = false) {
   frame.contentDocument.body.classList.add("romm-player");
   const style = frame.contentDocument.createElement("link");
   style.rel = "stylesheet";
-  style.href = new URL("bridge.css?v=room-ui-20261104", location.href).href;
+  style.href = new URL("bridge.css?v=room-list-20261107", location.href).href;
   frame.contentDocument.head.append(style);
   frame.contentDocument.documentElement.style.colorScheme =
     document.documentElement.style.colorScheme;
@@ -627,11 +713,13 @@ async function launch(joinId) {
           coreVersion: build.coreVersion,
           contentCrc,
           stateSize: adapter?.size ?? 1,
+          ...(profile.sharedSave ? { saveSize: adapter.memory(0).length } : {}),
           players,
           nativeAllowed,
           password: $("create-password").value,
           maxPrediction: build.maxPrediction ?? 0,
           collectCartridges,
+          disconnectPolicy: $("create-disconnect-policy").value,
           cartridges: collectCartridges
             ? Array(players).fill(own)
             : loaded.manifest,
@@ -661,6 +749,7 @@ async function launch(joinId) {
       battery: bridgeSeed(profile, player, initialBattery),
       maxPrediction: build.maxPrediction ?? 0,
       manualJoin: true,
+      onSaveStatus: serverSaveStatus,
       calibrate:
         build.nativeCalibration === "sameboy-v1" ? calibrateSameBoy : null,
       onStatus(value) {
@@ -808,7 +897,8 @@ function startPlayerLoop() {
     }
   }, 4);
   autosave = setInterval(() => {
-    if (connection?.started) void save().catch(saveError);
+    if (connection?.started && !connection.serverSaves)
+      void save().catch(saveError);
   }, 15000);
   frame.contentWindow.selectPlayer = () =>
     frame.contentWindow.audioOutput.setActive(true);
@@ -842,7 +932,43 @@ function saveError(error) {
   else showRoom(true);
 }
 
+function serverSaveStatus(value) {
+  if (!value?.enabled) return;
+  if (value.error) {
+    saveError(new Error(value.error));
+    return;
+  }
+  $("save-status").classList.remove("error");
+  $("save-status").textContent = value.pending
+    ? "Progress stored on the server. Waiting for RomM sync."
+    : value.synced
+      ? "Progress saved by the server."
+      : "Server save sync active.";
+}
+
 async function save() {
+  if (connection?.serverSaves && connection.started) {
+    if (saving) return saving;
+    const data = ownBattery()?.slice();
+    saving = (async () => {
+      await connection.saveProgress();
+      if (data) {
+        initialBattery = data;
+        pendingSave = null;
+      }
+      const result = await api(`/netplay/bridge/rooms/${room.id}/saves/sync`, {
+        method: "POST",
+      });
+      if (result.pending)
+        throw new Error(
+          "The server retained your save and will retry synchronization. Check the room's save status.",
+        );
+    })().finally(() => {
+      saving = null;
+    });
+    return saving;
+  }
+  if (connection?.serverSaves) return;
   const latest = ownBattery();
   if (latest?.length) pendingSave = latest.slice();
   if (saving) return saving.then(() => save());
@@ -940,6 +1066,9 @@ async function pollNativeRoom() {
   const session = nativeSession;
   try {
     const listed = await api(`/netplay/bridge/rooms?rom_id=${rom.id}`);
+    serverSaveStatus(
+      listed.find((item) => item.id === nativeSession?.id)?.saves,
+    );
     if (nativeSession !== session) return;
     const current = listed.find((item) => item.id === session.id);
     const member = current?.members.find(
@@ -962,6 +1091,7 @@ async function pollNativeRoom() {
         contentPrepared: current.content_prepared,
         collectCartridges: current.collect_cartridges,
         canStart: current.can_start,
+        requiresNewGame: current.requires_new_game,
       });
       showRoom(true);
       status("Windows game closed. You are still in the room.");
@@ -970,13 +1100,15 @@ async function pollNativeRoom() {
     $("native-cancel").hidden = member.kind === "native";
     $("native-status").textContent = member.playing
       ? "Playing in Windows RetroArch. Keep this room open to stay connected."
-      : current.running
-        ? "Waiting for the current game state. A different cartridge stays in the room until the host prepares a new game."
-        : current.host === session.player
-          ? "You are the host. Start when everyone has joined and chosen a player number."
-          : member.ready
-            ? "Windows RetroArch is connected. Choose a number and wait for the host to start."
-            : "The Windows launcher is preparing RetroArch. Choose your player number; the host starts the game.";
+      : member.waitingForNewGame
+        ? "Wait for the host to prepare a new game with your own save."
+        : current.running
+          ? "Waiting for the current game state. A different cartridge stays in the room until the host prepares a new game."
+          : current.host === session.player
+            ? "You are the host. Start when everyone has joined and chosen a player number."
+            : member.ready
+              ? "Windows RetroArch is connected. Choose a number and wait for the host to start."
+              : "The Windows launcher is preparing RetroArch. Choose your player number; the host starts the game.";
     if (
       member.playing &&
       current.native_authority &&
@@ -992,6 +1124,7 @@ async function pollNativeRoom() {
       starting: current.starting,
       canStart: current.can_start,
       saveHost: current.save_host,
+      requiresNewGame: current.requires_new_game,
     });
   } catch (error) {
     $("native-status").textContent = error.message;
@@ -1097,10 +1230,17 @@ async function prepareNative() {
   }
 }
 
+$("disconnect-policy").addEventListener("change", () => {
+  const disconnectPolicy = $("disconnect-policy").value;
+  if (connection && !nativeSession)
+    connection.send({ t: "disconnect-policy", disconnectPolicy });
+  else void nativeControl("disconnect-policy", { disconnectPolicy });
+});
+
 $("create").onclick = () => launch();
-$("join").onclick = () => launch($("rooms").value);
+$("join").onclick = () => launch(selectedRoomId);
 $("refresh").onclick = refreshRooms;
-$("rooms").onchange = updateJoin;
+
 $("join-game").onclick = () => {
   if ($("join-game").disabled) return;
   if ($("play-client").value === "windows") void prepareNative();

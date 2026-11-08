@@ -12,3 +12,4 @@ export type Body_update_platform_api_platforms__id__put = {
      */
     description?: (string | null);
 };
+

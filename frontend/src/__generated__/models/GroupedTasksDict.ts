@@ -8,3 +8,4 @@ export type GroupedTasksDict = {
     manual: Array<TaskInfo>;
     watcher: Array<TaskInfo>;
 };
+

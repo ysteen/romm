@@ -20,3 +20,4 @@ export type RomUserSchema = {
     status: (RomUserStatus | null);
     pinned_media: (Array<string> | null);
 };
+

@@ -1,0 +1,96 @@
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 11c941d..84fb7c4 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -98,6 +98,7 @@ static unsigned audio_out = 0;
+ 
+ static bool geometry_updated = false;
+ static bool link_cable_emulation = false;
++static unsigned cable_mask = 3;
+ /*static bool infrared_emulation   = false;*/
+ 
+ static struct {
+@@ -177,6 +178,11 @@ static void GB_update_keys_status(GB_gameboy_t *gb, unsigned port)
+         }
+     }
+ 
++    if (emulated_devices == 2) {
++        if (joypad_bits & (1u << RETRO_DEVICE_ID_JOYPAD_R3)) cable_mask &= ~(1u << port);
++        else cable_mask |= 1u << port;
++    }
++
+     GB_set_key_state_for_player(gb, GB_KEY_RIGHT,  emulated_devices == 1 ? port : 0,
+         joypad_bits & (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT));
+     GB_set_key_state_for_player(gb, GB_KEY_LEFT,   emulated_devices == 1 ? port : 0,
+@@ -1470,6 +1476,7 @@ void retro_run(void)
+     if (emulated_devices == 2) {
+         GB_update_keys_status(&gameboy[0], 0);
+         GB_update_keys_status(&gameboy[1], 1);
++        set_link_cable_state(link_cable_emulation && cable_mask == 3);
+     }
+     else if (emulated_devices == 1 && (model[0] == GB_MODEL_SGB_PAL || model[0] == GB_MODEL_SGB_NTSC || model[0] == GB_MODEL_SGB2)) {
+         for (unsigned i = 0; i < 4; i++) {
+@@ -1555,6 +1562,8 @@ static enum rom_type check_rom_header(const uint8_t *data, size_t size)
+ 
+ bool retro_load_game(const struct retro_game_info *info)
+ {
++    cable_mask = 3;
++    bit_to_send1 = bit_to_send2 = true;
+     enum rom_type content_type  = ROM_TYPE_INVALID;
+     const uint8_t *content_data = NULL;
+     size_t content_size;
+@@ -1632,6 +1641,8 @@ unsigned retro_get_region(void)
+ 
+ bool retro_load_game_special(unsigned type, const struct retro_game_info *info, size_t num_info)
+ {
++    cable_mask = 3;
++    bit_to_send1 = bit_to_send2 = true;
+     if ((type == RETRO_GAME_TYPE_GAMEBOY_LINK_2P) && (num_info >= 2)) {
+         emulated_devices = 2;
+     }
+@@ -1695,7 +1706,7 @@ bool retro_load_game_special(unsigned type, const struct retro_game_info *info,
+ }
+ 
+ /* Versioned, little-endian APU scheduling state omitted by the core save format. */
+-#define ROLLBACK_TRAILER_SIZE 48
++#define ROLLBACK_TRAILER_SIZE 64
+ static void rollback_write_u32(uint8_t *data, uint32_t value)
+ {
+     for (unsigned i = 0; i < 4; i++) data[i] = value >> (8 * i);
+@@ -1741,8 +1752,10 @@ bool retro_serialize(void *data, size_t size)
+ 
+     memset(data, 0, size);
+     uint8_t *runtime = (uint8_t *)data + size - ROLLBACK_TRAILER_SIZE;
+-    rollback_write_u32(runtime, 0x32524253); /* SBR2 */
++    rollback_write_u32(runtime, 0x33524253); /* SBR3 */
+     rollback_write_u32(runtime + 4, emulated_devices);
++    rollback_write_u32(runtime + 48, cable_mask);
++    rollback_write_u32(runtime + 52, bit_to_send1 | (bit_to_send2 << 1));
+     size -= ROLLBACK_TRAILER_SIZE;
+     size_t offset = 0;
+ 
+@@ -1774,8 +1787,10 @@ bool retro_unserialize(const void *data, size_t size)
+ {
+     if (!data || size != retro_serialize_size()) return false;
+     const uint8_t *runtime = (const uint8_t *)data + size - ROLLBACK_TRAILER_SIZE;
+-    if (rollback_read_u32(runtime) != 0x32524253 ||
+-        rollback_read_u32(runtime + 4) != emulated_devices) return false;
++    if (rollback_read_u32(runtime) != 0x33524253 ||
++        rollback_read_u32(runtime + 4) != emulated_devices ||
++        rollback_read_u32(runtime + 48) > 3 ||
++        rollback_read_u32(runtime + 52) > 3) return false;
+     size -= ROLLBACK_TRAILER_SIZE;
+     for (int i = 0; i < emulated_devices; i++) {
+         size_t state_size = GB_get_save_state_size(&gameboy[i]);
+@@ -1801,6 +1816,11 @@ bool retro_unserialize(const void *data, size_t size)
+         data = ((uint8_t *)data) + state_size;
+     }
+ 
++    cable_mask = rollback_read_u32(runtime + 48);
++    unsigned pending_bits = rollback_read_u32(runtime + 52);
++    bit_to_send1 = pending_bits & 1;
++    bit_to_send2 = (pending_bits >> 1) & 1;
++    set_link_cable_state(link_cable_emulation && cable_mask == 3);
+     return true;
+ 
+ }

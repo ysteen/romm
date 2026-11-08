@@ -12,3 +12,4 @@ export type GrantSchemaIO = {
     action: PermAction;
     own_only?: boolean;
 };
+

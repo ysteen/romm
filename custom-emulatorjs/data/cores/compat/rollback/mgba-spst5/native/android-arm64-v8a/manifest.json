@@ -1,0 +1,24 @@
+{
+  "core": "mGBA Splitscreen",
+  "version": "0.1.0-f1d5975-cable1",
+  "sourceRevision": "f1d5975d77285f77affbfe64b7050ebd5c4b6a77",
+  "target": "android-arm64-v8a",
+  "compiler": "Android (16134705, +pgo, +bolt, +lto, +mlgo, based on r574158c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 9f872551d3c681d06fd303b36f16ed5c274735eb)",
+  "sha256": {
+    "mgba_splitscreen_libretro.so": "402a8f5f291da557893733d518e17404dbd24cfe9c607a90718c60ace2e468d9"
+  },
+  "androidApi": 24,
+  "androidAbi": "arm64-v8a",
+  "pageAlignment": 16384,
+  "inputProfile": "link-cable-r3-v1",
+  "cablePatchSha256": "d08207c77dff739087dbfc43f1a96fdcc3eaf4c33a2314febd4385f1a1639642",
+  "stateProfile": "SPST5",
+  "patchSha256": "131cc93b52d0ec8d211247ccdca4da48671b8e2ae6a1b9f318dabbb52ea76701",
+  "multiRomPatchSha256": "796d57519549374057bf6d9367a8df75d02f2a2c2165809ac4f0c8a1b9370085",
+  "orderedCartridges": true,
+  "startupPatchSha256": "777f6b99519c2b6e31979456031cdf1fde0a0b140359eb1e2c271a6809188ede",
+  "nativeStartup": "configured-players-v1",
+  "saveMemoryInitialization": "before-first-frame-v1",
+  "saveInitPatchSha256": "a225e2d46c559957b9f403ee869b38fbcacb3938411e3cc6575aab89efdec7d2",
+  "platformPatchSha256": "6b6e55deed5410c4b59a8245452476dc707258998cc9d48f14e030b6d488c872"
+}

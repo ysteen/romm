@@ -8,3 +8,4 @@ export type Body_delete_saves_api_saves_delete_post = {
      */
     saves: Array<number>;
 };
+

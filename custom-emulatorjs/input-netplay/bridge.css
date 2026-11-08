@@ -76,7 +76,7 @@ body {
 }
 .romm-room-panel #setup {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.6fr);
   align-items: stretch;
   gap: 20px;
   margin-bottom: 16px;
@@ -206,7 +206,8 @@ body {
 }
 .romm-room-panel .member-game {
   display: block;
-  margin-top: 4px;
+  margin-bottom: 4px;
+  font-weight: 600;
 }
 .romm-room-panel .member-game,
 .romm-room-panel .member-state {
@@ -308,4 +309,50 @@ body {
   .romm-room-panel .play-actions button {
     flex: 1 1 100%;
   }
+}
+
+.romm-room-panel .room-list-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.romm-room-panel .room-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.romm-room-panel .room-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 16px;
+  text-align: left;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.romm-room-panel .room-card[aria-pressed="true"] {
+  border-color: #4d9cff;
+  box-shadow: inset 0 0 0 1px #4d9cff;
+  background: light-dark(#edf4ff, #1e314b);
+}
+.romm-room-panel .room-card-title {
+  font-size: 1.05rem;
+}
+.romm-room-panel .room-card-meta {
+  color: var(--room-muted);
+  font-size: 0.875rem;
+}
+.romm-room-panel .room-cartridge {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  width: 100%;
+  gap: 4px 16px;
 }

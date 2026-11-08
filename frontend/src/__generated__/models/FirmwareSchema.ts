@@ -20,3 +20,4 @@ export type FirmwareSchema = {
     created_at: string;
     updated_at: string;
 };
+

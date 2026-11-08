@@ -6,3 +6,4 @@ export type BridgeConfigResponse = {
     enabled: boolean;
     player_url?: string;
 };
+

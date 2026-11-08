@@ -8,3 +8,4 @@ export type Body_upload_memory_card_version_api_memory_cards__id__versions_post 
      */
     cardFile: string;
 };
+

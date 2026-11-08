@@ -25,3 +25,4 @@ export type NotificationCreatePayload = {
      */
     recipients?: (Array<number> | 'admins' | 'all' | null);
 };
+

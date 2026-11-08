@@ -8,3 +8,4 @@ export type Body_create_patch_job_api_roms__id__patch_jobs_post = {
     patch_file_id?: (number | null);
     patch_file?: (string | null);
 };
+

@@ -14,3 +14,4 @@ export type TrackMetaSchema = {
     has_embedded_cover?: boolean;
     cover_path?: (string | null);
 };
+

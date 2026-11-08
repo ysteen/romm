@@ -2,6 +2,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fakeredis import FakeRedis
 from fastapi import HTTPException
 from tests.endpoints.test_netplay import _auth, _hide, _override_emulation_read
 from tests.factories import make_platform, make_rom
@@ -9,9 +10,17 @@ from tests.factories import make_platform, make_rom
 from endpoints.responses.netplay_bridge import BridgeNativeResponse
 from handler import netplay_bridge_handler as bridge
 from handler import netplay_launch_handler as launch
+from handler import netplay_save_handler as server_saves
+from handler import netplay_settings_handler as settings
 from handler.netplay_handler import get_link_cartridge
 from models.permission import PermEntity
 from utils.context import ctx_aiohttp_session
+
+
+@pytest.fixture(autouse=True)
+def isolated_save_grants(mocker):
+    mocker.patch.object(server_saves, "redis_client", FakeRedis())
+    mocker.patch.object(settings, "redis_client", FakeRedis())
 
 
 @pytest.fixture
@@ -122,6 +131,39 @@ def test_bridge_leave_uses_only_the_authenticated_owner(client, viewer_user, moc
     )
 
 
+def test_room_member_can_flush_broker_saves_without_submitting_save_owners(
+    client, editor_user, mocker
+):
+    mocker.patch(
+        "endpoints.netplay.bridge_room",
+        AsyncMock(return_value={"members": [{"owner": str(editor_user.id)}]}),
+    )
+    sync = mocker.patch.object(
+        server_saves, "sync_pending", AsyncMock(return_value={"saved": 2, "pending": 0})
+    )
+    response = client.post(
+        "/api/netplay/bridge/rooms/room-1/saves/sync", headers=_auth(editor_user)
+    )
+    assert response.status_code == 200
+    assert response.json() == {"saved": 2, "pending": 0}
+    sync.assert_awaited_once_with("room-1")
+
+
+def test_an_outsider_cannot_trigger_a_room_save_flush(client, editor_user, mocker):
+    mocker.patch(
+        "endpoints.netplay.bridge_room",
+        AsyncMock(return_value={"members": [{"owner": "another-user"}]}),
+    )
+    sync = mocker.patch.object(server_saves, "sync_pending", new_callable=AsyncMock)
+    assert (
+        client.post(
+            "/api/netplay/bridge/rooms/room-1/saves/sync", headers=_auth(editor_user)
+        ).status_code
+        == 403
+    )
+    sync.assert_not_awaited()
+
+
 def test_bridge_leave_is_idempotent_for_an_expired_room(client, viewer_user, mocker):
     mocker.patch(
         "endpoints.netplay.bridge_room",
@@ -166,7 +208,7 @@ def test_rollback_profile_is_forwarded(client, viewer_user, rom, relay):
     response = client.post(
         "/api/netplay/bridge/rooms",
         json=create_body(rom.id)
-        | {"coreVersion": "1.0.4c87d256-rollback2", "maxPrediction": 12},
+        | {"coreVersion": "1.0.4c87d256-cable1", "maxPrediction": 12},
         headers=_auth(viewer_user),
     )
     assert response.status_code == 200
@@ -182,7 +224,7 @@ def test_account_bound_rollback_rooms_enable_native_authority(
         "/api/netplay/bridge/rooms",
         json=create_body(rom.id)
         | {
-            "coreVersion": "1.0.4c87d256-rollback2",
+            "coreVersion": "1.0.4c87d256-cable1",
             "maxPrediction": 12,
             "cartridges": [cartridge, cartridge],
         },
@@ -302,6 +344,7 @@ def test_snes_listing_and_password_join_use_the_existing_romm_identity(
         "nickname": viewer_user.username,
         "password": "snes-room-password",
         "romId": snes_rom.id,
+        "saveAllowed": True,
     }
 
 
@@ -585,7 +628,10 @@ def test_web_only_room_has_no_native_port(relay):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("oversized", [False, True])
-async def test_gateway_response_reads_all_chunks_with_a_size_limit(mocker, oversized):
+@pytest.mark.parametrize("raw_response", [False, True])
+async def test_gateway_response_reads_all_chunks_with_a_size_limit(
+    mocker, oversized, raw_response
+):
     mocker.patch.object(bridge, "bridge_enabled", return_value=True)
     mocker.patch.object(bridge, "NETPLAY_BRIDGE_URL", "http://relay:8082")
 
@@ -601,10 +647,13 @@ async def test_gateway_response_reads_all_chunks_with_a_size_limit(mocker, overs
     try:
         if oversized:
             with pytest.raises(HTTPException) as error:
-                await bridge.bridge_request("GET", "")
+                await bridge.bridge_request("GET", "", raw_response=raw_response)
             assert error.value.status_code == 502
         else:
-            assert await bridge.bridge_request("GET", "") == [{"id": "room-1"}]
+            value = await bridge.bridge_request("GET", "", raw_response=raw_response)
+            assert value == (
+                b'[{"id":"room-1"}]' if raw_response else [{"id": "room-1"}]
+            )
     finally:
         ctx_aiohttp_session.reset(token)
 
@@ -716,7 +765,24 @@ def test_native_host_room_exposes_start_controls_and_web_save_source(
         AsyncMock(
             return_value=[
                 gateway_room(rom.id)
-                | {"nativeAuthority": True, "canStart": True, "host": 1, "saveHost": 0}
+                | {
+                    "nativeAuthority": True,
+                    "canStart": True,
+                    "host": 1,
+                    "saveHost": 0,
+                    "requiresNewGame": True,
+                    "members": [
+                        {
+                            "player": 0,
+                            "owner": str(viewer_user.id),
+                            "kind": "web",
+                            "nickname": "Player",
+                            "ready": False,
+                            "playing": False,
+                            "waitingForNewGame": True,
+                        }
+                    ],
+                }
             ]
         ),
     )
@@ -729,6 +795,9 @@ def test_native_host_room_exposes_start_controls_and_web_save_source(
     assert response.json()[0]["can_start"] is True
     assert response.json()[0]["native_authority"] is True
     assert response.json()[0]["save_host"] == 0
+    assert response.json()[0]["requires_new_game"] is True
+    assert response.json()[0]["members"][0]["waitingForNewGame"] is True
+    assert "saveOwners" not in response.json()[0]
 
 
 def test_web_witness_can_sync_saves_while_retroarch_hosts(
@@ -791,7 +860,7 @@ def test_launcher_switches_only_after_claim_and_rechecks_access(
 
     mocker.patch.object(launch, "redis_client", FakeRedis())
     room = gateway_room(rom.id, str(viewer_user.id)) | {
-        "coreVersion": "1.0.4c87d256-rollback2",
+        "coreVersion": "1.0.4c87d256-cable1",
         "host": 0,
         "members": [
             {"player": 0, "owner": str(viewer_user.id), "kind": "web", "romId": rom.id},
@@ -937,7 +1006,7 @@ def test_sameboy_room_collects_distinct_gb_and_gbc_cartridges(
 def test_native_preparation_binds_authenticated_account(
     client, viewer_user, rom, relay, mocker
 ):
-    room = gateway_room(rom.id) | {"coreVersion": "1.0.4c87d256-rollback2"}
+    room = gateway_room(rom.id) | {"coreVersion": "1.0.4c87d256-cable1"}
     mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
     gateway = mocker.patch(
         "handler.netplay_launch_handler.bridge_request",

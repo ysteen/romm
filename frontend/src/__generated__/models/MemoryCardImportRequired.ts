@@ -15,3 +15,4 @@ export type MemoryCardImportRequired = {
     summary?: (MemoryCardSummarySchema | null);
     reason?: (string | null);
 };
+
