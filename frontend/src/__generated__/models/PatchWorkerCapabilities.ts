@@ -14,3 +14,4 @@ export type PatchWorkerCapabilities = {
     cia_ready: boolean;
     normalize_on_scan: boolean;
 };
+

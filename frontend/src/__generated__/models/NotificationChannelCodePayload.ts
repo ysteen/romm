@@ -5,3 +5,4 @@
 export type NotificationChannelCodePayload = {
     code: string;
 };
+

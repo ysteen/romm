@@ -19,3 +19,4 @@ export type SessionTerminationSchema = {
     claimed_at?: (string | null);
     desktop?: boolean;
 };
+

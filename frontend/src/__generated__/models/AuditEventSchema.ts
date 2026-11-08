@@ -22,3 +22,4 @@ export type AuditEventSchema = {
     device_name: (string | null);
     data: Record<string, any>;
 };
+

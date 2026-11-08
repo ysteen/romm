@@ -7,3 +7,4 @@ export type SwapDiscResponse = {
     file_id: number;
     platform: string;
 };
+

@@ -42,3 +42,4 @@ export type PlatformSchema = {
     readonly alternative_names: Array<string>;
     readonly firmware_count: number;
 };
+

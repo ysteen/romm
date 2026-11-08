@@ -11,3 +11,4 @@ export type LaunchPhasePayload = {
     claimed_at: string;
     phase?: (string | null);
 };
+

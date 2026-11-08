@@ -22,3 +22,4 @@ export type CollectionSchema = {
     owner_username: string;
     readonly rom_count: number;
 };
+

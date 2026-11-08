@@ -11,3 +11,4 @@ export type RecommendedRomSchema = {
     seed_rom_id?: (number | null);
     seed_rom_name?: (string | null);
 };
+

@@ -13,3 +13,4 @@ export type PermissionGroupUpdate = {
     hide_unrated_roms?: boolean;
     set_age_settings?: boolean;
 };
+

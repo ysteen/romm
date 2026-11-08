@@ -8,3 +8,4 @@ export type OIDCDict = {
     PROVIDER: string;
     RP_INITIATED_LOGOUT: boolean;
 };
+

@@ -10,3 +10,4 @@ export type AuditPage_AuditEventSchema_ = {
     offset: number;
     max_id?: (number | null);
 };
+

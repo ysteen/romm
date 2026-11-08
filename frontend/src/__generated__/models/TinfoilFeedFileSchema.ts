@@ -6,3 +6,4 @@ export type TinfoilFeedFileSchema = {
     url: string;
     size: number;
 };
+

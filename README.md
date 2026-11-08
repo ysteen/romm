@@ -1,4 +1,5 @@
 <!-- trunk-ignore-all(markdownlint/MD033) -->
+
 <!-- trunk-ignore(markdownlint/MD041) -->
 <div align="center">
   <img src=".github/resources/isotipo.png" height="180px" width="auto" alt="romm logo">
@@ -7,6 +8,8 @@
     A beautiful, powerful, self-hosted ROM manager and player.
   </h3>
 </div>
+
+Custom multiplayer: [independent server installation](docs/NETPLAY_INSTALL.md), [player guide](docs/ROLLBACK_ROOMS.md), and [integration/compatibility](docs/NETPLAY_BRIDGE.md).
 
 <div align="center">
   <div dir="auto">

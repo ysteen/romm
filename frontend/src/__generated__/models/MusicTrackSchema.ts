@@ -26,3 +26,4 @@ export type MusicTrackSchema = {
     cover_url?: (string | null);
     game_cover_url?: (string | null);
 };
+

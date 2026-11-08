@@ -12,3 +12,4 @@ export type RAUserGameProgression = {
     highest_award_kind?: (string | null);
     earned_achievements: Array<EarnedAchievement>;
 };
+

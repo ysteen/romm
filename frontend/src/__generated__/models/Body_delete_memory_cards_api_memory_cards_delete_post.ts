@@ -8,3 +8,4 @@ export type Body_delete_memory_cards_api_memory_cards_delete_post = {
      */
     cards: Array<number>;
 };
+

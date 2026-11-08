@@ -10,3 +10,4 @@ export type OrphanedResourcesCleanupStats = {
     removed_fs_platforms: number;
     removed_fs_roms: number;
 };
+

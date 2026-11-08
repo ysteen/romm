@@ -367,12 +367,49 @@ function Get-RetroArchCandidates([string]$Root, [string]$PackageRoot) {
     }
 }
 
+function Get-RetroArchVersion([string]$Executable) {
+    $process = New-Object Diagnostics.Process
+    try {
+        $process.StartInfo.FileName = $Executable
+        $process.StartInfo.WorkingDirectory = Split-Path -Parent $Executable
+        $process.StartInfo.Arguments = '--version'
+        $process.StartInfo.UseShellExecute = $false
+        $process.StartInfo.CreateNoWindow = $true
+        $process.StartInfo.RedirectStandardOutput = $true
+        $process.StartInfo.RedirectStandardError = $true
+        if (-not $process.Start()) { throw 'Could not start the RetroArch version check.' }
+        $output = $process.StandardOutput.ReadToEndAsync()
+        $errors = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(5000)) {
+            $process.Kill()
+            $process.WaitForExit()
+            throw 'RetroArch version check timed out.'
+        }
+        $versionText = $output.GetAwaiter().GetResult() + "`n" + $errors.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0 -or $versionText -notmatch '(?m)^Version:\s+(\d+\.\d+\.\d+)\b') {
+            throw 'Could not read the RetroArch version.'
+        }
+        return [Version]$Matches[1]
+    } finally { $process.Dispose() }
+}
+
+function Get-MinimumRetroArchVersion($Session) {
+    # SameBoy's rollback state includes APU scheduling. Older frontends do not
+    # provide GET_TARGET_SAMPLE_RATE and run this core at 2 MHz instead of 48 kHz.
+    if ($Session.profile.id -eq 'sameboy') { return [Version]'1.22.2' }
+    return $null
+}
+
 function Find-InstalledRetroArch([string]$Root, [string]$Platform, [string]$PackageRoot) {
     foreach ($candidate in @(Get-RetroArchCandidates $Root $PackageRoot | Select-Object -Unique)) {
         if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
         try {
-            if ((Get-ExecutablePlatform $candidate) -eq $Platform) { return (Get-Item -LiteralPath $candidate).FullName }
-        } catch { continue }
+            if ((Get-ExecutablePlatform $candidate) -ne $Platform) { continue }
+            return (Get-Item -LiteralPath $candidate).FullName
+        } catch {
+            Write-Host "Skipping an incompatible RetroArch: $candidate"
+            continue
+        }
     }
     return $null
 }
@@ -442,15 +479,26 @@ function Initialize-PortableRetroArch([string]$Root, [string]$Platform) {
     }
 }
 
-function Resolve-RetroArch([string]$Requested, [string]$Root, [string]$Platform, [string]$PackageRoot) {
+function Resolve-RetroArch([string]$Requested, [string]$Root, [string]$Platform, [string]$PackageRoot, [Version]$MinimumVersion = $null) {
     if ($Requested) {
         $path = (Get-Item -LiteralPath $Requested).FullName
         if ((Get-ExecutablePlatform $path) -ne $Platform) { throw 'Selected RetroArch architecture differs from the room package.' }
-        return $path
+        $installed = $path
+    } else {
+        Write-Host 'Checking for an existing RetroArch...'
+        $installed = Find-InstalledRetroArch $Root $Platform $PackageRoot
     }
-    Write-Host 'Checking for an existing RetroArch...'
-    $installed = Find-InstalledRetroArch $Root $Platform $PackageRoot
-    if ($installed) { Write-Host "Using existing RetroArch: $installed"; return $installed }
+    if ($installed) {
+        if ($MinimumVersion) {
+            try { $installedVersion = Get-RetroArchVersion $installed }
+            catch { throw "Could not check the installed RetroArch version. Update RetroArch to $MinimumVersion or later and try again. Installation: $installed" }
+            if ($installedVersion -lt $MinimumVersion) {
+                throw "Installed RetroArch $installedVersion is too old for this core. Update RetroArch to $MinimumVersion or later and try again. Installation: $installed"
+            }
+        }
+        Write-Host "Using existing RetroArch: $installed"
+        return $installed
+    }
     return Initialize-PortableRetroArch $Root $Platform
 }
 
@@ -491,7 +539,31 @@ function ConvertTo-ProcessArgument([string]$Value) {
     return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
 }
 
-function Start-NativeTunnel($Connection, [string]$ViewFile = '') {
+function New-NativeProcessStartInfo($Launch, [int]$TunnelPort) {
+    $arguments = @($Launch.Arguments)
+    $arguments[$arguments.IndexOf('--connect') + 1] = '127.0.0.1'
+    $arguments[$arguments.IndexOf('--port') + 1] = [string]$TunnelPort
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $Launch.Executable
+    $start.WorkingDirectory = Split-Path -Parent $Launch.Executable
+    $start.UseShellExecute = $false
+    $start.Arguments = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
+    return $start
+}
+
+function Start-NativeProcess($StartInfo, [string]$ViewFile = '') {
+    $name = 'ROMM_NETPLAY_PLAYER_FILE'
+    $previous = [Environment]::GetEnvironmentVariable($name, 'Process')
+    try {
+        # Inherit the raw environment without .NET rejecting Path/PATH duplicates.
+        [Environment]::SetEnvironmentVariable($name, $ViewFile, 'Process')
+        return [Diagnostics.Process]::Start($StartInfo)
+    } finally {
+        [Environment]::SetEnvironmentVariable($name, $previous, 'Process')
+    }
+}
+
+function Start-NativeTunnel($Connection, [string]$ViewFile = '', [string]$ControlFile = '') {
     if (-not ('RomMNativeTunnel' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
@@ -506,6 +578,121 @@ public sealed class RomMNativeTunnel : IDisposable {
     TcpClient local, remote;
     public int Port { get; private set; }
     public string Error { get; private set; }
+    readonly object pauseLock = new object();
+    readonly System.Collections.Generic.HashSet<uint> pauseEchoes = new System.Collections.Generic.HashSet<uint>();
+    readonly string controlFile;
+    int controlPort;
+    bool requestedPause, localPaused, pauseWorker, disposed;
+    public void AttachControl(int port) {
+        lock (pauseLock) { controlPort = port; SetPause(requestedPause); }
+    }
+    void SetPause(bool paused) { RequestPause(paused, false); }
+    void RequestPause(bool paused, bool verify) {
+        lock (pauseLock) {
+            if (disposed) return;
+            requestedPause = paused;
+            if (controlPort != 0) {
+                if (!pauseWorker && (verify || paused || localPaused)) {
+                    pauseWorker = true;
+                    Task.Run((Action)ApplyPause);
+                }
+            } else if (!String.IsNullOrEmpty(controlFile) && paused != localPaused) {
+                pauseEchoes.Add(paused ? 0x43u : 0x44u);
+                localPaused = paused;
+                File.WriteAllText(controlFile, paused ? "pause" : "resume");
+            }
+        }
+    }
+    async Task ConfirmPause(bool paused) {
+        RequestPause(paused, true);
+        var deadline = DateTime.UtcNow.AddSeconds(4);
+        while (DateTime.UtcNow < deadline) {
+            lock (pauseLock) {
+                if (disposed) throw new IOException(Error ?? "Pause control connection ended.");
+                if (!pauseWorker && localPaused == paused && requestedPause == paused) return;
+            }
+            await Task.Delay(20);
+        }
+        throw new IOException("RetroArch did not confirm the requested pause state.");
+    }
+    bool? ReadPauseState(int port) {
+        try {
+            using (var socket = new UdpClient(AddressFamily.InterNetwork)) {
+                socket.Client.ReceiveTimeout = 150;
+                socket.Connect(IPAddress.Loopback, port);
+                var query = Encoding.ASCII.GetBytes("GET_STATUS\n");
+                socket.Send(query, query.Length);
+                var remote = new IPEndPoint(IPAddress.Loopback, port);
+                var text = Encoding.ASCII.GetString(socket.Receive(ref remote));
+                if (text.StartsWith("GET_STATUS PAUSED ", StringComparison.Ordinal)) return true;
+                if (text.StartsWith("GET_STATUS PLAYING ", StringComparison.Ordinal)) return false;
+            }
+        } catch (SocketException) { }
+        return null;
+    }
+    void ApplyPause() {
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        var changed = DateTime.MinValue;
+        try {
+            while (DateTime.UtcNow < deadline) {
+                bool desired; int port;
+                lock (pauseLock) {
+                    if (disposed) return;
+                    desired = requestedPause; port = controlPort;
+                }
+                var actual = ReadPauseState(port);
+                if (actual.HasValue && (DateTime.UtcNow - changed).TotalMilliseconds >= 150) {
+                    lock (pauseLock) {
+                        localPaused = actual.Value;
+                        if (desired == requestedPause && actual.Value == desired) {
+                            pauseWorker = false;
+                            return;
+                        }
+                        desired = requestedPause;
+                        if (actual.Value != desired) {
+                            pauseEchoes.Add(desired ? 0x43u : 0x44u);
+                            using (var socket = new UdpClient(AddressFamily.InterNetwork)) {
+                                var command = Encoding.ASCII.GetBytes("PAUSE_TOGGLE\n");
+                                socket.Send(command, command.Length, new IPEndPoint(IPAddress.Loopback, port));
+                            }
+                            changed = DateTime.UtcNow;
+                        }
+                    }
+                }
+                System.Threading.Thread.Sleep(50);
+            }
+            lock (pauseLock) {
+                if (disposed) return;
+                Error = "RetroArch did not confirm its pause state. Reopen the Windows session.";
+            }
+            Dispose();
+        } catch (Exception error) {
+            lock (pauseLock) { if (!disposed) Error = "RetroArch pause control failed: " + error.Message; }
+            Dispose();
+        }
+    }
+    bool PauseEcho(uint command) {
+        lock (pauseLock) {
+            localPaused = command == 0x43;
+            return pauseEchoes.Remove(command);
+        }
+    }
+    async Task RelayClient(Stream client, Stream server) {
+        var header = new byte[8]; var buffer = new byte[65536];
+        while (await ReadFull(client, header, header.Length)) {
+            uint command = Word(header, 0), remaining = Word(header, 4);
+            if (remaining > 16 * 1024 * 1024 + 1024) throw new IOException("Client packet exceeds its size limit.");
+            bool discard = (command == 0x43 || command == 0x44) && PauseEcho(command);
+            if (!discard) await server.WriteAsync(header, 0, header.Length);
+            while (remaining > 0) {
+                int count = (int)Math.Min((uint)buffer.Length, remaining);
+                if (!await ReadFull(client, buffer, count)) throw new IOException("Truncated client payload.");
+                if (!discard) await server.WriteAsync(buffer, 0, count);
+                remaining -= (uint)count;
+            }
+        }
+    }
+
     static byte[] ReadExact(Stream stream, int size) {
         var data = new byte[size];
         for (int offset = 0; offset < size;) {
@@ -536,11 +723,17 @@ public sealed class RomMNativeTunnel : IDisposable {
         }
         return true;
     }
-    public static async Task RelayServer(Stream server, Stream client, string viewFile) {
+    public static async Task RelayServer(Stream server, Stream client, string viewFile, Func<bool, Task> pause = null) {
         var header = new byte[8]; var buffer = new byte[65536]; var mode = new byte[12];
         while (await ReadFull(server, header, header.Length)) {
             uint command = Word(header, 0), remaining = Word(header, 4);
             if (remaining > 16 * 1024 * 1024 + 1024) throw new IOException("Room packet exceeds its size limit.");
+            if (pause != null && (command == 0x43 || command == 0x44)) {
+                if (command == 0x43) {
+                    if (remaining != 32 || !await ReadFull(server, new byte[32], 32)) throw new IOException("Invalid pause packet.");
+                } else if (remaining != 0) throw new IOException("Invalid resume packet.");
+                await pause(command == 0x43); continue;
+            }
             if (command == 0x26 && remaining >= 12 && !String.IsNullOrEmpty(viewFile)) {
                 if (!await ReadFull(server, mode, mode.Length)) throw new IOException("Truncated player assignment.");
                 int player = ModePlayerView(mode);
@@ -560,7 +753,8 @@ public sealed class RomMNativeTunnel : IDisposable {
             }
         }
     }
-    public RomMNativeTunnel(string host, int port, string password, string viewFile) {
+    public RomMNativeTunnel(string host, int port, string password, string viewFile, string pauseFile) {
+        controlFile = pauseFile;
         listener.Start(1);
         Port = ((IPEndPoint)listener.LocalEndpoint).Port;
         Task.Run(async () => {
@@ -587,20 +781,24 @@ public sealed class RomMNativeTunnel : IDisposable {
                 var nickname = ReadExact(client, 40);
                 if (Word(nickname, 0) != 0x20 || Word(nickname, 4) != 32)
                     throw new IOException("Invalid RetroArch nickname packet.");
-                server.Write(nickname, 0, nickname.Length);
+                var tagged = new byte[40]; Array.Copy(nickname, tagged, 8);
+                Encoding.ASCII.GetBytes("RMP1:").CopyTo(tagged, 8);
+                Array.Copy(nickname, 8, tagged, 13, 27);
+                server.Write(tagged, 0, tagged.Length);
                 byte[] digest;
                 using (var sha = SHA256.Create())
                     digest = sha.ComputeHash(Encoding.UTF8.GetBytes(salt.ToString("X8") + password));
                 var authentication = new byte[72]; authentication[3] = 0x21; authentication[7] = 64;
                 Encoding.ASCII.GetBytes(BitConverter.ToString(digest).Replace("-", "")).CopyTo(authentication, 8);
                 server.Write(authentication, 0, authentication.Length);
-                var incoming = String.IsNullOrEmpty(viewFile) ? server.CopyToAsync(client) : RelayServer(server, client, viewFile);
-                await await Task.WhenAny(client.CopyToAsync(server), incoming);
-            } catch (Exception error) { Error = error.Message; }
+                var incoming = RelayServer(server, client, viewFile, ConfirmPause);
+                await await Task.WhenAny(RelayClient(client, server), incoming);
+            } catch (Exception error) { if (Error == null) Error = error.Message; }
             finally { Dispose(); }
         });
     }
     public void Dispose() {
+        lock (pauseLock) { disposed = true; }
         listener.Stop();
         if (local != null) local.Close();
         if (remote != null) remote.Close();
@@ -608,7 +806,7 @@ public sealed class RomMNativeTunnel : IDisposable {
 }
 '@
     }
-    return New-Object RomMNativeTunnel($Connection.host, [int]$Connection.port, $Connection.password, $ViewFile)
+    return New-Object RomMNativeTunnel($Connection.host, [int]$Connection.port, $Connection.password, $ViewFile, $ControlFile)
 }
 
 function Initialize-NativeSession($Session, [string]$Executable, [string]$Root) {
@@ -629,12 +827,16 @@ function Initialize-NativeSession($Session, [string]$Executable, [string]$Root) 
     foreach ($asset in $assets) {
         $cached = Join-Path $cache $asset.sha256
         if (-not (Test-Path -LiteralPath $cached) -or (Get-Sha256 $cached) -ne $asset.sha256) {
+            Write-Host "Downloading matching core package: $($asset.name)"
             Receive-SessionFile $asset.url ($cached + '.part') '' 67108864
             if ((Get-Sha256 ($cached + '.part')) -ne $asset.sha256) { throw 'Core package checksum mismatch.' }
             Move-Item -LiteralPath ($cached + '.part') -Destination $cached -Force
+        } else {
+            Write-Host "Using verified core package: $($asset.name)"
         }
         [IO.File]::Copy($cached, (Join-Path $coreDirectory $asset.name), $true)
     }
+    Write-Host "Core ready: $($Session.profile.id) $($Session.profile.version) ($($Session.platform))"
     $romPaths = @()
     foreach ($rom in $Session.cartridges) {
         $cached = Join-Path $cache $rom.sha256
@@ -663,6 +865,9 @@ function Initialize-NativeSession($Session, [string]$Executable, [string]$Root) 
     $options = Join-Path $directory 'core-options.cfg'
     $baseConfig = Join-Path (Split-Path -Parent $Executable) 'retroarch.cfg'
     $baseText = if (Test-Path -LiteralPath $baseConfig) { [IO.File]::ReadAllText($baseConfig) + "`n" } else { '' }
+    $commandReservation = New-Object Net.Sockets.UdpClient(0)
+    try { $commandPort = ([Net.IPEndPoint]$commandReservation.Client.LocalEndPoint).Port }
+    finally { $commandReservation.Dispose() }
     $values = [ordered]@{
         config_save_on_exit = 'false'; core_options_path = $options
         libretro_directory = $coreDirectory; libretro_info_path = $coreDirectory
@@ -675,10 +880,19 @@ function Initialize-NativeSession($Session, [string]$Executable, [string]$Root) 
         rewind_enable = 'false'; netplay_start_as_spectator = 'false'
         netplay_password = ''; video_fullscreen = 'false'
         input_auto_game_focus = '0'; menu_pause_libretro = 'false'
-        pause_nonactive = 'false'
+        pause_nonactive = 'false'; network_cmd_enable = 'true'; network_cmd_port = [string]$commandPort
+        # Cached video frames during a netplay STALL must consume wall time.
+        vrr_runloop_enable = 'true'
     }
     if ($Session.profile.id -eq 'sameboy') { $values['audio_out_rate'] = '48000' }
     # RetroArch reads the first occurrence of a setting, including before includes.
+    if ($Session.profile.id -in @('sameboy', 'mgba_splitscreen') -and $Session.profile.version -like '*-cable1') {
+        foreach ($player in 1..4) {
+            foreach ($suffix in @('', '_btn', '_axis', '_mbtn')) {
+                $values["input_player${player}_r3${suffix}"] = 'nul'
+            }
+        }
+    }
     $configText = ''
     foreach ($key in $values.Keys) { $configText += "$key = $(ConvertTo-ConfigValue $values[$key])`n" }
     $configText += $baseText
@@ -696,11 +910,11 @@ function Initialize-NativeSession($Session, [string]$Executable, [string]$Root) 
     if ($Session.profile.subsystem) { $arguments += @('--subsystem', $Session.profile.subsystem) }
     $arguments += $romPaths
     $viewFile = ''
-    if ($Session.profile.id -eq 'mgba_splitscreen') {
+    if ($Session.profile.id -in @('sameboy', 'mgba_splitscreen')) {
         $viewFile = Join-Path $directory 'player-view.txt'
         [IO.File]::WriteAllText($viewFile, '0', [Text.Encoding]::ASCII)
     }
-    return [PSCustomObject]@{ Directory = $directory; Arguments = $arguments; Executable = $Executable; ViewFile = $viewFile }
+    return [PSCustomObject]@{ Directory = $directory; Arguments = $arguments; Executable = $Executable; ViewFile = $viewFile; CommandPort = $commandPort }
 }
 
 if ($LibraryOnly) { return }
@@ -724,7 +938,7 @@ try {
     }
     $session = Wait-SessionManifest $session $SessionRoot
     Assert-Session $session
-    $RetroArch = Resolve-RetroArch $RetroArch $SessionRoot $session.platform $packageRoot
+    $RetroArch = Resolve-RetroArch $RetroArch $SessionRoot $session.platform $packageRoot (Get-MinimumRetroArchVersion $session)
     Assert-Session $session
     Write-Host 'Preparing matched core and cartridges...'
     $launch = Initialize-NativeSession $session $RetroArch $SessionRoot
@@ -732,18 +946,12 @@ try {
     Write-Host "Session files and log: $($launch.Directory)"
     if (-not $PrepareOnly) {
         $tunnel = Start-NativeTunnel $session.connection $launch.ViewFile
-        $launch.Arguments[$launch.Arguments.IndexOf('--connect') + 1] = '127.0.0.1'
-        $launch.Arguments[$launch.Arguments.IndexOf('--port') + 1] = [string]$tunnel.Port
-        $start = New-Object Diagnostics.ProcessStartInfo
-        $start.FileName = $RetroArch
-        $start.WorkingDirectory = Split-Path -Parent $RetroArch
-        $start.UseShellExecute = $false
-        if ($launch.ViewFile) { $start.EnvironmentVariables['ROMM_NETPLAY_PLAYER_FILE'] = $launch.ViewFile }
-        $start.Arguments = ($launch.Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
         try {
-            $process = [Diagnostics.Process]::Start($start)
+            $start = New-NativeProcessStartInfo $launch $tunnel.Port
+            $process = Start-NativeProcess $start $launch.ViewFile
+            $tunnel.AttachControl($launch.CommandPort)
             Write-Host 'Choose your player number in the RomM room. The host starts the game.'
-            if ($launch.ViewFile) { Write-Host 'mGBA waits on a blank screen until game start, then shows only your assigned screen and audio.' }
+            if ($launch.ViewFile) { Write-Host 'The link core waits on a blank screen until game start, then shows only your assigned screen and audio.' }
             $process.WaitForExit()
         } finally { $tunnel.Dispose() }
         if ($tunnel.Error) { throw $tunnel.Error }

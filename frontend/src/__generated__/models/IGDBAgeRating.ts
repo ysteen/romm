@@ -7,3 +7,4 @@ export type IGDBAgeRating = {
     category: string;
     rating_cover_url: string;
 };
+

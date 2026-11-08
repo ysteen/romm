@@ -41,3 +41,4 @@ export type Body_update_rom_api_roms__id__put = {
     url_cover?: (string | null);
     url_manual?: (string | null);
 };
+

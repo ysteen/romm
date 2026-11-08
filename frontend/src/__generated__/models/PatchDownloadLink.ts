@@ -6,3 +6,4 @@ export type PatchDownloadLink = {
     path: string;
     expires_at: number;
 };
+

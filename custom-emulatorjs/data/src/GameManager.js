@@ -311,7 +311,32 @@ class EJS_GameManager {
         cfg += option.name + " = " + value + "\n";
       });
     }
+    if (
+      this.EJS.getCore() === "sameboy" &&
+      !this.EJS.retroarchOpts?.some(
+        (option) => option.name === "audio_out_rate",
+      )
+    ) {
+      // SameBoy reads its target rate before the audio driver opens the device.
+      cfg += "audio_out_rate = " + this.getAudioOutputSampleRate() + "\n";
+    }
     return cfg;
+  }
+  getAudioOutputSampleRate() {
+    if (this.audioOutputSampleRate) return this.audioOutputSampleRate;
+    let rate = 48000;
+    const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (Context) {
+      try {
+        const context = new Context();
+        if (context.sampleRate > 8000 && context.sampleRate <= 384000) {
+          rate = context.sampleRate;
+        }
+        void Promise.resolve(context.close()).catch(() => {});
+      } catch {}
+    }
+    this.audioOutputSampleRate = rate;
+    return rate;
   }
   writeBootupBatchFile() {
     const data = `

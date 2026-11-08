@@ -9,3 +9,4 @@ export type Body_remove_hidden_entity_api_permissions_hidden_delete = {
     user_id?: (number | null);
     group_id?: (number | null);
 };
+

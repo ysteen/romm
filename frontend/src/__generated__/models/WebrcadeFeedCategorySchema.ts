@@ -11,3 +11,4 @@ export type WebrcadeFeedCategorySchema = {
     description?: string;
     items: Array<WebrcadeFeedItemSchema>;
 };
+

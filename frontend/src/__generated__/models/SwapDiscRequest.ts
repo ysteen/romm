@@ -5,3 +5,4 @@
 export type SwapDiscRequest = {
     file_id: number;
 };
+

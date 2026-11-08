@@ -1,0 +1,129 @@
+{
+  "services": {
+    "database": {
+      "image": "mariadb:11.4",
+      "restart": "unless-stopped",
+      "pull_policy": "never",
+      "environment": {
+        "MARIADB_ROOT_PASSWORD": "${DB_ROOT_PASSWORD:?Run install.py init}",
+        "MARIADB_DATABASE": "romm",
+        "MARIADB_USER": "romm",
+        "MARIADB_PASSWORD": "${DB_PASSWORD:?Run install.py init}"
+      },
+      "volumes": ["${ROMM_DATA_DIR:-./data}/mysql:/var/lib/mysql"],
+      "healthcheck": {
+        "test": ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"],
+        "start_period": "30s",
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 30
+      }
+    },
+    "romm": {
+      "image": "unset-romm-image",
+      "restart": "unless-stopped",
+      "pull_policy": "never",
+      "environment": {
+        "DB_HOST": "database",
+        "DB_NAME": "romm",
+        "DB_USER": "romm",
+        "DB_PASSWD": "${DB_PASSWORD:?Run install.py init}",
+        "ROMM_AUTH_SECRET_KEY": "${ROMM_AUTH_SECRET_KEY:?Run install.py init}",
+        "DISABLE_JSDOS": "true",
+        "ROMFORGE_ENABLED": "false",
+        "HASHEOUS_API_ENABLED": "true",
+        "TZ": "${TZ:-Asia/Seoul}",
+        "NETPLAY_BRIDGE_URL": "http://netplay-bridge:8080",
+        "NETPLAY_BRIDGE_TOKEN": "${NETPLAY_BRIDGE_TOKEN:?Run install.py init}",
+        "NETPLAY_BRIDGE_PUBLIC_URL": "${NETPLAY_BRIDGE_PUBLIC_URL:?Run install.py init}",
+        "NETPLAY_BRIDGE_PUBLIC_HOST": "${NETPLAY_BRIDGE_PUBLIC_HOST:?Run install.py init}"
+      },
+      "volumes": [
+        "${ROMM_DATA_DIR:-./data}/library:/romm/library",
+        "${ROMM_DATA_DIR:-./data}/assets:/romm/assets",
+        "${ROMM_DATA_DIR:-./data}/config:/romm/config",
+        "${ROMM_DATA_DIR:-./data}/resources:/romm/resources",
+        "${ROMM_DATA_DIR:-./data}/redis-data:/redis-data"
+      ],
+      "ports": ["127.0.0.1:${ROMM_PORT:-8080}:8080"],
+      "depends_on": {
+        "database": {
+          "condition": "service_healthy"
+        },
+        "netplay-bridge": {
+          "condition": "service_healthy"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/heartbeat',timeout=5).read()"
+        ],
+        "start_period": "60s",
+        "interval": "10s",
+        "timeout": "10s",
+        "retries": 30
+      }
+    },
+    "netplay-bridge": {
+      "image": "unset-bridge-image",
+      "init": true,
+      "restart": "unless-stopped",
+      "pull_policy": "never",
+      "read_only": true,
+      "mem_limit": "256m",
+      "cpus": 1,
+      "security_opt": ["no-new-privileges:true"],
+      "cap_drop": ["ALL"],
+      "environment": {
+        "NETPLAY_BRIDGE_ADMIN_TOKEN": "${NETPLAY_BRIDGE_TOKEN:?Run install.py init}",
+        "NETPLAY_BRIDGE_ORIGINS": "${ROMM_ORIGIN:?Run install.py init}",
+        "NETPLAY_BRIDGE_SAVE_DIR": "/data/saves"
+      },
+      "volumes": ["netplay-saves:/data/saves"],
+      "ports": [
+        "127.0.0.1:${BRIDGE_PORT:-8082}:8080",
+        "${NETPLAY_BRIDGE_TCP_BIND:-0.0.0.0}:55435-55442:55435-55442"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ],
+        "interval": "10s",
+        "timeout": "3s",
+        "retries": 10
+      },
+      "depends_on": {
+        "save-init": {
+          "condition": "service_completed_successfully"
+        }
+      }
+    },
+    "save-init": {
+      "image": "unset-bridge-image",
+      "pull_policy": "never",
+      "restart": "no",
+      "network_mode": "none",
+      "user": "0:0",
+      "read_only": true,
+      "mem_limit": "64m",
+      "cpus": 0.5,
+      "cap_drop": ["ALL"],
+      "cap_add": ["CHOWN"],
+      "volumes": ["netplay-saves:/data/saves"],
+      "entrypoint": [
+        "node",
+        "-e",
+        "const fs=require('fs'); fs.mkdirSync('/data/saves',{recursive:true}); fs.chownSync('/data/saves',1000,1000);"
+      ]
+    }
+  },
+  "volumes": {
+    "netplay-saves": {}
+  }
+}

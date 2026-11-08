@@ -107,6 +107,13 @@ server {
         proxy_pass http://wsgi_server$easyrpg_backend_uri;
     }
 
+    location = /assets/emulatorjs/input-netplay/admin.html {
+        absolute_redirect off;
+        return 302 /api/netplay/bridge/admin/ui/;
+    }
+    location = /assets/emulatorjs/input-netplay/admin.js { return 410; }
+    location = /assets/emulatorjs/input-netplay/admin.css { return 410; }
+
     # Everything else under /assets keeps a stable URL across image upgrades
     location /assets {
         add_header Cache-Control $assets_cache_control;

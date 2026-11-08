@@ -41,3 +41,4 @@ export type RomUserData = {
      */
     pinned_media?: (Array<string> | null);
 };
+

@@ -8,3 +8,4 @@ export type Body_create_user_from_invite_api_users_register_post = {
     password: string;
     token: string;
 };
+

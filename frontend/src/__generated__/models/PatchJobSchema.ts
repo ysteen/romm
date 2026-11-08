@@ -13,3 +13,4 @@ export type PatchJobSchema = {
     output_file_name?: (string | null);
     error?: (string | null);
 };
+

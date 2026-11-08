@@ -16,3 +16,4 @@ export type GenericTaskStatusResponse = {
     task_type: string;
     meta: GenericTaskMeta;
 };
+

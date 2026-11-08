@@ -9,3 +9,4 @@ export type AppriseUrlFieldsSchema = {
     service: string;
     fields: Record<string, (boolean | number | string | Array<string>)>;
 };
+

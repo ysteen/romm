@@ -1,4 +1,7 @@
-from typing import Literal, Self
+import ipaddress
+import re
+from typing import Any, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -19,6 +22,71 @@ BRIDGE_CORE_NAMES = {
 class BridgeConfigResponse(BaseModel):
     enabled: bool
     player_url: str = "/assets/emulatorjs/input-netplay/bridge.html"
+
+
+class BridgeRuntimeSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    roomsEnabled: bool = Field(strict=True)
+    maxRooms: int = Field(ge=1, le=8, strict=True)
+    saveIntervalSeconds: int = Field(ge=5, le=120, strict=True)
+
+
+class BridgeNetworkSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    public_url: str = Field(default="", max_length=2048)
+    native_host: str = Field(default="", max_length=255)
+
+    @field_validator("public_url")
+    @classmethod
+    def validate_public_url(cls, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or any(ord(char) <= 32 or char == "\\" for char in value)
+        ):
+            raise ValueError(
+                "Use an HTTP or HTTPS address without credentials, query or fragment"
+            )
+        _ = parsed.port
+        return value.rstrip("/")
+
+    @field_validator("native_host")
+    @classmethod
+    def validate_native_host(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", value):
+                raise ValueError(
+                    "Use a hostname or IP address without a port"
+                ) from None
+        return value
+
+
+class BridgeAdminContextResponse(BaseModel):
+    application_name: str
+    application_url: str
+    csrf_cookie: str
+    csrf_header: str
+
+
+class BridgeAdminResponse(BaseModel):
+    username: str
+    public_url: str
+    native_host: str
+    internal_url: str
+    network: BridgeNetworkSettings
+    defaults: BridgeNetworkSettings
+    broker: dict[str, Any]
 
 
 class BridgeIdentity(BaseModel):
@@ -58,6 +126,8 @@ class BridgeRoomRequest(BridgeIdentity):
     maxPrediction: int = Field(default=0, ge=0, le=30, strict=True)
     cartridges: list[BridgeCartridge] | None = Field(default=None, max_length=4)
     collectCartridges: bool = False
+    disconnectPolicy: Literal["continue", "pause"] = "continue"
+    saveSize: int | None = Field(default=None, ge=0, le=131072, strict=True)
 
     @field_validator("coreVersion")
     @classmethod
@@ -157,9 +227,16 @@ class BridgeNativeSeatRequest(BaseModel):
 
 
 class BridgeControlRequest(BaseModel):
-    action: Literal["start", "assign", "kick"]
+    action: Literal["start", "assign", "kick", "disconnect-policy"]
+    disconnectPolicy: Literal["continue", "pause"] | None = None
     player: int | None = Field(default=None, ge=0, le=3, strict=True)
     seat: int | None = Field(default=None, ge=0, le=3, strict=True)
+
+    @model_validator(mode="after")
+    def validate_disconnect_policy(self) -> Self:
+        if self.action == "disconnect-policy" and self.disconnectPolicy is None:
+            raise ValueError("Choose a disconnect policy")
+        return self
 
 
 class BridgeNativeSaveRequest(BaseModel):
@@ -180,6 +257,14 @@ class BridgeMember(BaseModel):
     ready: bool
     playing: bool
     ping: int | None = None
+    waitingForNewGame: bool = False
+
+
+class BridgeSaveStatus(BaseModel):
+    enabled: bool = False
+    pending: int = 0
+    synced: bool = False
+    error: str | None = None
 
 
 class BridgeRoomResponse(BaseModel):
@@ -208,4 +293,8 @@ class BridgeRoomResponse(BaseModel):
     starting: bool = False
     can_start: bool = False
     native_authority: bool = False
+    disconnect_policy: Literal["continue", "pause"] = "continue"
+    waiting_for_players: list[int] = Field(default_factory=list)
     save_host: int | None = None
+    requires_new_game: bool = False
+    saves: BridgeSaveStatus = Field(default_factory=BridgeSaveStatus)

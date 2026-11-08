@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - custom/netplay-retroarch-bridge
+      - feature/ds-wfc
   pull_request:
     paths:
       - "custom-emulatorjs/data/src/bridge-*.js"
@@ -56,6 +57,6 @@ jobs:
             --output type=local,dest=/tmp/rollback-assets .
           test -f /tmp/rollback-assets/src/bridge-session.js
           test -f /tmp/rollback-assets/src/bridge-profile.js
-          test -f /tmp/rollback-assets/cores/compat/rollback/sameboy-sbr2/BUILD.txt
-          test -f /tmp/rollback-assets/cores/compat/rollback/mgba-spst4/BUILD.txt
+          test -f /tmp/rollback-assets/cores/compat/rollback/sameboy-sbr3/BUILD.txt
+          test -f /tmp/rollback-assets/cores/compat/rollback/mgba-spst5/BUILD.txt
           test -f /tmp/rollback-assets/cores/compat/rollback/snes9x-2d4cce69/BUILD.txt

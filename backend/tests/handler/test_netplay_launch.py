@@ -22,7 +22,17 @@ from endpoints.responses.netplay_bridge import (
 )
 from handler import netplay_bridge_handler as bridge
 from handler import netplay_launch_handler as launch
+from handler import netplay_save_handler as server_saves
+from handler import netplay_settings_handler as settings
 from utils.context import ctx_aiohttp_session
+
+
+@pytest.fixture(autouse=True)
+def isolated_server_save_grants(mocker):
+    from fakeredis import FakeRedis
+
+    mocker.patch.object(server_saves, "redis_client", FakeRedis())
+    mocker.patch.object(settings, "redis_client", FakeRedis())
 
 
 @pytest.mark.parametrize("players", [2, 4])
@@ -496,6 +506,7 @@ async def test_native_reconnect_preserves_only_the_matching_save_grant(
         generation=2,
         seats=[0, 1],
         cartridges=[{"romId": 11}, {"romId": 12}],
+        saveOwners=[None, {"player": 1, "owner": "3", "romId": 12}],
     )
     room["members"][1].update(kind="native", playing=True)
     mocker.patch.object(redis, "lock")
@@ -505,7 +516,11 @@ async def test_native_reconnect_preserves_only_the_matching_save_grant(
     )
     mocker.patch(
         "handler.netplay_launch_handler.db_rom_handler.get_rom",
-        return_value=SimpleNamespace(id=12, platform=SimpleNamespace(fs_slug="gba")),
+        return_value=SimpleNamespace(
+            id=12,
+            fs_name_no_ext="Pokemon Emerald",
+            platform=SimpleNamespace(fs_slug="gba"),
+        ),
     )
     existing = SimpleNamespace(id=55, content_hash=grant["content_hash"])
     mocker.patch(
@@ -559,6 +574,7 @@ async def test_confirmed_save_uses_native_account_and_rejects_stale_updates(mock
         "seats": [0, 1],
         "members": [{"player": 1, "owner": "3", "kind": "native", "playing": True}],
         "cartridges": [{"romId": 11}, {"romId": 12}],
+        "saveOwners": [None, {"player": 1, "owner": "3", "romId": 12}],
     }
     grant = {
         "owner": "3",
@@ -577,7 +593,9 @@ async def test_confirmed_save_uses_native_account_and_rejects_stale_updates(mock
     )
     mocker.patch.object(launch.redis_client, "lock")
     user = SimpleNamespace(id=3)
-    rom = SimpleNamespace(id=12, platform=SimpleNamespace(fs_slug="gba"))
+    rom = SimpleNamespace(
+        id=12, fs_name_no_ext="Pokemon Emerald", platform=SimpleNamespace(fs_slug="gba")
+    )
     mocker.patch.object(launch.db_user_handler, "get_user", return_value=user)
     mocker.patch.object(launch.db_rom_handler, "get_rom", return_value=rom)
     mocker.patch.object(
@@ -594,6 +612,11 @@ async def test_confirmed_save_uses_native_account_and_rejects_stale_updates(mock
     write = mocker.patch.object(
         launch.fs_asset_handler, "write_file", new_callable=AsyncMock
     )
+    mocker.patch.object(
+        launch,
+        "reserve_version_name",
+        AsyncMock(return_value="Pokemon Emerald [2026-11-07_23-00-00].srm"),
+    )
     scanned = SimpleNamespace(file_size_bytes=3, content_hash="hash")
     mocker.patch.object(launch, "scan_save", AsyncMock(return_value=scanned))
     body = BridgeNativeSaveRequest(
@@ -603,7 +626,7 @@ async def test_confirmed_save_uses_native_account_and_rejects_stale_updates(mock
     assert write.call_args.args == (
         b"\x01\x02\x03",
         "account-3/rom-12",
-        "room-room-1-p2.srm",
+        "Pokemon Emerald [2026-11-07_23-00-00].srm",
     )
     assert add.call_args.args[0].user_id == 3
     assert add.call_args.args[0].rom_id == 12
@@ -612,3 +635,45 @@ async def test_confirmed_save_uses_native_account_and_rejects_stale_updates(mock
         await launch.save_progress(room, body.model_copy(update={"frame": 59}))
     assert error.value.status_code == 409
     write.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        None,
+        {"player": 1, "owner": "old-owner", "romId": 12},
+        {"player": 0, "owner": "3", "romId": 12},
+        {"player": 1, "owner": "3", "romId": 99},
+    ],
+)
+async def test_confirmed_save_rejects_reassigned_slot_ownership(mocker, original):
+    room = {
+        "id": "room-1",
+        "system": "gba",
+        "players": 2,
+        "generation": 2,
+        "seats": [0, 1],
+        "members": [{"player": 1, "owner": "3", "kind": "native", "playing": True}],
+        "cartridges": [{"romId": 11}, {"romId": 12}],
+        "saveOwners": [None, original],
+    }
+    grant = {
+        "owner": "3",
+        "rom_id": 12,
+        "core": "mgba_splitscreen",
+        "generation": 1,
+        "frame": 0,
+    }
+    mocker.patch.object(launch.redis_client, "get", return_value=json.dumps(grant))
+    mocker.patch.object(launch.redis_client, "lock")
+    write = mocker.patch.object(
+        launch.fs_asset_handler, "write_file", new_callable=AsyncMock
+    )
+    body = BridgeNativeSaveRequest(
+        player=1, owner="3", generation=2, frame=60, battery="AQID"
+    )
+    with pytest.raises(HTTPException) as error:
+        await launch.save_progress(room, body)
+    assert error.value.status_code == 409
+    assert "original player" in error.value.detail
+    write.assert_not_awaited()

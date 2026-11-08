@@ -7,3 +7,4 @@ export type SystemDict = {
     GIT_BRANCH: (string | null);
     SHOW_SETUP_WIZARD: boolean;
 };
+

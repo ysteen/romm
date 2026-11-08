@@ -12,3 +12,4 @@ export type SyncNegotiateResponse = {
     total_no_op: number;
     total_delete: number;
 };
+

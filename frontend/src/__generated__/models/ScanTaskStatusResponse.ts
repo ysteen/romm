@@ -16,3 +16,4 @@ export type ScanTaskStatusResponse = {
     task_type: string;
     meta: ScanTaskMeta;
 };
+

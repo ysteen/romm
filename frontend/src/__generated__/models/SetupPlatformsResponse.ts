@@ -7,3 +7,4 @@ export type SetupPlatformsResponse = {
     created_count: number;
     message: string;
 };
+

@@ -18,3 +18,4 @@ export type PermissionGroupSchema = {
     age_limit?: (number | null);
     hide_unrated_roms?: boolean;
 };
+

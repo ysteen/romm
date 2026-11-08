@@ -7,3 +7,4 @@ export type InstallRequestUpdatePayload = {
     status: InstallStatus;
     reason?: (string | null);
 };
+

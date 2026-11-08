@@ -12,5 +12,6 @@ export type BridgeMember = {
     ready: boolean;
     playing: boolean;
     ping?: (number | null);
+    waitingForNewGame?: boolean;
 };
 

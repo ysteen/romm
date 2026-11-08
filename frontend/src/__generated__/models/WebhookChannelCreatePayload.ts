@@ -12,3 +12,4 @@ export type WebhookChannelCreatePayload = {
     url: string;
     secret?: (string | null);
 };
+

@@ -6,3 +6,4 @@ export type PouetCredit = {
     name?: string;
     role?: string;
 };
+

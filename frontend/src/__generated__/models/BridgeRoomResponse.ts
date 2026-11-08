@@ -4,6 +4,7 @@
 /* eslint-disable */
 import type { BridgeCartridge } from './BridgeCartridge';
 import type { BridgeMember } from './BridgeMember';
+import type { BridgeSaveStatus } from './BridgeSaveStatus';
 export type BridgeRoomResponse = {
     id: string;
     rom_id: number;
@@ -30,6 +31,10 @@ export type BridgeRoomResponse = {
     starting?: boolean;
     can_start?: boolean;
     native_authority?: boolean;
+    disconnect_policy?: 'continue' | 'pause';
+    waiting_for_players?: Array<number>;
     save_host?: (number | null);
+    requires_new_game?: boolean;
+    saves?: BridgeSaveStatus;
 };
 

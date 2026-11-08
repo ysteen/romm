@@ -16,3 +16,4 @@ export type SyncTaskStatusResponse = {
     task_type: string;
     meta: SyncTaskMeta;
 };
+

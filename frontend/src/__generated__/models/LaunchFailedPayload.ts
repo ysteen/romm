@@ -14,3 +14,4 @@ export type LaunchFailedPayload = {
     refusals?: (Array<ImportRefusalSchema> | null);
     refusals_truncated?: number;
 };
+

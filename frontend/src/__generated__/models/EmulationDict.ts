@@ -9,3 +9,4 @@ export type EmulationDict = {
     DISABLE_PICO8: boolean;
     DISABLE_EASYRPG: boolean;
 };
+

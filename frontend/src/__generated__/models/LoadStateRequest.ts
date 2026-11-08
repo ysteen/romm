@@ -5,3 +5,4 @@
 export type LoadStateRequest = {
     slot?: number;
 };
+

@@ -16,3 +16,4 @@ export type DeviceAuthInitResponse = {
     expires_in: number;
     interval: number;
 };
+

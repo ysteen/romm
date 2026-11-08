@@ -10,3 +10,4 @@ export type Body_add_smart_collection_api_collections_smart_post = {
      */
     filter_criteria?: string;
 };
+

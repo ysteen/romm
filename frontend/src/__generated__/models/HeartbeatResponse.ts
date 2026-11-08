@@ -24,3 +24,4 @@ export type HeartbeatResponse = {
     CONVERTO: ConvertoDict;
     TASKS: TasksDict;
 };
+

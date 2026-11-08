@@ -20,3 +20,4 @@ export type VirtualCollectionSchema = {
     type: string;
     readonly rom_count: number;
 };
+

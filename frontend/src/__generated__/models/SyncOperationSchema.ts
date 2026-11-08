@@ -40,3 +40,4 @@ export type SyncOperationSchema = {
      */
     server_content_hash?: (string | null);
 };
+

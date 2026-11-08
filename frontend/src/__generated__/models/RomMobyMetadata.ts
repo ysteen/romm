@@ -9,3 +9,4 @@ export type RomMobyMetadata = {
     alternate_titles?: Array<string>;
     platforms?: Array<MobyMetadataPlatform>;
 };
+

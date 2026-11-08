@@ -18,3 +18,4 @@ export type DeviceCreatePayload = {
     allow_duplicate?: boolean;
     reset_syncs?: boolean;
 };
+

@@ -8,3 +8,4 @@
 export type NotificationIdsPayload = {
     ids?: (Array<number> | null);
 };
+

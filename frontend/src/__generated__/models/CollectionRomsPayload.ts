@@ -5,3 +5,4 @@
 export type CollectionRomsPayload = {
     rom_ids: Array<number>;
 };
+

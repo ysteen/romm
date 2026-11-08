@@ -8,6 +8,9 @@ services:
     environment:
       NETPLAY_BRIDGE_ADMIN_TOKEN: ${NETPLAY_BRIDGE_TOKEN:?Set a shared token of at least 24 characters}
       NETPLAY_BRIDGE_ORIGINS: ${NETPLAY_BRIDGE_ORIGINS:-}
+      NETPLAY_BRIDGE_SAVE_DIR: /data/saves
+    volumes:
+      - netplay-saves:/data/saves
     ports:
       - "${NETPLAY_BRIDGE_HTTP_BIND:-127.0.0.1}:8082:8080"
       - "${NETPLAY_BRIDGE_TCP_BIND:-127.0.0.1}:55435-55442:55435-55442"
@@ -18,3 +21,6 @@ services:
       - ALL
     mem_limit: 256m
     cpus: 1
+
+volumes:
+  netplay-saves:

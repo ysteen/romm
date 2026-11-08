@@ -5,3 +5,4 @@
 export type InstallRequestCreatePayload = {
     rom_id: number;
 };
+

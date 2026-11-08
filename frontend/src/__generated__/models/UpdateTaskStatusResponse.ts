@@ -16,3 +16,4 @@ export type UpdateTaskStatusResponse = {
     task_type: string;
     meta: UpdateTaskMeta;
 };
+

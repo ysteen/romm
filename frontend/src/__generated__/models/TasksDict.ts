@@ -12,3 +12,4 @@ export type TasksDict = {
     ENABLE_SCHEDULED_CONVERT_IMAGES_TO_WEBP: boolean;
     SCHEDULED_CONVERT_IMAGES_TO_WEBP_CRON: string;
 };
+

@@ -7,3 +7,4 @@ export type SteamPlatforms = {
     mac: boolean;
     linux: boolean;
 };
+

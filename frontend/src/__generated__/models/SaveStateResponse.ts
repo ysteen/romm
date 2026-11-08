@@ -7,3 +7,4 @@ export type SaveStateResponse = {
     slot: number;
     platform: string;
 };
+

@@ -14,3 +14,4 @@ export type PlaySessionSchema = {
     created_at: string;
     updated_at: string;
 };
+

@@ -7,3 +7,4 @@ export type SaveSummarySchema = {
     total_count: number;
     slots: Array<SlotSummarySchema>;
 };
+

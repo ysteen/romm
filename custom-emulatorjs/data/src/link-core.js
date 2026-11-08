@@ -1,3 +1,13 @@
+export const CABLE_INPUT = 0x8000;
+export const CABLE_INPUT_PROFILE = "link-cable-r3-v1";
+
+export function cableInputProfile(coreName, coreVersion) {
+  return (coreName === "SameBoy" && coreVersion === "1.0.4c87d256-cable1") ||
+    (coreName === "mGBA Splitscreen" && coreVersion === "0.1.0-f1d5975-cable1")
+    ? CABLE_INPUT_PROFILE
+    : null;
+}
+
 const profiles = {
   sameboy: {
     core: "sameboy",

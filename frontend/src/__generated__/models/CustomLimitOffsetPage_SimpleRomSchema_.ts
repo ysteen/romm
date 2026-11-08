@@ -13,3 +13,4 @@ export type CustomLimitOffsetPage_SimpleRomSchema_ = {
     rom_id_index: Array<number>;
     filter_values: RomFiltersDict;
 };
+

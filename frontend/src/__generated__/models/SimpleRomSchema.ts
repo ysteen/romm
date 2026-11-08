@@ -111,3 +111,4 @@ export type SimpleRomSchema = {
     sibling_roms: Array<SiblingRomSchema>;
     screenshot_path?: (string | null);
 };
+

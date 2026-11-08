@@ -328,7 +328,8 @@ try {
           guest.on("pageerror", (error) => errors.push(error.message));
           await guest.goto(invite);
           await guest.waitForFunction(
-            () => document.querySelector("#rooms").value.length > 0,
+            () =>
+              !!document.querySelector('[data-room-id][aria-pressed="true"]'),
           );
           assert(await guest.locator("#join-password-label").isHidden());
           await guest.locator("#join").tap();

@@ -9,3 +9,4 @@ export type FacetValueSchema = {
     value: (string | number);
     count: number;
 };
+

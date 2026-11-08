@@ -10,6 +10,9 @@ const output = resolve(
   process.env.ROOM_UI_OUTPUT ?? "../result/netplay-interop/mgba-multi-rom/ui",
 );
 await mkdir(output, { recursive: true });
+const mgbaCoreVersion = JSON.parse(
+  await readFile(resolve(root, "input-netplay/bridge-cores.json"), "utf8"),
+).mgba_splitscreen.web.coreVersion;
 const roms = [11, 12].map((id, i) => ({
   id,
   name: `Fixture ${i + 1}`,
@@ -43,6 +46,7 @@ const cartridges = roms.map((r) => ({
   size: 32768,
   crc32: 1,
 }));
+let roomListMode = "normal";
 let room,
   ticketClaimed,
   ticketRequests,
@@ -52,6 +56,7 @@ let room,
   nativeSaveRequests = 0,
   membershipLeaves = 0;
 function reset() {
+  roomListMode = "normal";
   ticketClaimed = false;
   ticketRequests = 0;
   requestedBattery = null;
@@ -87,7 +92,7 @@ function reset() {
     started: false,
     has_password: false,
     core_name: "mGBA Splitscreen",
-    core_version: "0.1.0-f1d5975-rollback2",
+    core_version: mgbaCoreVersion,
     state_size: 1450144,
     content_crc: 1,
   };
@@ -137,7 +142,22 @@ const server = createServer(async (req, res) => {
           native_port: 55435,
           native_host: "localhost",
         };
-      } else data = [room];
+      } else {
+        if (roomListMode === "error") {
+          res.writeHead(503, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              detail: "Room list is temporarily unavailable",
+            }),
+          );
+          return;
+        }
+        data =
+          roomListMode === "empty"
+            ? []
+            : roomListMode === "full"
+              ? [{ ...room, current: room.players }]
+              : [room];
+      }
     } else if (url.pathname.endsWith("/join")) {
       room.members.push({
         player: 1,
@@ -198,6 +218,8 @@ const server = createServer(async (req, res) => {
             }
           : { status: "waiting", session: null };
       }
+    } else if (url.pathname.endsWith("/saves/sync")) {
+      data = { saved: 2, pending: 0 };
     } else if (url.pathname.endsWith("/native/saves")) {
       nativeSaveRequests++;
       res
@@ -482,7 +504,32 @@ try {
         );
       }
       await page.setViewportSize({ width: 1100, height: 850 });
-      await page.selectOption("#rooms", "test-room");
+      roomListMode = "empty";
+      await page.locator("#refresh").click();
+      await page.locator("#rooms-empty").waitFor({ state: "visible" });
+      assert(await page.locator("#join").isDisabled());
+      roomListMode = "full";
+      await page.locator("#refresh").click();
+      await page.locator('[data-room-id="test-room"]:disabled').waitFor();
+      roomListMode = "error";
+      await page.locator("#refresh").click();
+      await page
+        .locator("#room-count")
+        .filter({ hasText: "Could not refresh" })
+        .waitFor();
+      roomListMode = "normal";
+      await page.locator("#refresh").click();
+      await page.locator('[data-room-id="test-room"]:enabled').waitFor();
+      const listedRoom = page.locator('[data-room-id="test-room"]');
+      assert.match(await listedRoom.innerText(), /Fixture 1/);
+      assert.match(await listedRoom.innerText(), /Host.*Alice/);
+      assert.equal(await page.locator("select#rooms").count(), 0);
+      if (theme === "dark") await listedRoom.tap();
+      else {
+        await listedRoom.focus();
+        await page.keyboard.press("Enter");
+      }
+      assert.equal(await listedRoom.getAttribute("aria-pressed"), "true");
       assert.equal(
         await page.locator("#join-cartridge, #cartridge-selection").count(),
         0,
@@ -498,6 +545,23 @@ try {
         await page.keyboard.press("Enter");
       }
       await page.selectOption("#native-platform", "windows-x86_64");
+      assert.match(
+        await page.locator("#native-details").innerText(),
+        /No manual core installation is needed/,
+      );
+      assert(await page.locator("#core-download").isHidden());
+      const manualSetup = page.locator("#manual-core-details > summary");
+      if (theme === "dark") await manualSetup.tap();
+      else {
+        await manualSetup.focus();
+        await page.keyboard.press("Enter");
+      }
+      assert(await page.locator("#core-download").isVisible());
+      await page.screenshot({
+        path: resolve(output, `launcher-setup-${theme}.png`),
+      });
+      await manualSetup.click();
+      assert(await page.locator("#core-download").isHidden());
       const download = page.waitForEvent("download");
       await page.locator("#native-launcher").click();
       await download;
@@ -512,14 +576,17 @@ try {
         theme === "light" ? [51] : [],
         "Room entry changed the save selected before joining",
       );
-      await page.evaluate((cartridges) => {
-        window.bridgeConnection.socket.message({
-          t: "content",
-          cartridges,
-          contentCrc: 1,
-          coreVersion: "0.1.0-f1d5975-rollback2",
-        });
-      }, cartridges);
+      await page.evaluate(
+        ({ cartridges, coreVersion }) => {
+          window.bridgeConnection.socket.message({
+            t: "content",
+            cartridges,
+            contentCrc: 1,
+            coreVersion,
+          });
+        },
+        { cartridges, coreVersion: mgbaCoreVersion },
+      );
       await page.locator('[data-player="1"]').selectOption("1");
       assert.equal(await page.locator("#screen iframe").count(), 0);
       assert(await page.locator("#join-game").isDisabled());
@@ -572,7 +639,7 @@ try {
       await page.waitForFunction(() =>
         document
           .querySelector("#participants")
-          .textContent.includes("Cartridge: Fixture 2"),
+          .textContent.includes("Fixture 2"),
       );
       assert.equal(
         await page.getByRole("button", { name: /^Remove / }).count(),
@@ -732,7 +799,7 @@ try {
       await host.waitForFunction(() =>
         document
           .querySelector("#participants")
-          .textContent.includes("Cartridge: Fixture 2"),
+          .textContent.includes("Fixture 2"),
       );
       assert.equal(
         await host.locator("#participants select:enabled").count(),
@@ -766,15 +833,18 @@ try {
       await host.selectOption("#play-client", "web");
       assert.equal(await host.locator("#screen iframe").count(), 0);
       await host.locator("#join-game").click();
-      await host.evaluate((cartridges) => {
-        const socket = window.bridgeConnection.socket;
-        socket.message({
-          t: "content",
-          cartridges,
-          contentCrc: cartridges[0].crc32,
-          coreVersion: "0.1.0-f1d5975-rollback2",
-        });
-      }, room.cartridges);
+      await host.evaluate(
+        ({ cartridges, coreVersion }) => {
+          const socket = window.bridgeConnection.socket;
+          socket.message({
+            t: "content",
+            cartridges,
+            contentCrc: cartridges[0].crc32,
+            coreVersion,
+          });
+        },
+        { cartridges: room.cartridges, coreVersion: mgbaCoreVersion },
+      );
       await host.waitForFunction(
         () =>
           document.querySelector("#screen iframe")?.contentWindow.finishBoot,
@@ -922,6 +992,45 @@ try {
         .locator("#save-status")
         .filter({ hasText: "Progress saved." })
         .waitFor({ state: "attached" });
+      const legacyUploads = nativeSaveRequests;
+      await host.evaluate(() => {
+        const link = window.bridgeConnection;
+        link.serverSaves = true;
+        window.brokerSaves = 0;
+        link.saveProgress = async () => {
+          window.brokerSaves++;
+        };
+        link.socket.message({
+          t: "save-status",
+          enabled: true,
+          pending: 2,
+          error: null,
+        });
+      });
+      assert.match(
+        await game.locator("#save-status").innerText(),
+        /stored on the server/,
+      );
+      const flushed = host.waitForResponse((response) =>
+        response.url().includes("/saves/sync"),
+      );
+      await controls.locator("button").nth(1).click();
+      assert.equal((await flushed).status(), 200);
+      assert.equal(await host.evaluate(() => window.brokerSaves), 1);
+      assert.equal(nativeSaveRequests, legacyUploads);
+      await host.evaluate(() =>
+        window.bridgeConnection.socket.message({
+          t: "save-status",
+          enabled: true,
+          pending: 0,
+          synced: true,
+          error: null,
+        }),
+      );
+      assert.match(
+        await game.locator("#save-status").innerText(),
+        /saved by the server/,
+      );
       await host.evaluate(() => {
         window.bridgeAdapter.memory = () => new Uint8Array();
       });
@@ -936,6 +1045,10 @@ try {
         await host.keyboard.press("Enter");
       }
       assert(await game.locator("#room-panel").isVisible());
+      assert(await game.locator("#save-status").isVisible());
+      await host.screenshot({
+        path: resolve(output, `${theme}-server-save-sync.png`),
+      });
       await host.evaluate(() => window.bridgeConnection.onStatus("connected"));
       assert(
         await game.locator("#room-panel").isVisible(),
@@ -1086,8 +1199,37 @@ try {
       });
       await host.evaluate(() => {
         const socket = window.bridgeConnection.socket;
+        socket.members[1].romId = 12;
+        socket.members[0].waitingForNewGame = true;
+        socket.lobby({
+          host: 0,
+          running: true,
+          requiresNewGame: true,
+          contentPrepared: true,
+          collectCartridges: true,
+          cartridges: [{ romId: 11 }, { romId: 12 }],
+          canStart: true,
+        });
+      });
+      assert(await host.locator("#join-game").isDisabled());
+      assert.match(
+        await host.locator("#join-game-help").innerText(),
+        /own save/,
+      );
+      assert.equal(
+        await host.locator("#start").innerText(),
+        "Prepare new game",
+      );
+      assert(await host.locator("#start").isEnabled());
+      assert.match(await host.locator("#lobby-status").innerText(), /own save/);
+      await host.screenshot({
+        path: resolve(output, `${theme}-waiting-for-own-save.png`),
+      });
+      await host.evaluate(() => {
+        const socket = window.bridgeConnection.socket;
+        socket.members[0].waitingForNewGame = false;
         socket.message({ t: "game-reset", generation: 5 });
-        socket.lobby({ host: 0, running: false });
+        socket.lobby({ host: 0, running: false, requiresNewGame: false });
       });
       assert(await host.locator("#join-game").isEnabled());
       assert.equal(membershipLeaves, priorLeaves);
@@ -1133,7 +1275,7 @@ try {
       await page.waitForFunction(() =>
         document
           .querySelector("#participants")
-          .textContent.includes("Cartridge: Silver fixture"),
+          .textContent.includes("Silver fixture"),
       );
       await page.locator('[data-player="0"]').selectOption("0");
       await page.locator('[data-player="1"]').selectOption("1");
@@ -1195,17 +1337,20 @@ try {
         await roomFrame.locator('[data-player="0"]').selectOption("0");
         await roomFrame.selectOption("#play-client", "web");
         await roomFrame.locator("#join-game").click();
-        await roomFrame.evaluate((cartridges) => {
-          window.open = () => {
-            throw new Error("Room play must not open a popup");
-          };
-          window.bridgeConnection.socket.message({
-            t: "content",
-            cartridges,
-            contentCrc: cartridges[0].crc32,
-            coreVersion: "0.1.0-f1d5975-rollback2",
-          });
-        }, room.cartridges);
+        await roomFrame.evaluate(
+          ({ cartridges, coreVersion }) => {
+            window.open = () => {
+              throw new Error("Room play must not open a popup");
+            };
+            window.bridgeConnection.socket.message({
+              t: "content",
+              cartridges,
+              contentCrc: cartridges[0].crc32,
+              coreVersion,
+            });
+          },
+          { cartridges: room.cartridges, coreVersion: mgbaCoreVersion },
+        );
         await roomFrame.waitForFunction(
           () =>
             document.querySelector("#screen iframe")?.contentWindow.finishBoot,

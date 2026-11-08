@@ -22,3 +22,4 @@ export type DeviceSchema = {
     created_at: string;
     updated_at: string;
 };
+

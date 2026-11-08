@@ -46,3 +46,4 @@ export type ConfigResponse = {
     CONVERTO: ConvertoConfig;
     CONVERTO_LIBRARY_TARGETS: Record<string, Array<string>>;
 };
+

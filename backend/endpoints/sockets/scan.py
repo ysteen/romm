@@ -760,6 +760,14 @@ async def _identify_rom(
         # Keep the in-memory rom's name matching the renamed file.
         rom.fs_name = fs_rom["fs_name"]
 
+    if should_update_files:
+        # Playable files must survive metadata timeouts and cancelled scans.
+        synced = db_rom_handler.sync_rom_files(rom.id, fs_rom["files"])
+        for cover_path in synced.orphaned_cover_paths:
+            remove_persisted_cover(cover_path)
+        for saved in synced.files:
+            persist_soundtrack_cover(saved, rom)
+
     # For a COMPLETE rescan, wipe all downloaded resources before re-fetching so
     # stale files (e.g. a cover from the wrong region) can't be reused. The
     # post-scan download steps below skip downloads when a file already exists or
@@ -814,16 +822,6 @@ async def _identify_rom(
 
     if _added_rom.is_identified:
         await emit_scanning_rom(socket_manager, _added_rom, is_new=newly_added)
-
-    if should_update_files:
-        # Reconcile against the existing rows instead of replacing them, so file
-        # ids survive a rescan and anything keyed on them (track metadata,
-        # persisted soundtrack covers) stays valid.
-        synced = db_rom_handler.sync_rom_files(_added_rom.id, fs_rom["files"])
-        for cover_path in synced.orphaned_cover_paths:
-            remove_persisted_cover(cover_path)
-        for saved in synced.files:
-            persist_soundtrack_cover(saved, _added_rom)
 
     # Short circuit if the scan type is hashes
     if scan_type == ScanType.HASHES:

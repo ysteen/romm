@@ -24,3 +24,4 @@ export type NotificationChannelSchema = {
     consecutive_failures: number;
     created_at: string;
 };
+
