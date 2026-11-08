@@ -22,10 +22,16 @@ from endpoints.responses.netplay_bridge import (
     BridgeRoomResponse,
     BridgeRuntimeSettings,
 )
+from endpoints.responses.wfc import (
+    WfcSessionRequest,
+    WfcSessionResponse,
+    WfcSettingsRequest,
+)
 from exceptions.endpoint_exceptions import RomNotFoundInDatabaseException
 from handler import netplay_admin_handler as bridge_admin
 from handler import netplay_launch_handler as native_launch
 from handler import netplay_save_handler as server_saves
+from handler import wfc_handler
 from handler.auth.constants import Scope
 from handler.auth.dependencies import assert_rom_visible, can_access, get_permissions
 from handler.auth.permissions import resolve_permissions
@@ -721,3 +727,28 @@ async def delete_bridge_room(
         raise HTTPException(status_code=403, detail="Only the room owner can close it")
     await bridge_request("DELETE", f"/{room_id}")
     return Response(status_code=204)
+
+
+@protected_route(router.post, "/wfc/sessions", [Scope.ROMS_READ])
+async def create_wfc_session(
+    request: Request, response: Response, body: WfcSessionRequest
+) -> WfcSessionResponse:
+    rom = db_rom_handler.get_rom_visibility(body.rom_id)
+    if not rom:
+        raise RomNotFoundInDatabaseException(body.rom_id)
+    assert_rom_visible(request, rom)
+    if not can_access(get_permissions(request), PermEntity.EMULATION, PermAction.READ):
+        raise HTTPException(status_code=403, detail="Emulation permission required")
+    full_rom = db_rom_handler.get_rom(body.rom_id)
+    if not full_rom or full_rom.platform_slug not in ("nds", "nintendo-ds-lite"):
+        raise HTTPException(status_code=422, detail="WFC requires a Nintendo DS game")
+    response.headers["Cache-Control"] = "no-store"
+    return await wfc_handler.create_session(request.user.id)
+
+
+@protected_route(router.put, "/wfc/settings", [Scope.ME_WRITE])
+async def save_wfc_settings(
+    request: Request, response: Response, body: WfcSettingsRequest
+) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    await wfc_handler.save_settings(request.user.id, body.mac, body.firmware)
