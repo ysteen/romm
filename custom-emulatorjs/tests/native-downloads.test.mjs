@@ -145,12 +145,7 @@ test("all catalog downloads exist and match their core versions and checksums", 
     const profile = catalog[core];
     assert.deepEqual(
       Object.keys(profile.downloads).sort(),
-      targets
-        .filter(
-          (target) =>
-            core !== "mgba_splitscreen" || !target.startsWith("android-"),
-        )
-        .sort(),
+      targets.slice().sort(),
     );
     for (const [target, build] of Object.entries(profile.downloads)) {
       const url = new URL(build.path, base);
@@ -168,8 +163,8 @@ test("all catalog downloads exist and match their core versions and checksums", 
       if (core === "mgba_splitscreen") {
         const patch = await readFile(
           new URL(
-            "../data/cores/compat/rollback/mgba-spst4/mgba-native-startup.patch",
-            base,
+            "mgba-native-startup.patch",
+            new URL(profile.native.manifest, base),
           ),
         );
         assert.equal(manifest.nativeStartup, "configured-players-v1");
