@@ -39,6 +39,7 @@ declare global {
     EJS_softLoad: boolean;
     EJS_screenCapture: object;
     EJS_externalFiles: Record<string, string>;
+    EJS_loadInitialSave?: (apply: (bytes: Uint8Array) => void) => Promise<void>;
     EJS_videoRotation: number;
     EJS_fixedSaveInterval: number;
     EJS_disableCue: boolean;

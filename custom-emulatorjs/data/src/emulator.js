@@ -1398,6 +1398,14 @@ class EmulatorJS {
             // extdata. Restore after ROM selection and before the core boots.
             await this.gameManager.loadExternalFiles();
         }
+        if (this.getCore() === "melondsds" && this.config.loadInitialSave) {
+            // melonDS DS reads cartridge SRAM during content initialization.
+            const stem = this.fileName.split("/").pop().replace(/\.[^.]*$/, "");
+            await this.config.loadInitialSave(bytes => {
+                if (!bytes.length) throw new Error("The selected save is empty");
+                this.gameManager.writeFile(`/data/saves/melonDS DS/${stem}.srm`, bytes);
+            });
+        }
         this.startGame();
     }
 
@@ -1417,6 +1425,7 @@ class EmulatorJS {
             this.determineCueSettings();
             await this.startGameFromDownload(romData);
         })().catch(error => {
+            if (!this.started) this.wfcSession?.close();
             console.error("EmulatorJS startup failed", error);
             this.startGameError(error instanceof Error ? error.message : this.localization("Failed to start game"));
         });

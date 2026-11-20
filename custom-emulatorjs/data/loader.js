@@ -206,6 +206,7 @@ const config = {
     disableRestart: window.EJS_disableRestart,
     capture: window.EJS_screenCapture,
     externalFiles: window.EJS_externalFiles,
+    loadInitialSave: window.EJS_loadInitialSave,
     saveFileAdapter: window.EJS_saveFileAdapter,
     // DOSBox Pure must receive the ZIP itself so it can parse DOS.YML,
     // AUTOBOOT.DBP and disk images. RomM does not expose this 4.3 option.

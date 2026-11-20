@@ -311,6 +311,15 @@ const isDosBoxPure = ["dos", "dosbox_pure"].includes(window.EJS_core);
 const isPpsspp = window.EJS_core === "ppsspp";
 const isAzahar = window.EJS_core === "azahar";
 const usesDirectorySaveBundle = isDosBoxPure || isPpsspp || isAzahar;
+const initialBatterySave =
+  window.EJS_core === "melondsds" && !props.state ? props.save : null;
+window.EJS_loadInitialSave = initialBatterySave
+  ? async (apply) => {
+      if (!(await loadSave(initialBatterySave, apply))) {
+        throw new Error("Initial save restore was interrupted");
+      }
+    }
+  : undefined;
 // Keep DOSBox Pure packages intact. The core scans ZIP contents itself for
 // AUTOBOOT.DBP, ISO/CUE media, and disk images.
 window.EJS_dontExtractRom = isDosBoxPure;
@@ -964,7 +973,7 @@ window.EJS_onGameStart = async () => {
         );
         await loadState(props.state);
       } else if (props.save && !usesDirectorySaveBundle) {
-        await loadSave(props.save, bootEmulatorJSSave);
+        if (!initialBatterySave) await loadSave(props.save, bootEmulatorJSSave);
       } else {
         baselineSaveTrackerFromEmulator();
         if (props.save && usesDirectorySaveBundle)
