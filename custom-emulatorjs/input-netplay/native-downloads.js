@@ -75,9 +75,13 @@ export async function installNativeDownloads({
   hint,
   instructions,
   browser = navigator,
+  translate = (text, { name } = {}) =>
+    name ? text.replace("{name}", name) : text,
 }) {
   const builds = catalog.downloads || {};
-  select.replaceChildren(new Option("Choose your RetroArch platform", ""));
+  select.replaceChildren(
+    new Option(translate("Choose your RetroArch platform"), ""),
+  );
   for (const [id, build] of Object.entries(builds))
     select.append(new Option(build.label, id));
   function update() {
@@ -96,13 +100,17 @@ export async function installNativeDownloads({
     if (build) {
       download.href = versionedDownload(build);
       download.download = build.path.split("/").at(-1);
-      download.textContent = `Download core (${build.label})`;
-      hint.textContent =
-        "Match the architecture of your RetroArch app. You can change this selection if browser detection differs.";
+      download.textContent = translate("Download core ({name})", {
+        name: build.label,
+      });
+      hint.textContent = translate(
+        "Match the architecture of your RetroArch app. You can change this selection if browser detection differs.",
+      );
     } else {
       download.removeAttribute("href");
-      hint.textContent =
-        "Choose a supported platform, or join this room in your browser.";
+      hint.textContent = translate(
+        "Choose a supported platform, or join this room in your browser.",
+      );
     }
   }
   select.onchange = update;
