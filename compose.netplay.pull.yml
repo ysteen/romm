@@ -1,0 +1,49 @@
+services:
+  romm:
+    image: ${ROMM_NETPLAY_IMAGE:?Set the published RomM image ref}
+    environment:
+      NETPLAY_BRIDGE_URL: http://netplay-bridge:8080
+      NETPLAY_BRIDGE_TOKEN: ${NETPLAY_BRIDGE_TOKEN:?Set a shared token of at least 24 characters}
+      NETPLAY_BRIDGE_PUBLIC_URL: ${NETPLAY_BRIDGE_PUBLIC_URL:?Set the URL routed to the bridge}
+      NETPLAY_BRIDGE_PUBLIC_HOST: ${NETPLAY_BRIDGE_PUBLIC_HOST:-}
+    depends_on:
+      netplay-bridge:
+        condition: service_healthy
+
+  netplay-bridge:
+    image: ${NETPLAY_BRIDGE_IMAGE:?Set the matching published bridge image ref}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    mem_limit: ${NETPLAY_BRIDGE_MEMORY_LIMIT:-256m}
+    cpus: ${NETPLAY_BRIDGE_CPUS:-1}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      NETPLAY_BRIDGE_ADMIN_TOKEN: ${NETPLAY_BRIDGE_TOKEN:?Set a shared token of at least 24 characters}
+      NETPLAY_BRIDGE_ORIGINS: ${ROMM_ORIGIN:?Set the exact HTTPS origin of RomM}
+      NETPLAY_BRIDGE_SAVE_DIR: /data/saves
+    volumes:
+      - netplay-saves:/data/saves
+    ports:
+      - "${NETPLAY_BRIDGE_HTTP_BIND:-127.0.0.1}:8082:8080"
+      - "${NETPLAY_BRIDGE_TCP_BIND:-127.0.0.1}:55435-55442:55435-55442"
+    depends_on:
+      netplay-save-init:
+        condition: service_completed_successfully
+
+  netplay-save-init:
+    image: ${NETPLAY_BRIDGE_IMAGE:?Set the matching published bridge image ref}
+    network_mode: none
+    user: "0:0"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    volumes:
+      - netplay-saves:/data/saves
+    entrypoint:
+      ["node", "-e", "require('node:fs').chownSync('/data/saves', 1000, 1000)"]
+
+volumes:
+  netplay-saves:
