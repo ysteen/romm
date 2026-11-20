@@ -8,7 +8,7 @@ The installation server needs no development-server access or source checkout.
 Read [Player guide](ROLLBACK_ROOMS.md) for room invitations, Windows launcher
 setup, player numbers, saves, leaving and rejoining. Administration is at
 `/api/netplay/bridge/admin/ui/` on your RomM HTTPS origin and
-requires the current RomM administrator role. The bridge image owns the dashboard HTML, JavaScript and styles. RomM authenticates each request and proxies the fixed UI assets; it holds no dashboard bundle. Port 8083 is a development shortcut. See the bridge's [administration contract](https://github.com/ysteen/retroarch-netplay-bridge/blob/main/docs/administration.md).
+requires the current RomM administrator role. The bridge image owns the dashboard HTML, JavaScript and styles. RomM authenticates each request and proxies the fixed UI assets; it holds no dashboard bundle. Port 8083 is a development shortcut. See the bridge's [administration contract](https://github.com/ysteen/relaycade/blob/main/docs/administration.md).
 
 ## Nintendo DS WFC
 
@@ -16,7 +16,7 @@ The `melondsds` web port uses a separate WFC gateway, not a rollback room.
 Choose it in the Nintendo DS core selector, then use the game's Nintendo WFC
 settings. Every player runs their own cartridge under their own RomM account.
 Native melonDS DS connects to WFC directly and does not need this gateway.
-See the bridge's [DS WFC guide](https://github.com/ysteen/retroarch-netplay-bridge/blob/main/docs/ds-wfc.md)
+See the bridge's [DS WFC guide](https://github.com/ysteen/relaycade/blob/feature/ds-wfc/docs/ds-wfc.md)
 for build revisions, deployment, network requirements and verification limits.
 The older `melonds` selection remains available.
 
@@ -50,15 +50,14 @@ SNES accepts standard NTSC LoROM/HiROM up to 4 MiB, including a single-ROM ZIP o
 512-byte copier header; PAL and extended/interleaved images are rejected.
 
 The bridge relays input and snapshots; each client runs the emulation. RomM owns
-login, game access, room permissions and save storage. A playing RetroArch has
-host priority, followed by a playing browser. Two native players need no web
+login, game access, room permissions and save storage. The room creator controls the lobby. A playing RetroArch has priority for
+game state and clock authority, followed by a playing browser. Two native players need no web
 emulator, but retain their browser room pages. No separate OIDC server is needed.
 
 ## Source integration (maintainers)
 
-The adapter is in `ysteen/romm`, branch `custom/netplay-retroarch-bridge`, and the
-standalone service is in private `ysteen/retroarch-netplay-bridge`. Repository
-access is required to clone them. Source HEAD, a running local patch and a
+The DS WFC adapter is in `ysteen/romm`, branch `feature/ds-wfc`. Use the
+matching branch in [Relaycade](https://github.com/ysteen/relaycade). Source HEAD, a running local patch and a
 published image can differ; use a matched release rather than assuming a mutable
 image tag contains local changes. Standard DOSBox work uses its separate branch.
 
@@ -81,8 +80,8 @@ credentials are distinct from room invitation passwords.
 
 The existing `compose.netplay.yml` source overlay joins RomM and the bridge on a
 shared Docker network. It builds the bridge from `NETPLAY_BRIDGE_SOURCE` and
-requires a matching custom RomM image; environment variables do not upgrade an
-old application image. The portable installer avoids this source/build dependency.
+requires a matching custom RomM image. The default source is a sibling
+`relaycade` checkout. Set `NETPLAY_BRIDGE_SOURCE` for a different directory. The portable installer avoids this source/build dependency.
 For image publication and registry authentication, see [private images](PRIVATE_GHCR.md).
 The portable bundle does not need a GHCR login on the destination.
 

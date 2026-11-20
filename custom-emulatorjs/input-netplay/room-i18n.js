@@ -70,8 +70,8 @@ const korean = {
   "Starting without a save.": "세이브 없이 시작합니다.",
   "Create a room or join another player.":
     "방을 만들거나 다른 플레이어의 방에 들어가세요.",
-  "The room starts from the host's save. Shared progress saves to your own RomM account.":
-    "방장의 세이브에서 시작합니다. 함께 진행한 내용은 자신의 RomM 계정에 저장됩니다.",
+  "The room starts from the game host's save. Shared progress saves to your own RomM account.":
+    "게임 동기화 호스트의 세이브에서 시작합니다. 함께 진행한 내용은 자신의 RomM 계정에 저장됩니다.",
   "Each participant keeps their own cartridge save in their RomM account.":
     "각 플레이어의 카트리지 세이브는 각자 RomM 계정에 저장됩니다.",
   "SNES rooms support standard NTSC LoROM/HiROM cartridges. Both players share the screen and can use a keyboard, touch controls or a gamepad.":

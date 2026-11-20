@@ -289,6 +289,7 @@ class BridgeRoomResponse(BaseModel):
     seats: list[int | None] = Field(default_factory=list)
     generation: int = 0
     host: int | None = 0
+    room_host: int | None = None
     running: bool = False
     starting: bool = False
     can_start: bool = False

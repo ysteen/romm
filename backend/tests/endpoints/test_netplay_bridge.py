@@ -769,6 +769,7 @@ def test_native_host_room_exposes_start_controls_and_web_save_source(
                     "nativeAuthority": True,
                     "canStart": True,
                     "host": 1,
+                    "roomHost": 0,
                     "saveHost": 0,
                     "requiresNewGame": True,
                     "members": [
@@ -794,18 +795,26 @@ def test_native_host_room_exposes_start_controls_and_web_save_source(
     assert response.status_code == 200
     assert response.json()[0]["can_start"] is True
     assert response.json()[0]["native_authority"] is True
+    assert response.json()[0]["host"] == 1
+    assert response.json()[0]["room_host"] == 0
     assert response.json()[0]["save_host"] == 0
     assert response.json()[0]["requires_new_game"] is True
     assert response.json()[0]["members"][0]["waitingForNewGame"] is True
     assert "saveOwners" not in response.json()[0]
 
 
-def test_web_witness_can_sync_saves_while_retroarch_hosts(
-    client, editor_user, rom, mocker
+@pytest.mark.parametrize(("save_host", "expected_status"), [(0, 200), (None, 403)])
+def test_room_host_can_sync_native_saves_only_as_web_save_source(
+    client, editor_user, rom, mocker, save_host, expected_status
 ):
-    room = gateway_room(rom.id, "native-owner") | {
-        "saveHost": 0,
-        "members": [{"player": 0, "owner": str(editor_user.id), "kind": "web"}],
+    room = gateway_room(rom.id, str(editor_user.id)) | {
+        "roomHost": 0,
+        "host": 1,
+        "saveHost": save_host,
+        "members": [
+            {"player": 0, "owner": str(editor_user.id), "kind": "web"},
+            {"player": 1, "owner": "native-owner", "kind": "native"},
+        ],
     }
     mocker.patch("endpoints.netplay.bridge_room", AsyncMock(return_value=room))
     save = mocker.patch(
@@ -823,8 +832,8 @@ def test_web_witness_can_sync_saves_while_retroarch_hosts(
         },
         headers=_auth(editor_user),
     )
-    assert response.status_code == 200
-    save.assert_awaited_once()
+    assert response.status_code == expected_status
+    assert save.await_count == int(expected_status == 200)
 
 
 def test_native_package_requires_a_scoped_credential(client, mocker):

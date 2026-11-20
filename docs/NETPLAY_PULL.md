@@ -16,7 +16,9 @@ compatibility before replacing an existing image.
 ## Obtain the paired image references
 
 Copy the two image refs from a successful
-[private DS WFC image publication](https://github.com/ysteen/retroarch-netplay-bridge/actions/workflows/publish-wfc-images.yml).
+[private DS WFC image publication](https://github.com/ysteen/relaycade/actions/workflows/publish-wfc-images.yml).
+The paired publication requires the Relaycade repository to be private. Existing
+tagged images keep their package paths and access settings.
 Use the pair from the same run. Authenticate Docker with a GitHub account that
 has access to both private packages and a token with `read:packages`:
 
@@ -72,11 +74,12 @@ URL from RomM. The bridge validates the origin and the ticket before opening a
 session. Native RetroArch TCP uses the direct DNS host with the room port.
 The bridge needs outbound TCP and UDP for Nintendo DS WFC.
 
-The dashboard and account APIs use the RomM login. Open
-`https://romm.example.com/api/netplay/bridge/admin/ui/` as a RomM administrator.
-An optional dedicated port can use the same RomM hostname and reuse the browser
-cookie. A dashboard on a different hostname would need a login handoff that the
-current adapter does not provide.
+Open `https://romm.example.com/api/netplay/bridge/admin/ui/` as a RomM
+administrator. Relaycade also supports an independent administrator login at
+its own HTTPS origin. Set `NETPLAY_BRIDGE_LOCAL_ADMIN_PASSWORD` and
+`NETPLAY_BRIDGE_LOCAL_ADMIN_ORIGIN` in Compose, then follow the
+[standalone HTTPS setup](https://github.com/ysteen/relaycade/blob/main/docs/administration.md).
+Players sign in to RomM to access games and saves.
 
 ## Pull and start
 

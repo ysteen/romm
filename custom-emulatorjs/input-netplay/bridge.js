@@ -9,7 +9,7 @@ import {
 import {
   BridgeConnection,
   crc32,
-} from "../data/src/bridge-session.js?v=cable1-20261107";
+} from "../data/src/bridge-session.js?v=host-pacing-20261121";
 import { installBridgeMenu } from "./bridge-menu.js?v=room-lifetime-20261104";
 import { unpackRoomCartridge } from "./cartridge.js";
 import { installNativeDownloads } from "./native-downloads.js?v=romm-language-20261120";
@@ -19,7 +19,7 @@ import {
   participantClient,
   encodeBattery,
 } from "./room-content.js?v=native-host-20261103";
-import { installLanguage, t } from "./room-i18n.js";
+import { installLanguage, t } from "./room-i18n.js?v=room-host-20261121";
 import { installPlayerScreen } from "./screen.js?v=20261021.10";
 
 const elements = new Map(
@@ -238,7 +238,7 @@ async function initialize({ romId, theme, resume, ...callbacks }) {
     status("Create a room or join another player.");
     $("save-hint").textContent = profile.sharedSave
       ? t(
-          "The room starts from the host's save. Shared progress saves to your own RomM account.",
+          "The room starts from the game host's save. Shared progress saves to your own RomM account.",
         )
       : t(
           "Each participant keeps their own cartridge save in their RomM account.",
@@ -372,9 +372,9 @@ async function refreshRooms() {
       button.className = "room-card";
       button.dataset.roomId = item.id;
       button.disabled = item.current >= item.players;
+      const roomHost = item.room_host ?? item.host;
       const members = [...(item.members ?? [])].sort(
-        (a, b) =>
-          Number(b.player === item.host) - Number(a.player === item.host),
+        (a, b) => Number(b.player === roomHost) - Number(a.player === roomHost),
       );
       const title = document.createElement("strong");
       title.className = "room-card-title";
@@ -390,7 +390,7 @@ async function refreshRooms() {
         game.textContent = titles.get(member.romId) ?? t("Unknown cartridge");
         const player = document.createElement("span");
         player.className = "room-card-meta";
-        player.textContent = `${member.player === item.host ? t("Host") : t("Player")} · ${member.nickname || t("Player")}`;
+        player.textContent = `${member.player === roomHost ? t("Host") : t("Player")} · ${member.nickname || t("Player")}`;
         entry.append(game, player);
         button.append(entry);
       }
@@ -467,10 +467,11 @@ function renderLobby(value) {
   $("lobby").hidden = false;
   if (!gameVisible) showRoom(true);
   const ownPlayer = connection?.player ?? nativeSession?.player;
-  const host = Number.isInteger(ownPlayer) && ownPlayer === value.host;
+  const roomHost = value.roomHost ?? value.room_host ?? value.host;
+  const isRoomHost = Number.isInteger(ownPlayer) && ownPlayer === roomHost;
   $("disconnect-policy").value =
     value.disconnectPolicy ?? value.disconnect_policy ?? "continue";
-  $("disconnect-policy").disabled = !host || value.starting;
+  $("disconnect-policy").disabled = !isRoomHost || value.starting;
   const missing = value.waitingForPlayers ?? value.waiting_for_players ?? [];
   $("disconnect-policy-help").textContent = missing.length
     ? `Paused: waiting for ${missing.length} ${missing.length === 1 ? "player" : "players"} to rejoin. The host can choose Keep playing to continue without them.`
@@ -488,7 +489,7 @@ function renderLobby(value) {
       );
     });
   const requiresNewGame = value.requiresNewGame || differentCartridges;
-  $("start").hidden = !host || (value.running && !requiresNewGame);
+  $("start").hidden = !isRoomHost || (value.running && !requiresNewGame);
   $("start").disabled = !value.canStart;
   $("start").textContent = requiresNewGame
     ? t("Prepare new game")
@@ -510,7 +511,7 @@ function renderLobby(value) {
                 "Game in progress. Select Join game to continue from the current state.",
               )
           : value.canStart
-            ? host
+            ? isRoomHost
               ? t("Everyone is ready. You can start the game.")
               : t("Waiting for the host to start.")
             : t("{current}/{players} players in the room.", {
@@ -532,7 +533,7 @@ function renderLobby(value) {
     const row = document.createElement("li");
     const name = document.createElement("span");
     name.className = "member-name";
-    name.textContent = `${member.nickname || (member.kind === "native" ? "RetroArch" : t("Player"))}${member.player === value.host ? ` · ${t("Host")}` : ""}${member.player === ownPlayer ? ` · ${t("You")}` : ""}`;
+    name.textContent = `${member.nickname || (member.kind === "native" ? "RetroArch" : t("Player"))}${member.player === roomHost ? ` · ${t("Host")}` : ""}${member.player === ownPlayer ? ` · ${t("You")}` : ""}`;
     const client = document.createElement("span");
     client.className = "member-client";
     client.textContent = t(participantClient(member));
@@ -568,7 +569,7 @@ function renderLobby(value) {
     select.disabled =
       value.starting ||
       (value.running && member.playing) ||
-      (!host && member.player !== ownPlayer);
+      (!isRoomHost && member.player !== ownPlayer);
     select.onchange = () => {
       const seat = select.value === "" ? null : Number(select.value);
       if (connection && !nativeSession)
@@ -587,7 +588,7 @@ function renderLobby(value) {
             ? t("Waiting for game")
             : t("Connecting…");
     row.append(name, select, readiness);
-    if (host && member.player !== ownPlayer) {
+    if (isRoomHost && member.player !== ownPlayer) {
       const remove = document.createElement("button");
       remove.textContent = t("Remove");
       remove.setAttribute(
@@ -1167,7 +1168,7 @@ async function pollNativeRoom() {
           ? t(
               "Waiting for the current game state. A different cartridge stays in the room until the host prepares a new game.",
             )
-          : current.host === session.player
+          : (current.room_host ?? current.host) === session.player
             ? t(
                 "You are the host. Start when everyone has joined and chosen a player number.",
               )

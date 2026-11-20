@@ -4,6 +4,8 @@ import {
   CABLE_INPUT_PROFILE,
 } from "./link-core.js?v=cable1";
 
+const HOST_FRAME_TOLERANCE = 3;
+
 const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
   let value = index;
   for (let bit = 0; bit < 8; bit++)
@@ -334,6 +336,7 @@ export class BridgeConnection {
     this.closed = false;
     this.started = false;
     this.host = 0;
+    this.hostFrame = null;
     this.generation = 0;
     this.initialState = this.adapter?.save().slice() ?? null;
     this.initialMemories = (this.adapter?.profile?.memoryIds ?? []).map((id) =>
@@ -829,9 +832,19 @@ export class BridgeConnection {
 
   tick(buttons) {
     try {
-      if (this.session && this.hostFrame > this.session.frame + 3)
-        this.session.tick(buttons, false);
-      const advanced = this.session?.tick(buttons) ?? false;
+      const session = this.session;
+      if (session && this.hostFrame !== null) {
+        // Host inputs arrive between clock updates and may already cover upcoming frames.
+        const latestHostFrame = Math.max(
+          this.hostFrame,
+          session.nextReceived[this.host] - 1,
+        );
+        if (session.frame >= latestHostFrame + HOST_FRAME_TOLERANCE)
+          return false;
+        if (this.hostFrame > session.frame + HOST_FRAME_TOLERANCE)
+          session.tick(buttons, false);
+      }
+      const advanced = session?.tick(buttons) ?? false;
       this.flushStateRequests();
       return advanced;
     } catch (error) {
