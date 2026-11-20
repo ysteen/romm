@@ -10,8 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(resolve(root, "frontend/package.json"));
 const { zipSync } = require("fflate");
 const source = resolve(
-  process.env.NETPLAY_BRIDGE_SOURCE ??
-    resolve(root, "../retroarch-netplay-bridge"),
+  process.env.NETPLAY_BRIDGE_SOURCE ?? resolve(root, "../relaycade"),
 );
 const { createBridge } = await import(
   pathToFileURL(resolve(source, "server.mjs"))

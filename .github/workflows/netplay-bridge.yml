@@ -3,7 +3,7 @@ name: Netplay Adapter
 on:
   push:
     branches:
-      - custom/netplay-retroarch-bridge
+      - custom/relaycade
       - feature/ds-wfc
   pull_request:
     paths:

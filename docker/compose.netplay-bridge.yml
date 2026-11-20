@@ -1,12 +1,15 @@
 services:
   netplay-bridge:
     build:
-      context: ${NETPLAY_BRIDGE_SOURCE:-../../retroarch-netplay-bridge}
+      context: ${NETPLAY_BRIDGE_SOURCE:-../../relaycade}
       dockerfile: Dockerfile
     restart: unless-stopped
     init: true
     environment:
       NETPLAY_BRIDGE_ADMIN_TOKEN: ${NETPLAY_BRIDGE_TOKEN:?Set a shared token of at least 24 characters}
+      NETPLAY_BRIDGE_LOCAL_ADMIN_USERNAME: ${NETPLAY_BRIDGE_LOCAL_ADMIN_USERNAME:-admin}
+      NETPLAY_BRIDGE_LOCAL_ADMIN_PASSWORD: ${NETPLAY_BRIDGE_LOCAL_ADMIN_PASSWORD:-}
+      NETPLAY_BRIDGE_LOCAL_ADMIN_ORIGIN: ${NETPLAY_BRIDGE_LOCAL_ADMIN_ORIGIN:-}
       NETPLAY_BRIDGE_ORIGINS: ${NETPLAY_BRIDGE_ORIGINS:-}
       NETPLAY_BRIDGE_SAVE_DIR: /data/saves
     volumes:

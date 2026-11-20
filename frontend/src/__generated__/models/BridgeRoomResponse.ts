@@ -27,6 +27,7 @@ export type BridgeRoomResponse = {
     seats?: Array<(number | null)>;
     generation?: number;
     host?: (number | null);
+    room_host?: (number | null);
     running?: boolean;
     starting?: boolean;
     can_start?: boolean;

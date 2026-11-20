@@ -14,7 +14,7 @@ services:
       file: docker/compose.netplay-bridge.yml
       service: netplay-bridge
     build:
-      context: ${NETPLAY_BRIDGE_SOURCE:-../retroarch-netplay-bridge}
+      context: ${NETPLAY_BRIDGE_SOURCE:-../relaycade}
 
 volumes:
   netplay-saves:

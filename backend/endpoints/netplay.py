@@ -363,6 +363,7 @@ async def get_bridge_rooms(
                 seats=room.get("seats", []),
                 generation=room.get("generation", 0),
                 host=room.get("host", 0),
+                room_host=room.get("roomHost", room.get("host", 0)),
                 running=room.get("running", False),
                 starting=room.get("starting", False),
                 can_start=room.get("canStart", False),
@@ -697,13 +698,16 @@ async def sync_native_save(
     request: Request, room_id: str, body: BridgeNativeSaveRequest
 ) -> dict[str, Any]:
     room = await bridge_room(room_id)
+    save_player = room.get("saveHost")
+    if save_player is None:
+        save_player = room.get("host")
     save_owner = next(
         (
             member.get("owner")
             for member in room.get("members", [])
-            if member["player"] == room.get("saveHost")
+            if member["player"] == save_player
         ),
-        room.get("owner"),
+        room.get("owner") if "roomHost" not in room else None,
     )
     if save_owner != str(request.user.id):
         raise HTTPException(
