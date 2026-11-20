@@ -92,6 +92,10 @@ async def get_bridge_admin_context(
     request: Request, response: Response
 ) -> BridgeAdminContextResponse:
     _assert_bridge_admin(request, response)
+    locale = (request.user.ui_settings or {}).get("locale")
+    if isinstance(locale, str) and locale:
+        language = locale.lower().replace("_", "-").split("-")[0]
+        response.headers["Content-Language"] = "ko" if language == "ko" else "en"
     return BridgeAdminContextResponse(
         application_name="RomM",
         application_url="/",
